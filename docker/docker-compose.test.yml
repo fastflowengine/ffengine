@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  postgres-test:
+    container_name: test-postgres
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${POSTGRES_TEST_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_TEST_PASS}
+      POSTGRES_DB: ${POSTGRES_TEST_DB}
+    ports:
+      - "5435:5432"
+
+  mssql:
+    container_name: test-mssql
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASS}
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"
+
+  oracle:
+    container_name: test-oracle
+    image: gvenzl/oracle-free:latest
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_PASS}
+      APP_USER: "ffengine"
+      APP_USER_PASSWORD: ${ORACLE_PASS}
+    ports:
+      - "1521:1521"

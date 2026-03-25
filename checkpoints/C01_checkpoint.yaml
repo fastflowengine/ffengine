@@ -1,0 +1,11 @@
+epic_id: "C01"
+epic_name: "Proje İskeleti & Altyapı"
+status: "COMPLETED"
+completed_at: "2026-03-20T17:25:00Z"
+artifacts:
+  - "pyproject.toml"
+  - "src/ffengine/__init__.py"
+  - "docker/Dockerfile"
+  - "docker/docker-compose.yml"
+  - ".github/workflows/ci.yml"
+  - "tests/conftest.py"

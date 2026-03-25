@@ -1,0 +1,27 @@
+name: Feature Request
+description: Propose a Community-facing feature or improvement.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the proposed change.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope Notes
+      description: Confirm whether this is Community/shared scope and not Enterprise-only.
+    validations:
+      required: true

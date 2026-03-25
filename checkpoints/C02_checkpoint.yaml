@@ -1,0 +1,8 @@
+epic_id: "C02"
+epic_name: "DBSession"
+status: "COMPLETED"
+completed_at: "2026-03-23T10:02:21Z"
+artifacts:
+  - "src/ffengine/db/session.py"
+  - "src/ffengine/db/airflow_adapter.py"
+  - "tests/unit/test_db_session.py"
