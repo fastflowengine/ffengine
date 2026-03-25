@@ -1,6 +1,11 @@
 .env
+.env.*
 venv/
+venv2/
 __pycache__/
 *.pyc
 .pytest_cache/
-ffengine.egg-info/
+*.egg-info/
+*.log
+/*.pdf
+/ffengine_agent_execution_handbook_antigravity_v2.zip
