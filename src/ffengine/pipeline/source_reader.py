@@ -48,7 +48,7 @@ class SourceReader:
                 rows = cursor.fetchmany(self.batch_size)
                 if not rows:
                     break
-                yield list(rows)
+                yield [tuple(row) for row in rows]
         finally:
             cursor.close()
 

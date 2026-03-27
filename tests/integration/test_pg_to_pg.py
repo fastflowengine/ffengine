@@ -1,29 +1,37 @@
 """
 Integration test: PostgreSQL → PostgreSQL pipeline (PG → PG).
 
-DURUM: C05 (YAML Config) tamamlandığında aktif edilecek.
+Kaynak tablo: ff_test_data (kalıcı, 100 satır — docker-compose.test.yml ile oluşturulur)
+Hedef tablo:  ff_test_target (her test için oluşturulur ve silinir)
 
-Ön koşullar:
-  - docker/docker-compose.test.yml'deki postgres-test servisi çalışıyor olmalı
-  - .env dosyasında PG_TEST_HOST, PG_TEST_PORT, PG_TEST_USER,
-    PG_TEST_PASSWORD, PG_TEST_DB tanımlı olmalı
-  - C05 ConfigLoader implement edilmiş olmalı
+Kolon yapısı:
+  id           INT          — sayısal kimlik
+  name         VARCHAR(100) — metin adı
+  created_date DATE         — tarih
 
 Çalıştırma:
-  pytest tests/integration/test_pg_to_pg.py -v
+  FFENGINE_ENABLE_PG_TESTS=1 pytest tests/integration/test_pg_to_pg.py -v
 """
 
 import os
 import pytest
 
-# C05 tamamlanana kadar bu testler skip edilir.
-pytestmark = pytest.mark.skip(
-    reason="C05 (YAML Config) tamamlandığında aktif edilecek."
-)
+
+def _should_skip():
+    if os.getenv("FFENGINE_ENABLE_PG_TESTS", "0").strip() != "1":
+        return True, "FFENGINE_ENABLE_PG_TESTS=1 olmadığı için skip."
+    return False, ""
+
+
+_SKIP, _SKIP_REASON = _should_skip()
+
+pytestmark = [pytest.mark.integration]
+if _SKIP:
+    pytestmark.append(pytest.mark.skip(reason=_SKIP_REASON))
 
 
 # ------------------------------------------------------------------
-# Fixtures (C05 sonrası gerçek bağlantılarla doldurulacak)
+# Fixtures
 # ------------------------------------------------------------------
 
 
@@ -31,10 +39,10 @@ pytestmark = pytest.mark.skip(
 def pg_conn_params():
     return {
         "host": os.getenv("PG_TEST_HOST", "localhost"),
-        "port": int(os.getenv("PG_TEST_PORT", "5432")),
-        "user": os.getenv("PG_TEST_USER", "ffengine"),
-        "password": os.getenv("PG_TEST_PASSWORD", "ffengine"),
-        "database": os.getenv("PG_TEST_DB", "ffengine_test"),
+        "port": int(os.getenv("PG_TEST_PORT", "5435")),
+        "user": os.getenv("PG_TEST_USER", "ffengine_test"),
+        "password": os.getenv("PG_TEST_PASSWORD", "ffengine_pg_pass"),
+        "database": os.getenv("PG_TEST_DB", "ffengine_test_db"),
     }
 
 
@@ -58,43 +66,48 @@ def tgt_session(pg_conn_params, pg_dialect):
         yield session
 
 
-# ------------------------------------------------------------------
-# Setup — test tablosunu hazırla
-# ------------------------------------------------------------------
-
-
 @pytest.fixture(autouse=True)
-def setup_tables(src_session, tgt_session, pg_dialect):
-    """Kaynak tabloyu oluştur ve test verisi ekle, hedef tabloyu temizle."""
-    src_cursor = src_session.cursor()
-    src_cursor.execute(
-        "CREATE TABLE IF NOT EXISTS pg_to_pg_source "
-        "(id INT, name VARCHAR(100), amount NUMERIC(10,2))"
-    )
-    src_cursor.execute("TRUNCATE TABLE pg_to_pg_source")
-    src_cursor.executemany(
-        "INSERT INTO pg_to_pg_source VALUES (%s, %s, %s)",
-        [(1, "Alice", 100.50), (2, "Bob", 200.00), (3, "Carol", 300.75)],
-    )
-    src_session.conn.commit()
-    src_cursor.close()
-
-    tgt_cursor = tgt_session.cursor()
-    tgt_cursor.execute("DROP TABLE IF EXISTS pg_to_pg_target")
-    tgt_cursor.execute(
-        "CREATE TABLE pg_to_pg_target "
-        "(id INT, name VARCHAR(100), amount NUMERIC(10,2))"
+def setup_target(tgt_session):
+    """Hedef tabloyu oluştur; test sonunda sil. Kaynak ff_test_data kalıcıdır."""
+    cur = tgt_session.cursor()
+    try:
+        cur.execute("DROP TABLE IF EXISTS public.ff_test_target")
+        tgt_session.conn.commit()
+    except Exception:
+        tgt_session.conn.rollback()
+    cur.execute(
+        "CREATE TABLE public.ff_test_target "
+        "(id INT NOT NULL, name VARCHAR(100) NOT NULL, created_date DATE NOT NULL)"
     )
     tgt_session.conn.commit()
-    tgt_cursor.close()
+    cur.close()
 
     yield
 
-    # Teardown
-    src_session.cursor().execute("DROP TABLE IF EXISTS pg_to_pg_source")
-    tgt_session.cursor().execute("DROP TABLE IF EXISTS pg_to_pg_target")
-    src_session.conn.commit()
-    tgt_session.conn.commit()
+    cur = tgt_session.cursor()
+    try:
+        cur.execute("DROP TABLE IF EXISTS public.ff_test_target")
+        tgt_session.conn.commit()
+    except Exception:
+        tgt_session.conn.rollback()
+    cur.close()
+
+
+# ------------------------------------------------------------------
+# Ortak task_config
+# ------------------------------------------------------------------
+
+_TASK_CONFIG = {
+    "load_method": "append",
+    "source_schema": "public",
+    "source_table": "ff_test_data",
+    "source_columns": ["id", "name", "created_date"],
+    "target_schema": "public",
+    "target_table": "ff_test_target",
+    "target_columns": ["id", "name", "created_date"],
+    "target_columns_meta": [],
+    "batch_size": 1000,
+}
 
 
 # ------------------------------------------------------------------
@@ -103,19 +116,8 @@ def setup_tables(src_session, tgt_session, pg_dialect):
 
 
 def test_pg_to_pg_row_count(src_session, tgt_session, pg_dialect):
+    """ff_test_data → ff_test_target: 100 satır aktarılmalı."""
     from ffengine.core.etl_manager import ETLManager
-
-    task_config = {
-        "load_method": "append",
-        "source_schema": "public",
-        "source_table": "pg_to_pg_source",
-        "source_columns": ["id", "name", "amount"],
-        "target_schema": "public",
-        "target_table": "pg_to_pg_target",
-        "target_columns": ["id", "name", "amount"],
-        "target_columns_meta": [],
-        "batch_size": 1000,
-    }
 
     manager = ETLManager()
     result = manager.run_etl_task(
@@ -123,80 +125,81 @@ def test_pg_to_pg_row_count(src_session, tgt_session, pg_dialect):
         tgt_session=tgt_session,
         src_dialect=pg_dialect,
         tgt_dialect=pg_dialect,
-        task_config=task_config,
+        task_config=_TASK_CONFIG,
     )
 
-    assert result.rows == 3
+    assert result.rows == 100
     assert result.errors == []
 
-    # Hedef tabloda 3 satır olmalı
     cursor = tgt_session.cursor()
-    cursor.execute("SELECT COUNT(*) FROM pg_to_pg_target")
+    cursor.execute("SELECT COUNT(*) FROM public.ff_test_target")
     count = cursor.fetchone()[0]
     cursor.close()
-    assert count == 3
+    assert count == 100
 
 
 def test_pg_to_pg_data_integrity(src_session, tgt_session, pg_dialect):
-    """Kaynak ve hedef veriler birebir eşleşmeli."""
+    """İlk 5 satır id/name/created_date doğru sırayla aktarılmalı."""
     from ffengine.core.etl_manager import ETLManager
 
-    task_config = {
-        "load_method": "append",
-        "source_schema": "public",
-        "source_table": "pg_to_pg_source",
-        "source_columns": ["id", "name", "amount"],
-        "target_schema": "public",
-        "target_table": "pg_to_pg_target",
-        "target_columns": ["id", "name", "amount"],
-        "target_columns_meta": [],
-        "batch_size": 1000,
-    }
-
-    manager = ETLManager()
-    manager.run_etl_task(
+    ETLManager().run_etl_task(
         src_session=src_session,
         tgt_session=tgt_session,
         src_dialect=pg_dialect,
         tgt_dialect=pg_dialect,
-        task_config=task_config,
+        task_config=_TASK_CONFIG,
     )
 
     cursor = tgt_session.cursor()
-    cursor.execute("SELECT id, name FROM pg_to_pg_target ORDER BY id")
+    cursor.execute(
+        "SELECT id, name FROM public.ff_test_target ORDER BY id LIMIT 5"
+    )
     rows = cursor.fetchall()
     cursor.close()
 
-    assert rows[0] == (1, "Alice")
-    assert rows[1] == (2, "Bob")
-    assert rows[2] == (3, "Carol")
+    assert rows[0] == (1, "Record_001")
+    assert rows[1] == (2, "Record_002")
+    assert rows[4] == (5, "Record_005")
 
 
 def test_pg_to_pg_etl_result_fields(src_session, tgt_session, pg_dialect):
+    """ETLResult alanları geçerli değerler içermeli."""
     from ffengine.core.etl_manager import ETLManager
     from ffengine.core.base_engine import ETLResult
 
-    task_config = {
-        "load_method": "append",
-        "source_schema": "public",
-        "source_table": "pg_to_pg_source",
-        "source_columns": ["id", "name", "amount"],
-        "target_schema": "public",
-        "target_table": "pg_to_pg_target",
-        "target_columns": ["id", "name", "amount"],
-        "target_columns_meta": [],
-    }
-
-    manager = ETLManager()
-    result = manager.run_etl_task(
+    result = ETLManager().run_etl_task(
         src_session=src_session,
         tgt_session=tgt_session,
         src_dialect=pg_dialect,
         tgt_dialect=pg_dialect,
-        task_config=task_config,
+        task_config=_TASK_CONFIG,
     )
 
     assert isinstance(result, ETLResult)
+    assert result.rows == 100
     assert result.partitions_completed == 1
     assert result.duration_seconds >= 0
     assert result.throughput >= 0
+
+
+def test_pg_to_pg_date_column_transferred(src_session, tgt_session, pg_dialect):
+    """created_date kolonu DATE türünde doğru aktarılmalı."""
+    from ffengine.core.etl_manager import ETLManager
+    import datetime
+
+    ETLManager().run_etl_task(
+        src_session=src_session,
+        tgt_session=tgt_session,
+        src_dialect=pg_dialect,
+        tgt_dialect=pg_dialect,
+        task_config=_TASK_CONFIG,
+    )
+
+    cursor = tgt_session.cursor()
+    cursor.execute(
+        "SELECT created_date FROM public.ff_test_target ORDER BY id LIMIT 1"
+    )
+    row = cursor.fetchone()
+    cursor.close()
+
+    assert isinstance(row[0], datetime.date)
