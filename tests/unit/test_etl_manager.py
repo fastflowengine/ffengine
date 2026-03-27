@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch, call
 from ffengine.core.etl_manager import ETLManager, PythonEngine
 from ffengine.core.base_engine import ETLResult
+from ffengine.errors import EngineError
 
 
 # ------------------------------------------------------------------
@@ -181,7 +182,7 @@ def test_run_etl_task_rollback_on_write_error(src_session, tgt_session, dialect,
         MockWriter.return_value = mock_writer
 
         manager = ETLManager()
-        with pytest.raises(RuntimeError, match="insert failed"):
+        with pytest.raises(EngineError, match="insert failed"):
             manager.run_etl_task(
                 src_session=src_session,
                 tgt_session=tgt_session,
@@ -200,7 +201,7 @@ def test_run_etl_task_rollback_called_once_on_error(src_session, tgt_session, di
         MockWriter.return_value = mock_writer
 
         manager = ETLManager()
-        with pytest.raises(Exception):
+        with pytest.raises(EngineError):
             manager.run_etl_task(
                 src_session=src_session,
                 tgt_session=tgt_session,

@@ -1,0 +1,97 @@
+epic_id: C05
+status: "COMPLETED"
+session_id: "sess_20260326_c05_001"
+wave: 3
+scope: Community
+started_at: "2026-03-26T00:00:00Z"
+completed_at: "2026-03-26T00:00:00Z"
+
+test_results:
+  pytest: "PASSED"
+  total: 302
+  c05_validator: 35
+  c05_loader: 25
+  c04_regression: 59
+  c03_regression: 75
+  c02_regression: 13
+  c01_regression: 95
+  coverage: "full unit coverage"
+
+open_risks:
+  - "BindingResolver source/target binding kaynakları task_config'ten _source_X/_target_X key'leri bekliyor; bu key'ler C07 (Airflow) veya dış caller tarafından enjekte edilmeli."
+  - "ConfigLoader şu an Airflow Variable çözümlemesini doğrudan çağırmıyor; BindingResolver.resolve() çağrısı caller sorumluluğundadır (C07 Airflow Operator'da yapılacak)."
+  - "PythonEngine.run() şu an session/dialect oluşturmayı caller'a bırakıyor (_src_session, _tgt_session vb. task_config'ten pop ediliyor); C07'de AirflowDBAdapter entegrasyonu sağlanmalı."
+
+next_action: "C06 (Partition) veya C07 (Airflow) — Wave 4 tamamlanabilir, Wave 5 için C07 öncelikli"
+
+completed_tasks:
+  - task_id: "C05_T01"
+    description: "ffengine.errors exceptions stub — FFEngineError hiyerarşisi"
+    files_created:
+      - src/ffengine/errors/__init__.py
+      - src/ffengine/errors/exceptions.py
+    completed_at: "2026-03-26T00:00:00Z"
+
+  - task_id: "C05_T02"
+    description: "config/schema.py — whitelist'ler ve TASK_DEFAULTS sabitleri"
+    files_created:
+      - src/ffengine/config/schema.py
+    completed_at: "2026-03-26T00:00:00Z"
+
+  - task_id: "C05_T03"
+    description: "config/validator.py — ConfigValidator doğrulama kuralları"
+    files_created:
+      - src/ffengine/config/validator.py
+    completed_at: "2026-03-26T00:00:00Z"
+
+  - task_id: "C05_T04"
+    description: "config/loader.py — YAML yükleme, task arama, default uygulama"
+    files_created:
+      - src/ffengine/config/loader.py
+    completed_at: "2026-03-26T00:00:00Z"
+
+  - task_id: "C05_T05"
+    description: "config/binding_resolver.py — source/target/literal/airflow_var binding"
+    files_created:
+      - src/ffengine/config/binding_resolver.py
+    completed_at: "2026-03-26T00:00:00Z"
+
+  - task_id: "C05_T06"
+    description: "config/__init__.py — ConfigLoader, ConfigValidator, BindingResolver export"
+    files_created:
+      - src/ffengine/config/__init__.py
+    completed_at: "2026-03-26T00:00:00Z"
+
+  - task_id: "C05_T07"
+    description: "test_config_validator.py — 35 test: whitelist, zorunlu alan, koşullu kurallar"
+    files_created:
+      - tests/unit/test_config_validator.py
+    completed_at: "2026-03-26T00:00:00Z"
+
+  - task_id: "C05_T08"
+    description: "test_config_loader.py — 25 test: geçerli config, defaults, hata senaryoları"
+    files_created:
+      - tests/unit/test_config_loader.py
+    completed_at: "2026-03-26T00:00:00Z"
+
+  - task_id: "C05_T09"
+    description: "PythonEngine._load_task() aktivasyonu — NotImplementedError kaldırıldı, ConfigLoader bağlandı"
+    files_modified:
+      - src/ffengine/core/etl_manager.py
+      - tests/unit/test_etl_manager.py
+    completed_at: "2026-03-26T00:00:00Z"
+
+created_files:
+  - src/ffengine/errors/__init__.py
+  - src/ffengine/errors/exceptions.py
+  - src/ffengine/config/__init__.py
+  - src/ffengine/config/schema.py
+  - src/ffengine/config/validator.py
+  - src/ffengine/config/loader.py
+  - src/ffengine/config/binding_resolver.py
+  - tests/unit/test_config_validator.py
+  - tests/unit/test_config_loader.py
+
+modified_files:
+  - src/ffengine/core/etl_manager.py
+  - tests/unit/test_etl_manager.py

@@ -15,7 +15,7 @@ from ffengine.airflow.operator import (
     FFEngineOperator,
 )
 from ffengine.core.base_engine import ETLResult
-from ffengine.errors.exceptions import ConfigError
+from ffengine.errors.exceptions import ConfigError, EngineError
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +328,9 @@ class TestFFEngineOperatorExecute:
         assert "rows_transferred" in push_calls
         assert "duration_seconds" in push_calls
         assert "rows_per_second" in push_calls
+        assert "retry_telemetry" in push_calls
         assert push_calls["rows_transferred"] == 100
+        assert isinstance(push_calls["retry_telemetry"], dict)
 
     def test_config_loader_called_with_correct_args(self):
         op = _make_operator(config_path="/a/b.yaml", task_group_id="tg1")
@@ -368,6 +370,13 @@ class TestFFEngineOperatorErrors:
             mock_loader.return_value.load.side_effect = ConfigError("dosya bulunamadı")
             op = _make_operator()
             with pytest.raises(ConfigError, match="dosya bulunamadı"):
+                op.execute()
+
+    def test_unknown_error_normalized_to_engine_error(self):
+        with patch(_P_LOADER) as mock_loader:
+            mock_loader.return_value.load.side_effect = RuntimeError("unexpected boom")
+            op = _make_operator()
+            with pytest.raises(EngineError, match="unexpected boom"):
                 op.execute()
 
     def test_partition_where_none_preserves_base_where(self):

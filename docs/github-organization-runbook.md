@@ -86,3 +86,4 @@ this repository alone:
 - Branch protection is active on `main`
 - CODEOWNERS and security/contact files are present
 - Test PR opened by one owner and merged by the other
+- Git hygiene rules are documented and enforced before first public push

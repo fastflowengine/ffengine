@@ -9,3 +9,9 @@ __pycache__/
 *.log
 /*.pdf
 /ffengine_agent_execution_handbook_antigravity_v2.zip
+.tmp/
+.claude/
+.codex_tmp/
+logs/
+tempdir/
+tempdir_ready/

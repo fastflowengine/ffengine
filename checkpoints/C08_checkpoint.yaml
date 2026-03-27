@@ -1,0 +1,124 @@
+epic: C08
+title: ETL Studio (Airflow 3 Native UI)
+status: DONE
+date: 2026-03-27
+
+summary: |
+  ETL Studio Airflow 3.1.6 uyumlu: FastAPI plugin (fastapi_apps + external_views), keşif ve DAG üretim API'leri,
+  Faz 2 üretimleşme, C08_T13 testleri ve C08_T14 kullanım dokümantasyonu tamamlandı.
+
+completed_tasks:
+  - task_id: C08_T01
+    description: "Plugin kaydini Airflow 3 native modele tasima (fastapi_apps + external_views)"
+    files_modified:
+      - src/ffengine/ui/plugin.py
+    status: DONE
+
+  - task_id: C08_T02
+    description: "FastAPI endpoint iskeleti: /etl-studio/api/*"
+    files_created:
+      - src/ffengine/ui/api_app.py
+    status: DONE
+
+  - task_id: C08_T03
+    description: "Schema/Table/Columns kesfi endpointleri"
+    files_modified:
+      - src/ffengine/ui/api_app.py
+      - src/ffengine/ui/studio_service.py
+    status: DONE
+
+  - task_id: C08_T04
+    description: "Typeahead + 50 tablo limiti kurali"
+    files_modified:
+      - src/ffengine/ui/api_app.py
+      - src/ffengine/ui/studio_service.py
+    status: DONE
+
+  - task_id: C08_T05
+    description: "Pipeline formu genisletilmis alanlar (DagUpsertPayload)"
+    files_modified:
+      - src/ffengine/ui/api_app.py
+    status: DONE
+
+  - task_id: C08_T06
+    description: "ConfigValidator ile pipeline dogrulama (create/update oncesi)"
+    files_modified:
+      - src/ffengine/ui/studio_service.py
+    status: DONE
+
+  - task_id: C08_T07
+    description: "Create/Update DAG endpointleri ve dosya uretimi"
+    files_modified:
+      - src/ffengine/ui/api_app.py
+      - src/ffengine/ui/studio_service.py
+    status: DONE
+
+  - task_id: C08_T08
+    description: "Uretilen DAG path guvenligi (studio root altinda)"
+    files_modified:
+      - src/ffengine/ui/studio_service.py
+    status: DONE
+
+  - task_id: C08_T09
+    description: ".etl_studio.json auto_tags/user_tags ve tag merge semantigi"
+    files_modified:
+      - src/ffengine/ui/studio_service.py
+    status: DONE
+
+  - task_id: C08_T10
+    description: "Timeline endpoint + dag_id/state filtreleri ve UI"
+    files_modified:
+      - src/ffengine/ui/api_app.py
+      - src/ffengine/ui/studio_service.py
+      - src/ffengine/ui/templates/etl_studio/index.html
+    status: DONE
+
+  - task_id: C08_T11
+    description: "MVP ETL Studio ekrani (FastAPI altinda servis edilen HTML)"
+    files_modified:
+      - src/ffengine/ui/templates/etl_studio/index.html
+    status: DONE
+
+  - task_id: C08_T12
+    description: "Mutasyon endpointleri icin opsiyonel ETL_STUDIO_API_KEY + baslik"
+    files_modified:
+      - src/ffengine/ui/api_app.py
+    status: DONE
+
+  - task_id: C08_T13
+    description: "FastAPI endpoint unit/API testleri (TestClient)"
+    files_created:
+      - tests/unit/test_etl_studio_api.py
+    files_modified:
+      - pyproject.toml
+    status: DONE
+
+  - task_id: C08_T14
+    description: "Kullanim, sorun giderme ve known limitations (handbook)"
+    files_modified:
+      - handbook/context/C08_ETL_STUDIO.md
+    status: DONE
+
+pending_tasks: []
+
+files_created:
+  - src/ffengine/ui/api_app.py
+  - tests/unit/test_etl_studio_api.py
+  - checkpoints/C08_checkpoint.yaml
+
+files_modified:
+  - src/ffengine/ui/plugin.py
+  - src/ffengine/ui/studio_service.py
+  - src/ffengine/ui/templates/etl_studio/index.html
+  - plugins/etl_studio_plugin.py
+  - docker/docker-compose.yml
+  - README.md
+  - pyproject.toml
+  - handbook/context/C08_ETL_STUDIO.md
+  - handbook/skills/UI_PLUGIN_PATTERN.md
+
+risks:
+  - "Airflow 3 UI SPA routing nedeniyle plugin URL davranisi auth manager ve menu entegrasyonuna bagli degisebilir."
+  - "ETL_STUDIO_API_KEY productionda guvenli dagitim ve rotation ile yonetilmelidir."
+
+next_action: "Wave 5: C10 Error Handling veya sonraki planlanan epic."

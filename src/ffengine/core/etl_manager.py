@@ -9,13 +9,53 @@ ETLManager, tek bir task_config dict'i alarak pipeline'ı çalıştırır
 ve partitionlı senaryolarda çağrılabilir.
 """
 
+import logging
 import time
+from datetime import UTC, datetime
 
 from ffengine.core.base_engine import BaseEngine, ETLResult
+from ffengine.errors import FFEngineError, normalize_exception
 from ffengine.pipeline.source_reader import SourceReader
 from ffengine.pipeline.streamer import Streamer
 from ffengine.pipeline.target_writer import TargetWriter
 from ffengine.pipeline.transformer import Transformer
+
+_log = logging.getLogger(__name__)
+
+
+def _dialect_name(dialect) -> str:
+    raw = type(dialect).__name__.lower()
+    return raw.replace("dialect", "") or raw
+
+
+def _log_structured(
+    *,
+    level: int,
+    stage: str,
+    message: str,
+    task_group_id: str,
+    source_db: str,
+    target_db: str,
+    rows: int = 0,
+    duration_seconds: float = 0.0,
+    **optional,
+) -> None:
+    payload = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "level": logging.getLevelName(level),
+        "logger": __name__,
+        "stage": stage,
+        "task_group_id": task_group_id,
+        "source_db": source_db,
+        "target_db": target_db,
+        "rows": rows,
+        "duration_seconds": round(float(duration_seconds), 3),
+        "message": message,
+    }
+    for k, v in optional.items():
+        if v is not None:
+            payload[k] = v
+    _log.log(level, "%s", payload)
 
 
 class ETLManager:
@@ -51,6 +91,18 @@ class ETLManager:
         ETLResult
         """
         start = time.monotonic()
+        task_group_id = str(task_config.get("task_group_id") or "")
+        source_db = _dialect_name(src_dialect)
+        target_db = _dialect_name(tgt_dialect)
+        _log_structured(
+            level=logging.INFO,
+            stage="extract",
+            message="ETL task started.",
+            task_group_id=task_group_id,
+            source_db=source_db,
+            target_db=target_db,
+            partition_id=(partition_spec or {}).get("part_id"),
+        )
 
         # Partition spec varsa WHERE koşulunu config'e ekle
         effective_config = dict(task_config)
@@ -67,16 +119,51 @@ class ETLManager:
 
         # Streamer hata anında rollback_batch() çağırır ve exception'ı
         # yeniden fırlatır — burada tekrar rollback çağırmıyoruz.
-        result = streamer.stream(
-            reader.read(),
-            writer=writer,
-            transformer=transformer,
-            task_config=effective_config,
-        )
+        try:
+            result = streamer.stream(
+                reader.read(),
+                writer=writer,
+                transformer=transformer,
+                task_config=effective_config,
+            )
+        except Exception as exc:
+            norm = normalize_exception(exc)
+            if isinstance(norm, FFEngineError):
+                norm.details.setdefault(
+                    "task_group_id",
+                    str(task_config.get("task_group_id") or ""),
+                )
+                if partition_spec:
+                    norm.details.setdefault("partition_spec", dict(partition_spec))
+            _log_structured(
+                level=logging.ERROR,
+                stage="load",
+                message="ETL task failed.",
+                task_group_id=task_group_id,
+                source_db=source_db,
+                target_db=target_db,
+                rows=0,
+                error_type=type(norm).__name__,
+                error_message=str(norm),
+                partition_id=(partition_spec or {}).get("part_id"),
+            )
+            raise norm from exc
 
         elapsed = time.monotonic() - start
         rows = result["rows"]
         throughput = rows / elapsed if elapsed > 0 else 0.0
+        _log_structured(
+            level=logging.INFO,
+            stage="load",
+            message="ETL task completed.",
+            task_group_id=task_group_id,
+            source_db=source_db,
+            target_db=target_db,
+            rows=rows,
+            duration_seconds=elapsed,
+            throughput=round(throughput, 2),
+            partition_id=(partition_spec or {}).get("part_id"),
+        )
 
         return ETLResult(
             rows=rows,

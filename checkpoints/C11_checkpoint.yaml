@@ -1,0 +1,108 @@
+epic: C11
+title: Integration Test + Release Prep (Community)
+status: COMPLETED
+date: 2026-03-27
+
+summary: |
+  Wave 6 hedefi, Community için gerçek DB entegrasyon testlerini aktive etmek ve
+  release prep adımlarını tamamlamaktır. Zorunlu akışlar: PG->PG, PG->MSSQL, PG->Oracle
+  ve mapping_generator -> config -> DAG -> run -> verify zinciri.
+
+dependencies:
+  - C04 (Core Engine) ✅
+  - C05 (YAML Config) ✅
+  - C07 (Airflow) ✅
+  - C08 (ETL Studio) ✅
+  - C10 (Error Handling) ✅
+
+task_list:
+  - task_id: C11_T01
+    description: "Integration ortamı hazırlığı ve ön koşul doğrulaması"
+    scope:
+      - docker/docker-compose.test.yml
+      - .env (PG_TEST_*, MSSQL_TEST_*, ORACLE_TEST_*)
+      - tests/integration/
+    status: DONE
+    notes:
+      - "Test container durumları: test-postgres/test-mssql/test-oracle = Up."
+      - "Port erişimleri doğrulandı: 5435, 1433, 1521 açık."
+      - "Worktree kökünde `.env` oluşturuldu ve compose + test değişkenleri tek yerde toplandı."
+      - "`docker compose -f docker/docker-compose.test.yml --env-file .env config` doğrulaması PASS."
+
+  - task_id: C11_T02
+    description: "Cross-DB integration test aktivasyonu (skip/marker stratejisi)"
+    scope:
+      - tests/integration/test_cross_db_etl.py
+      - pyproject.toml (gerekirse pytest marker config)
+    status: DONE
+    notes:
+      - "`FFENGINE_ENABLE_CROSS_DB_TESTS=1` ile aktivasyon, aksi durumda kontrollü skip davranışı doğrulandı."
+      - "Eksik DB driver/bağlantı durumlarında fixture seviyesinde reason içeren `pytest.skip(...)` eklendi."
+      - "Pytest `integration` marker tanımı tekilleştirildi (`pyproject.toml` duplicate section temizlendi)."
+
+  - task_id: C11_T03
+    description: "Zorunlu akışlar: PG->PG, PG->MSSQL, PG->Oracle PASS"
+    scope:
+      - tests/integration/test_pg_to_pg.py
+      - tests/integration/test_cross_db_etl.py
+    status: DONE
+    notes:
+      - "MSSQL için sürücü parametresi env destekli hale getirildi (`MSSQL_TEST_DRIVER`)."
+      - "Self-transfer senaryosunda (PG->PG) ayrı hedef session açılarak server-side cursor çakışması giderildi."
+      - "`test_pg_to_pg`, `test_pg_to_mssql`, `test_pg_to_oracle` seçili koşumunda PASS alındı."
+
+  - task_id: C11_T04
+    description: "mapping_generator -> config -> DAG -> run -> verify zinciri"
+    scope:
+      - tests/unit/test_mapping_generator.py
+      - tests/integration/ (yeni/var test)
+      - src/ffengine/mapping/generator.py
+      - src/ffengine/airflow/dag_generator.py
+    status: DONE
+    notes:
+      - "`tests/integration/test_mapping_chain.py` eklendi."
+      - "Zincir uçtan uca doğrulandı: mapping_generator -> config -> DAG üretimi -> FFEngineOperator.execute -> hedef satır doğrulama."
+      - "Koşum: `pytest tests/integration/test_mapping_chain.py -q` PASS."
+
+  - task_id: C11_T05
+    description: "Community release prep dokümantasyonu"
+    scope:
+      - docs/community_quickstart.md
+      - README.md (test/release komutları)
+    status: DONE
+    notes:
+      - "`docs/community_quickstart.md` oluşturuldu (env, aktivasyon flag'i, gate komutları, release checklist)."
+      - "`README.md` Wave 6 quickstart/test komutları ile güncellendi."
+      - "`handbook/wbs/WBS_COMMUNITY.md` içinde C11 durumu `IN_PROGRESS` ve T01-T04/T05 ilerlemesi işlendi."
+
+  - task_id: C11_T06
+    description: "C11 checkpoint/handoff ve wave durumu kapanışı"
+    scope:
+      - checkpoints/C11_checkpoint.yaml
+      - checkpoints/C11_handoff.md
+      - handbook/wbs/WBS_COMMUNITY.md
+      - README.md
+    status: DONE
+    notes:
+      - "C11 epic durumu `COMPLETED` olarak işaretlendi."
+      - "`README.md` Wave Plan tablosu `✅ Done` olarak güncellendi."
+      - "`handbook/wbs/WBS_COMMUNITY.md` C11 durumu `✅ COMPLETED`, tüm task'lar `DONE`."
+      - "Wave 6 completion checklist tüm maddeler `DONE`."
+
+wave6_completion_checklist:
+  - item: "C11 task listesi tamamlandı"
+    status: DONE
+  - item: "Zorunlu integration akışları PASS"
+    status: DONE
+  - item: "Mapping zinciri PASS"
+    status: DONE
+  - item: "Release prep dokümanları tamamlandı"
+    status: DONE
+  - item: "Wave 6 handoff + durum güncellemesi tamamlandı"
+    status: DONE
+
+risks:
+  - "Yerel ortamda DB container kaynak/port çatışması integration testlerini flaky yapabilir."
+  - "Cross-DB test verisi fixture standardı yoksa sonuçlar deterministik olmayabilir."
+
+next_action: "Yok — C11 epic ve Wave 6 tamamlandı. Community GA hazır."

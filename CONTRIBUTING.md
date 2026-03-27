@@ -18,6 +18,11 @@ contracts only. Enterprise-only runtime capabilities must not be added here.
 - Keep Community and Enterprise boundaries intact.
 - Add or update tests for behavior changes.
 - Prefer small, reviewable pull requests.
+- Before push, review tracked files and keep local/runtime artifacts out of Git.
+- Do not commit local virtualenvs, `.env` files, caches, generated `*.egg-info`,
+  root-level binary documents, or local archive bundles.
+- If an ignored file was already tracked, remove it from the Git index with
+  `git rm --cached` and keep the working copy locally.
 
 ## Repository Boundaries
 

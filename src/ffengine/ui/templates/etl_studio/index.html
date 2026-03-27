@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ETL Studio</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --line: #dbe2ea;
+      --text: #1f2937;
+      --muted: #64748b;
+      --primary: #0175ff;
+      --success: #0a9f5a;
+      --danger: #df3b42;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", Arial, sans-serif;
+    }
+
+    .page {
+      max-width: 1340px;
+      margin: 24px auto;
+      padding: 0 20px 24px;
+    }
+
+    .page-header h1 {
+      margin: 0 0 4px;
+      font-size: 26px;
+      font-weight: 700;
+    }
+
+    .page-header p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      margin-top: 14px;
+      overflow: hidden;
+    }
+
+    .panel-title {
+      background: #f1f5f9;
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 700;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .panel-body {
+      padding: 14px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+    }
+
+    .task-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .task-head h3 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .task-layout {
+      display: grid;
+      grid-template-columns: 1.05fr 1fr;
+      gap: 18px;
+    }
+
+    .stack {
+      display: grid;
+      gap: 12px;
+    }
+
+    .sub-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 12px;
+    }
+
+    .sub-card h4 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .3px;
+      color: #4b5563;
+    }
+
+    .row-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: #475569;
+      font-weight: 600;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      margin-top: 4px;
+      padding: 9px 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      box-sizing: border-box;
+      font-size: 13px;
+      background: #fff;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(1, 117, 255, 0.18);
+    }
+
+    .tabs {
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      gap: 6px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    .tab-btn {
+      border: 1px solid transparent;
+      background: transparent;
+      color: #334155;
+      cursor: pointer;
+      padding: 8px 12px;
+      font-size: 13px;
+      border-radius: 8px 8px 0 0;
+      margin: 0;
+    }
+
+    .tab-btn.active {
+      background: #fff;
+      border-color: var(--line);
+      border-bottom-color: #fff;
+      font-weight: 700;
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    .actions {
+      margin-top: 14px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      border: 0;
+      border-radius: 7px;
+      padding: 9px 12px;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .btn-primary { background: var(--primary); }
+    .btn-success { background: var(--success); }
+    .btn-danger { background: var(--danger); }
+    .btn-neutral { background: #475569; }
+
+    .muted-note {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+
+    .response {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0b1220;
+      color: #d6e0f0;
+      padding: 12px;
+      font-size: 12px;
+      white-space: pre-wrap;
+      min-height: 140px;
+    }
+
+    @media (max-width: 1100px) {
+      .task-layout { grid-template-columns: 1fr; }
+      .grid-3 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="page-header">
+      <h1>ETL Configuration Studio</h1>
+      <p>
+        Airflow 3 native ETL Studio: tek formdan YAML + DAG otomatik olustur/guncelle.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div class="panel-title">Global Settings (Project & DB)</div>
+      <div class="panel-body grid-3">
+        <label>
+          Project Folder
+          <input id="project" value="webhook" placeholder="ornek: webhook">
+        </label>
+        <label>
+          Source DB Connection
+          <input id="source_conn_id" value="ffengine_source" placeholder="ornek: ffengine_source">
+        </label>
+        <label>
+          Target DB Connection
+          <input id="target_conn_id" value="ffengine_target" placeholder="ornek: ffengine_target">
+        </label>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-body">
+        <div class="task-head">
+          <h3>Task #1</h3>
+          <button class="btn btn-danger" type="button" disabled>Delete</button>
+        </div>
+
+        <label>
+          Task Group ID (Folder Name)
+          <input id="task_group_id" placeholder="ornek: src_orders_to_dwh_orders_v1">
+        </label>
+
+        <div class="task-layout">
+          <div class="stack">
+            <div class="sub-card">
+              <h4>Source Configuration</h4>
+              <label>
+                Source Type
+                <select id="source_type">
+                  <option value="table">table</option>
+                  <option value="view">view</option>
+                  <option value="sql">sql</option>
+                  <option value="csv">csv</option>
+                  <option value="script">script</option>
+                </select>
+              </label>
+              <div class="row-2">
+                <label>
+                  Source Schema
+                  <input id="source_schema" value="public">
+                </label>
+                <label>
+                  Source Table (Type to Search)
+                  <input id="source_table" value="orders">
+                </label>
+              </div>
+              <div class="row-2">
+                <label>
+                  Search Table
+                  <input id="search_q" placeholder="min 2 karakter">
+                </label>
+                <label>
+                  Schema Discovery Input
+                  <input id="schema_discovery" placeholder="public">
+                </label>
+              </div>
+              <div class="actions">
+                <button class="btn btn-neutral" id="btn_schemas" type="button">Get Schemas</button>
+                <button class="btn btn-neutral" id="btn_tables" type="button">Get Tables</button>
+                <button class="btn btn-neutral" id="btn_columns" type="button">Get Columns</button>
+              </div>
+              <label>
+                SQL Text (source_type=sql)
+                <textarea id="sql_text" rows="5" placeholder="SELECT ..."></textarea>
+              </label>
+            </div>
+
+            <div class="sub-card">
+              <h4>Target Configuration</h4>
+              <label>
+                Load Method
+                <select id="load_method">
+                  <option value="create_if_not_exists_or_truncate">create_if_not_exists_or_truncate</option>
+                  <option value="append">append</option>
+                  <option value="replace">replace</option>
+                  <option value="upsert">upsert</option>
+                  <option value="delete_from_table">delete_from_table</option>
+                  <option value="drop_if_exists_and_create">drop_if_exists_and_create</option>
+                  <option value="script">script</option>
+                </select>
+              </label>
+              <div class="row-2">
+                <label>
+                  Target Schema
+                  <input id="target_schema" value="dwh">
+                </label>
+                <label>
+                  Target Table
+                  <input id="target_table" value="orders_stg">
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="sub-card">
+            <div class="tabs" role="tablist">
+              <button class="tab-btn active" data-tab="filter" type="button">Filter & Bindings</button>
+              <button class="tab-btn" data-tab="partitioning" type="button">Partitioning</button>
+              <button class="tab-btn" data-tab="performance" type="button">Performance</button>
+              <button class="tab-btn" data-tab="mapping" type="button">Mapping</button>
+            </div>
+
+            <div class="tab-panel active" id="tab-filter">
+              <label>
+                Where Clause
+                <textarea id="where" rows="4" placeholder="ornek: updated_at >= :last_sync"></textarea>
+              </label>
+              <label>
+                Extra Tags (comma separated)
+                <input id="extra_tags" placeholder="prod, nightly">
+              </label>
+              <label>
+                DAG Prefix
+                <input id="dag_prefix" value="ffengine">
+              </label>
+              <label>
+                X-ETL-Studio-API-Key (opsiyonel)
+                <input id="api_key" type="password" autocomplete="off">
+              </label>
+            </div>
+
+            <div class="tab-panel" id="tab-partitioning">
+              <label>
+                <input id="partitioning_enabled" type="checkbox" style="width:auto; margin-right:8px;">
+                Partitioning Enabled
+              </label>
+              <div class="row-2">
+                <label>
+                  Column
+                  <input id="partitioning_column" placeholder="id">
+                </label>
+                <label>
+                  Mode
+                  <select id="partitioning_mode">
+                    <option value="auto">auto</option>
+                    <option value="auto_numeric">auto_numeric</option>
+                    <option value="percentile">percentile</option>
+                    <option value="hash_mod">hash_mod</option>
+                    <option value="distinct">distinct</option>
+                    <option value="explicit">explicit</option>
+                    <option value="full_scan">full_scan</option>
+                  </select>
+                </label>
+              </div>
+              <div class="row-2">
+                <label>
+                  Parts
+                  <input id="partitioning_parts" type="number" min="1" value="2">
+                </label>
+                <label>
+                  Ranges (JSON array)
+                  <input id="partitioning_ranges" placeholder='[{"min":1,"max":100}]'>
+                </label>
+              </div>
+            </div>
+
+            <div class="tab-panel" id="tab-performance">
+              <label>
+                <input id="passthrough_full" type="checkbox" checked style="width:auto; margin-right:8px;">
+                Passthrough Full (Stream)
+              </label>
+              <div class="row-2">
+                <label>
+                  Extraction Method
+                  <select id="extraction_method">
+                    <option value="auto">auto</option>
+                    <option value="cursor">cursor</option>
+                    <option value="copy_binary">copy_binary</option>
+                  </select>
+                </label>
+                <label>
+                  Batch Size
+                  <input id="batch_size" type="number" min="1" value="10000">
+                </label>
+              </div>
+              <div class="row-2">
+                <label>
+                  Pipe Queue Max
+                  <input id="pipe_queue_max" type="number" min="1" value="8">
+                </label>
+                <label>
+                  Reader Workers
+                  <input id="reader_workers" type="number" min="1" value="3">
+                </label>
+              </div>
+              <label>
+                Writer Workers
+                <input id="writer_workers" type="number" min="1" value="5">
+              </label>
+            </div>
+
+            <div class="tab-panel" id="tab-mapping">
+              <label>
+                Mapping Mode
+                <select id="column_mapping_mode">
+                  <option value="source">source (automatic)</option>
+                  <option value="mapping_file">mapping_file</option>
+                </select>
+              </label>
+              <label>
+                Mapping File (mode=mapping_file)
+                <input id="mapping_file" placeholder="mappings/orders_map.yaml">
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn btn-success" id="btn_create" type="button">Create DAG + YAML</button>
+          <button class="btn btn-primary" id="btn_update" type="button">Update DAG + YAML</button>
+          <button class="btn btn-neutral" id="btn_timeline" type="button">Load Timeline</button>
+        </div>
+        <div class="muted-note">
+          Not: Bu surum tek task payload ile config olusturur. DAG dosyasi ve YAML otomatik uretilir.
+        </div>
+      </div>
+    </section>
+
+    <pre class="response" id="out">{}</pre>
+  </div>
+
+  <script>
+    const base = "/etl-studio";
+
+    // Airflow static CSS'i bulursa yukler; bulunamazsa local fallback stilleri kullanir.
+    async function tryAttachAirflowCss() {
+      const candidates = [
+        "/static/dist/main.css",
+        "/static/main.css",
+        "/static/css/main.css",
+        "/static/dist/assets/index.css",
+      ];
+      for (const href of candidates) {
+        try {
+          const res = await fetch(href, { method: "HEAD" });
+          if (!res.ok) continue;
+          const link = document.createElement("link");
+          link.rel = "stylesheet";
+          link.href = href;
+          document.head.appendChild(link);
+          return;
+        } catch (_err) {
+          // try next candidate
+        }
+      }
+    }
+    tryAttachAirflowCss();
+
+    const out = document.getElementById("out");
+    const show = (value) => { out.textContent = JSON.stringify(value, null, 2); };
+
+    function el(id) { return document.getElementById(id); }
+
+    function parseTags(raw) {
+      return (raw || "")
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+    }
+
+    function parseJsonArray(raw) {
+      const text = (raw || "").trim();
+      if (!text) return [];
+      try {
+        const parsed = JSON.parse(text);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_err) {
+        return [];
+      }
+    }
+
+    function postHeaders() {
+      const headers = { "Content-Type": "application/json" };
+      const apiKey = el("api_key").value.trim();
+      if (apiKey) headers["X-ETL-Studio-API-Key"] = apiKey;
+      return headers;
+    }
+
+    async function getJson(url) {
+      const r = await fetch(url);
+      const data = await r.json();
+      show({ status_code: r.status, ...data });
+      return data;
+    }
+
+    async function postJson(url, body) {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: postHeaders(),
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      show({ status_code: r.status, ...data });
+      return data;
+    }
+
+    function collectPayload() {
+      const tags = parseTags(el("extra_tags").value);
+      const payload = {
+        project: el("project").value.trim() || "webhook",
+        domain: "whk",
+        level: "level1",
+        direction: "src_to_stg",
+        dag_prefix: el("dag_prefix").value.trim() || "ffengine",
+        task_group_id: el("task_group_id").value.trim() || undefined,
+        source_conn_id: el("source_conn_id").value.trim(),
+        target_conn_id: el("target_conn_id").value.trim(),
+        source_schema: el("source_schema").value.trim(),
+        source_table: el("source_table").value.trim() || undefined,
+        source_type: el("source_type").value,
+        target_schema: el("target_schema").value.trim(),
+        target_table: el("target_table").value.trim(),
+        load_method: el("load_method").value,
+        column_mapping_mode: el("column_mapping_mode").value,
+        mapping_file: el("mapping_file").value.trim() || undefined,
+        where: el("where").value.trim() || undefined,
+        sql_text: el("sql_text").value.trim() || undefined,
+        batch_size: Number(el("batch_size").value || 10000),
+        pipe_queue_max: Number(el("pipe_queue_max").value || 8),
+        reader_workers: Number(el("reader_workers").value || 3),
+        writer_workers: Number(el("writer_workers").value || 5),
+        extraction_method: el("extraction_method").value,
+        passthrough_full: !!el("passthrough_full").checked,
+        partitioning_enabled: !!el("partitioning_enabled").checked,
+        partitioning_mode: el("partitioning_mode").value,
+        partitioning_column: el("partitioning_column").value.trim() || undefined,
+        partitioning_parts: Number(el("partitioning_parts").value || 2),
+        partitioning_ranges: parseJsonArray(el("partitioning_ranges").value),
+      };
+      if (tags.length) payload.tags = tags;
+      return payload;
+    }
+
+    for (const tabBtn of document.querySelectorAll(".tab-btn")) {
+      tabBtn.addEventListener("click", () => {
+        const target = tabBtn.getAttribute("data-tab");
+        for (const b of document.querySelectorAll(".tab-btn")) b.classList.remove("active");
+        for (const p of document.querySelectorAll(".tab-panel")) p.classList.remove("active");
+        tabBtn.classList.add("active");
+        el(`tab-${target}`).classList.add("active");
+      });
+    }
+
+    el("btn_schemas").onclick = () => {
+      const conn = el("source_conn_id").value.trim();
+      if (!conn) return show({ ok: false, detail: "source_conn_id zorunlu" });
+      getJson(`${base}/api/schemas?conn_id=${encodeURIComponent(conn)}`);
+    };
+
+    el("btn_tables").onclick = () => {
+      const conn = el("source_conn_id").value.trim();
+      const schema = (el("schema_discovery").value.trim() || el("source_schema").value.trim());
+      const q = el("search_q").value.trim();
+      if (!conn || !schema) return show({ ok: false, detail: "conn_id ve schema zorunlu" });
+      let u = `${base}/api/tables?conn_id=${encodeURIComponent(conn)}&schema=${encodeURIComponent(schema)}&limit=50&offset=0`;
+      if (q) u += `&q=${encodeURIComponent(q)}`;
+      getJson(u);
+    };
+
+    el("btn_columns").onclick = () => {
+      const conn = el("source_conn_id").value.trim();
+      const schema = el("source_schema").value.trim();
+      const table = el("source_table").value.trim();
+      if (!conn || !schema || !table) return show({ ok: false, detail: "conn_id, schema, table zorunlu" });
+      getJson(
+        `${base}/api/columns?conn_id=${encodeURIComponent(conn)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`
+      );
+    };
+
+    el("btn_create").onclick = () => postJson(`${base}/api/create-dag`, collectPayload());
+    el("btn_update").onclick = () => postJson(`${base}/api/update-dag`, collectPayload());
+
+    el("btn_timeline").onclick = () => {
+      const taskGroup = el("task_group_id").value.trim();
+      let u = `${base}/api/timeline?limit=50`;
+      if (taskGroup) u += `&dag_id=${encodeURIComponent(taskGroup)}`;
+      getJson(u);
+    };
+  </script>
+</body>
+</html>

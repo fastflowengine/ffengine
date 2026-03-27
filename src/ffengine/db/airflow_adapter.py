@@ -1,4 +1,3 @@
-from airflow.hooks.base import BaseHook
 
 class AirflowConnectionAdapter:
     """
@@ -7,6 +6,7 @@ class AirflowConnectionAdapter:
 
     @staticmethod
     def get_connection_params(conn_id: str) -> dict:
+        from airflow.hooks.base import BaseHook
         conn = BaseHook.get_connection(conn_id)
         
         # Build base params

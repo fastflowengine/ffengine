@@ -1,0 +1,85 @@
+epic_id: C09
+status: "COMPLETED"
+session_id: "sess_20260327_c09_001"
+wave: 4
+scope: Community
+started_at: "2026-03-27T00:00:00Z"
+completed_at: "2026-03-27T00:00:00Z"
+
+test_results:
+  pytest: "PASSED"
+  total: 384
+  c09_mapping_resolver: 22
+  c09_mapping_generator: 12
+  c06_regression: 37
+  c05_regression: 62
+  c04_regression: 59
+  c03_regression: 75
+  c02_regression: 13
+  c01_regression: 95
+  coverage: "full unit coverage"
+
+open_risks:
+  - "MappingResolver ETLManager entegrasyonu ertelendi: ETLManager.run_etl_task() mevcut testleri source_columns/target_columns'ı doğrudan fixture üzerinde sağlıyor; MappingResolver entegrasyonu C07 Airflow Operator kapsamında yapılacak."
+  - "TypeMapper bilinmeyen tip → UnsupportedTypeError: Resolver ve Generator bu hatayı MappingError'a çevirir. Yeni kaynak tip eklendiğinde TypeMapper güncellenmeli."
+
+next_action: "C07 (Airflow Operator) — Wave 5 başlangıcı: AirflowDBAdapter + FFEngineOperator; MappingResolver ETLManager entegrasyonu da bu kapsamda"
+
+completed_tasks:
+  - task_id: "C09_T01"
+    description: "MappingResult dataclass (source_columns, target_columns, target_columns_meta)"
+    files_created:
+      - src/ffengine/mapping/resolver.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C09_T02"
+    description: "MappingResolver.resolve() source modu — passthrough_full/partial, TypeMapper entegrasyonu, hata sarma"
+    files_modified:
+      - src/ffengine/mapping/resolver.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C09_T03"
+    description: "MappingResolver.resolve() mapping_file modu — YAML yükleme, versiyon doğrulama, ColumnInfo oluşturma"
+    files_modified:
+      - src/ffengine/mapping/resolver.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C09_T04"
+    description: "MappingGenerator.generate() + save() — şema okuma, TypeMapper çevirisi, YAML yazma"
+    files_created:
+      - src/ffengine/mapping/generator.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C09_T05"
+    description: "ConfigValidator._check_passthrough_config() — passthrough_full=False iken source_columns zorunluluğu (9. kural)"
+    files_modified:
+      - src/ffengine/config/validator.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C09_T06"
+    description: "mapping/__init__.py — MappingResolver, MappingResult, MappingGenerator export"
+    files_created:
+      - src/ffengine/mapping/__init__.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C09_T07"
+    description: "test_mapping_resolver.py — 22 test: _dialect_name(), source modu, mapping_file modu, dispatch"
+    files_created:
+      - tests/unit/test_mapping_resolver.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C09_T08"
+    description: "test_mapping_generator.py — 12 test: generate yapısı, tür çevirisi, save, roundtrip"
+    files_created:
+      - tests/unit/test_mapping_generator.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+created_files:
+  - src/ffengine/mapping/resolver.py
+  - src/ffengine/mapping/generator.py
+  - src/ffengine/mapping/__init__.py
+  - tests/unit/test_mapping_resolver.py
+  - tests/unit/test_mapping_generator.py
+
+modified_files:
+  - src/ffengine/config/validator.py

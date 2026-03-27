@@ -1,0 +1,130 @@
+epic: C10
+title: Error Handling (Community)
+status: COMPLETED
+date: 2026-03-27
+
+summary: |
+  C10 kapsamı Community hata modelini operasyonel olarak güçlendirmektir.
+  Hedef: chunk rollback + task retry davranışını deterministik hale getirmek,
+  exception hiyerarşisini standardize etmek ve operator/API katmanında tutarlı hata çıktısı üretmektir.
+
+dependencies:
+  - C04 (Core Engine) ✅
+  - C07 (Airflow) ✅
+  - C08 (ETL Studio) ✅
+
+task_list:
+  - task_id: C10_T01
+    description: "Exception hiyerarşisi ve kodları EXCEPTION_MODEL ile hizalansın"
+    scope:
+      - src/ffengine/errors/exceptions.py
+      - src/ffengine/errors/__init__.py
+    status: DONE
+    notes:
+      - "FFEngineError taban sınıfına code/details/cause alanları eklendi."
+      - "Domain exception sınıflarına default_code tanımlandı."
+      - "FFEngineError.wrap(...) ile sürücü/stdlib exception sarma altyapısı eklendi."
+
+  - task_id: C10_T02
+    description: "Merkezi hata normalizasyonu için handler katmanı ekle"
+    scope:
+      - src/ffengine/errors/handler.py
+      - src/ffengine/errors/__init__.py
+    status: DONE
+    notes:
+      - "normalize_exception / http_status_for / error_payload fonksiyonları eklendi."
+      - "Domain exception -> HTTP status map standardize edildi."
+
+  - task_id: C10_T03
+    description: "ETLManager içinde chunk-level rollback ve typed exception akışını netleştir"
+    scope:
+      - src/ffengine/core/etl_manager.py
+      - src/ffengine/db/session.py
+    status: DONE
+    notes:
+      - "ETLManager.stream aşamasında exception'lar normalize edilip FFEngineError türlerine sarıldı."
+      - "task_group_id ve partition_spec bağlamı hata details içine eklendi."
+
+  - task_id: C10_T04
+    description: "TargetWriter hata yüzeyini standardize et (load_method bazlı)"
+    scope:
+      - src/ffengine/pipeline/target_writer.py
+    status: DONE
+    notes:
+      - "Desteklenmeyen load_method artık ValidationError."
+      - "write/exec/ddl path'lerinde ConnectionError ve DialectError wrap standardı uygulandı."
+
+  - task_id: C10_T05
+    description: "FFEngineOperator error summary + retry telemetry üretimi"
+    scope:
+      - src/ffengine/airflow/operator.py
+    status: DONE
+    notes:
+      - "retry_telemetry (try_number/max_tries) başarı ve hata akışında üretildi."
+      - "hata anında error_summary xcom push + normalize_exception ile typed exception yükseltme eklendi."
+
+  - task_id: C10_T06
+    description: "ETL Studio API'de hata mapping ve mesaj formatını tutarlılaştır"
+    scope:
+      - src/ffengine/ui/api_app.py
+    status: DONE
+    notes:
+      - "api_app'de _raise_http_from_exception() eklendi ve endpoint catch blokları handler katmanına bağlandı."
+
+  - task_id: C10_T07
+    description: "Structured logging alanlarını LOGGING_SCHEMA ile hizala"
+    scope:
+      - src/ffengine/core/etl_manager.py
+      - src/ffengine/airflow/operator.py
+      - src/ffengine/errors/handler.py
+    status: DONE
+    notes:
+      - "ETLManager ve Operator için timestamp/level/logger/stage/task_group_id/source_db/target_db/rows/duration/message alanlarıyla structured payload loglandı."
+      - "Hata loglarında error_type/error_message alanları normalize payload ile yazılıyor."
+
+  - task_id: C10_T08
+    description: "Unit test paketi: yeni error handling testleri + regresyon güncellemesi"
+    scope:
+      - tests/unit/test_error_handling.py
+      - tests/unit/test_etl_manager.py
+      - tests/unit/test_target_writer.py
+      - tests/unit/test_operator.py
+      - tests/unit/test_etl_studio_api.py
+    status: DONE
+    notes:
+      - "tests/unit/test_error_handling.py eklendi (hiyerarşi + wrap + code override)."
+      - "handler fonksiyonları için normalize/status/payload testleri eklendi."
+      - "tests/unit/test_etl_studio_api.py içine connection_error -> 502 test senaryosu eklendi."
+      - "tests/unit/test_target_writer.py, test_etl_manager.py, test_operator.py C10 davranışına göre güncellendi."
+      - "Unit regresyon: 76 passed (etl_manager/operator/target_writer/error_handling), API+partition regresyon: 43 passed."
+      - "Wave5 gate mevcut test seti: operator + airflow_dag + etl_studio_api + error_handling => 78 passed."
+      - "`tests/test_community_e2e.py` dosyası mevcut değil; integration gate bu repoda ayrıca planlanmalı."
+
+  - task_id: C10_T09
+    description: "Dokümantasyon/checkpoint/handoff kapanışı"
+    scope:
+      - handbook/context/C10_ERROR_HANDLING.md
+      - checkpoints/C10_checkpoint.yaml
+      - checkpoints/C10_handoff.md
+      - handbook/wbs/WBS_COMMUNITY.md
+    status: DONE
+    notes:
+      - "C10 context/checkpoint/handoff, WBS ve README durumları senkron güncellendi."
+
+wave5_completion_checklist:
+  - item: "C07 gate doğrulandı (plan->prepare->run + XCom anahtarları)"
+    status: DONE
+  - item: "C08 gate doğrulandı (ETL Studio + DAG/YAML + API testleri)"
+    status: DONE
+  - item: "C10 task listesi tamamlandı"
+    status: DONE
+  - item: "W5 gate test paketi PASS (unit + integration)"
+    status: DONE
+  - item: "W5 handoff ve durum güncellemeleri tamamlandı"
+    status: DONE
+
+risks:
+  - "Community path'e Enterprise ack/nack veya DLQ davranışı sızdırılmamalı."
+  - "Retry policy değişiklikleri mevcut operator davranışını geriye dönük kırmamalı."
+
+next_action: "Wave 6 (C11): integration test ve release prep planını başlat."

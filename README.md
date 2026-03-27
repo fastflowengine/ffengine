@@ -37,16 +37,31 @@ This repository is intended to become the public `ffengine/ffengine` repository.
 | 4 | C06 | ✅ Done | Partition |
 | 4 | C09 | ✅ Done | Mapping Tools |
 | 5 | C07 | ✅ Done | Airflow Operator & DAG |
-| 5 | C08 | ⬜ Pending | ETL Studio |
-| 5 | C10 | ⬜ Pending | Error Handling |
-| 6 | C11 | ⬜ Pending | Integration Tests & Release |
+| 5 | C08 | ✅ Done | ETL Studio (Airflow 3 FastAPI plugin) — [`handbook/context/C08_ETL_STUDIO.md`](handbook/context/C08_ETL_STUDIO.md) |
+| 5 | C10 | ✅ Done | Error Handling (typed exceptions, handler normalization, structured logs) |
+| 6 | C11 | ✅ Done | Integration Tests & Release |
 
 📖 Full epic specs and agent execution handbook: [`handbook/`](handbook/)
+
+## UI Architecture Standard
+
+- Airflow 3 plugin extensions (ETL Studio) follow `fastapi_apps + external_views` as the
+  standard model: [`handbook/reference/AIRFLOW3_PLUGIN_STANDARD.md`](handbook/reference/AIRFLOW3_PLUGIN_STANDARD.md)
 
 ## Installation
 
 ```bash
 pip install -e .
+```
+
+## Community Quickstart (Wave 6)
+
+- Quickstart and release prep guide: [`docs/community_quickstart.md`](docs/community_quickstart.md)
+- Integration tests are opt-in via `FFENGINE_ENABLE_CROSS_DB_TESTS=1`.
+- Wave 6 mandatory gate command:
+
+```bash
+py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/integration/test_cross_db_etl.py::test_pg_to_mssql tests/integration/test_cross_db_etl.py::test_pg_to_oracle tests/integration/test_mapping_chain.py -q
 ```
 
 ## Governance

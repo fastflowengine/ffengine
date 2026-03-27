@@ -1,0 +1,79 @@
+epic_id: "C03"
+epic_name: "Dialect Layer"
+status: "COMPLETED"
+session_id: "sess_20260326_c03_001"
+wave: 3
+scope: Community
+started_at: "2026-03-26T00:00:00Z"
+completed_at: "2026-03-26T00:00:00Z"
+test_results:
+  pytest: "PASSED"
+  total: 88
+  c03_specific: 75
+  coverage: "full unit coverage"
+open_risks:
+  - "API_CONTRACTS.md imzaları ile küçük sapmalar mevcut: generate_ddl(table_name, columns) vs kontraktın (schema, table, columns) formu; generate_bulk_insert_query(table, columns) vs (schema, table, columns). Mevcut implementasyon table_name'i qualified (schema.table) string olarak alıyor. C04 entegrasyonunda uyum gözden geçirilmeli."
+  - "list_tables API kontraktında search=None, limit=50 parametreleri tanımlı ancak implementasyonda yok. C04 veya C08 geliştirmesinde eklenebilir."
+  - "UnsupportedTypeError doğrudan Exception'dan türüyor; EXCEPTION_MODEL.md'deki DialectError(FFEngineError) hiyerarşisi C10 epik'inde kurulduğunda refactor edilmeli."
+next_action: "Proceed to C05 (YAML Config) — Wave 3 parallel track"
+completed_tasks:
+  - task_id: "C03_T01"
+    description: "BaseDialect abstract kontrat + ColumnInfo dataclass"
+    files_created:
+      - src/ffengine/dialects/base.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C03_T02"
+    description: "PostgresDialect implementasyonu (psycopg3)"
+    files_created:
+      - src/ffengine/dialects/postgres.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C03_T03"
+    description: "MSSQLDialect implementasyonu (pyodbc)"
+    files_created:
+      - src/ffengine/dialects/mssql.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C03_T04"
+    description: "OracleDialect implementasyonu (oracledb) + Oracle DUAL health_check"
+    files_created:
+      - src/ffengine/dialects/oracle.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C03_T05"
+    description: "TypeMapper — lossless, deterministik cross-dialect tip dönüşümü"
+    files_created:
+      - src/ffengine/dialects/type_mapper.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C03_T06"
+    description: "dialects/__init__.py — tüm public sınıflar export edildi"
+    files_modified:
+      - src/ffengine/dialects/__init__.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C03_T07"
+    description: "Unit testler — 4 dosya, 75 test, tümü PASSED"
+    files_created:
+      - tests/unit/test_dialect_postgres.py
+      - tests/unit/test_dialect_mssql.py
+      - tests/unit/test_dialect_oracle.py
+      - tests/unit/test_type_mapper.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C03_T08"
+    description: "test_dialect_mssql + oracle patch stratejisi düzeltmesi (@patch hedefi driver modülüne çevrildi)"
+    files_modified:
+      - tests/unit/test_dialect_mssql.py
+      - tests/unit/test_dialect_oracle.py
+    completed_at: "2026-03-26T00:00:00Z"
+created_files:
+  - src/ffengine/dialects/base.py
+  - src/ffengine/dialects/postgres.py
+  - src/ffengine/dialects/mssql.py
+  - src/ffengine/dialects/oracle.py
+  - src/ffengine/dialects/type_mapper.py
+  - src/ffengine/dialects/__init__.py
+  - tests/unit/test_dialect_postgres.py
+  - tests/unit/test_dialect_mssql.py
+  - tests/unit/test_dialect_oracle.py
+  - tests/unit/test_type_mapper.py
+  - checkpoints/C03_checkpoint.yaml
+modified_files:
+  - src/ffengine/dialects/__init__.py
+  - tests/unit/test_dialect_mssql.py
+  - tests/unit/test_dialect_oracle.py

@@ -1,0 +1,88 @@
+epic_id: C06
+status: "COMPLETED"
+session_id: "sess_20260327_c06_001"
+wave: 4
+scope: Community
+started_at: "2026-03-27T00:00:00Z"
+completed_at: "2026-03-27T00:00:00Z"
+
+test_results:
+  pytest: "PASSED"
+  total: 345
+  c06_partitioner: 25
+  c06_validator_regression: 12
+  c06_loader_regression: 2
+  c05_regression: 60
+  c04_regression: 59
+  c03_regression: 75
+  c02_regression: 13
+  c01_regression: 95
+  coverage: "full unit coverage"
+
+open_risks:
+  - "Base WHERE + partition WHERE çakışması: ETLManager şu an partition spec WHERE'i _resolved_where'e yazar, base task WHERE'i ezer. AND kombinasyonu C07 Airflow Operator sorumluluğundadır."
+  - "hash_mod + VARCHAR kolon: MOD(varchar_col, n) çoğu RDBMS'de çalışma zamanı hatası verir. C06 validator DB introspection yapmaz; C10 kapsamında ele alınacak."
+  - "distinct strateji ölçeklenebilirliği: Yüksek kardinalite kolonlar için SELECT DISTINCT pahalı olabilir. Yüksek kardinalite durumunda auto_numeric önerilmeli."
+  - "percentile dialect tespiti: type(src_dialect).__name__ ile çalışır; yeni dialect eklendiğinde percentile auto_numeric'e düşer (sessiz fallback). Gelecekteki dialect eklemelerinde dokümante edilmeli."
+
+next_action: "C07 (Airflow Operator) — Wave 5 başlangıcı: AirflowDBAdapter + FFEngineOperator"
+
+completed_tasks:
+  - task_id: "C06_T01"
+    description: "PartitionError exception + VALID_PARTITION_MODES whitelist + TASK_DEFAULTS partitioning genişletildi (column, ranges)"
+    files_modified:
+      - src/ffengine/errors/exceptions.py
+      - src/ffengine/errors/__init__.py
+      - src/ffengine/config/schema.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C06_T02"
+    description: "ConfigValidator._check_partitioning() — mod whitelist, parts>=1, column zorunluluğu, explicit ranges kontrolü"
+    files_modified:
+      - src/ffengine/config/validator.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C06_T03"
+    description: "Partitioner sınıfı + full_scan + explicit stratejileri"
+    files_created:
+      - src/ffengine/partition/__init__.py
+      - src/ffengine/partition/partitioner.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C06_T04"
+    description: "auto_numeric (MIN/MAX aralık bölme) + percentile (PERCENTILE_CONT, fallback=auto_numeric) stratejileri"
+    files_modified:
+      - src/ffengine/partition/partitioner.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C06_T05"
+    description: "hash_mod (MOD/% dialect-aware) + distinct (DISTINCT → IN grupları) stratejileri"
+    files_modified:
+      - src/ffengine/partition/partitioner.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C06_T06"
+    description: "test_partitioner.py — 25 test: disabled, full_scan, explicit, auto_numeric, hash_mod, distinct, percentile"
+    files_created:
+      - tests/unit/test_partitioner.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+  - task_id: "C06_T07"
+    description: "Regresyon testleri: TestPartitioningValidation (12 test) + loader column/ranges default testleri"
+    files_modified:
+      - tests/unit/test_config_validator.py
+      - tests/unit/test_config_loader.py
+    completed_at: "2026-03-27T00:00:00Z"
+
+created_files:
+  - src/ffengine/partition/__init__.py
+  - src/ffengine/partition/partitioner.py
+  - tests/unit/test_partitioner.py
+
+modified_files:
+  - src/ffengine/errors/exceptions.py
+  - src/ffengine/errors/__init__.py
+  - src/ffengine/config/schema.py
+  - src/ffengine/config/validator.py
+  - tests/unit/test_config_validator.py
+  - tests/unit/test_config_loader.py

@@ -6,11 +6,43 @@ FFEngineOperator, Airflow ortamında FFEngine ETL pipeline'ını orkestre eder:
 """
 
 import logging
+from datetime import UTC, datetime
 
 from ffengine.core.base_engine import ETLResult
+from ffengine.errors import error_payload, normalize_exception
 from ffengine.errors.exceptions import ConfigError
 
 _log = logging.getLogger(__name__)
+
+
+def _log_structured(
+    *,
+    level: int,
+    stage: str,
+    message: str,
+    task_group_id: str,
+    source_db: str,
+    target_db: str,
+    rows: int = 0,
+    duration_seconds: float = 0.0,
+    **optional,
+) -> None:
+    payload = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "level": logging.getLevelName(level),
+        "logger": __name__,
+        "stage": stage,
+        "task_group_id": task_group_id,
+        "source_db": source_db,
+        "target_db": target_db,
+        "rows": rows,
+        "duration_seconds": round(float(duration_seconds), 3),
+        "message": message,
+    }
+    for k, v in optional.items():
+        if v is not None:
+            payload[k] = v
+    _log.log(level, "%s", payload)
 
 # ---------------------------------------------------------------------------
 # Dialect çözümleme
@@ -222,95 +254,161 @@ class FFEngineOperator:
 
         context = context or {}
 
-        # ---- Phase 1: PLAN ----
-        _log.info(
-            "C07 Plan fazı: config=%s task=%s",
-            self.config_path,
-            self.task_group_id,
-        )
-
-        # 1. Config yükle
-        task_config = ConfigLoader().load(self.config_path, self.task_group_id)
-
-        # 2. Connection parametreleri
-        src_params = AirflowConnectionAdapter.get_connection_params(
-            self.source_conn_id
-        )
-        tgt_params = AirflowConnectionAdapter.get_connection_params(
-            self.target_conn_id
-        )
-
-        # 3. Dialect çöz
-        src_dialect = resolve_dialect(src_params["conn_type"])
-        tgt_dialect = resolve_dialect(tgt_params["conn_type"])
-
-        # 4. Binding çöz
-        airflow_ctx = self._airflow_context or build_airflow_variable_context()
-        task_config = BindingResolver().resolve(task_config, airflow_ctx)
-
-        # 5. Session'lar aç, mapping çöz, partition planla, çalıştır
-        with DBSession(src_params, src_dialect) as src_session:
-            with DBSession(tgt_params, tgt_dialect) as tgt_session:
-                # 6. Mapping çöz (C09 entegrasyonu)
-                mapping = MappingResolver().resolve(
-                    task_config,
-                    src_session.conn,
-                    src_dialect,
-                    tgt_dialect,
-                )
-                task_config["source_columns"] = mapping.source_columns
-                task_config["target_columns"] = mapping.target_columns
-                task_config["target_columns_meta"] = mapping.target_columns_meta
-
-                # 7. Partition planla
-                specs = Partitioner().plan(
-                    task_config, src_session.conn, src_dialect
-                )
-
-                # ---- Phase 2: PREPARE ----
-                _log.info("C07 Prepare fazı: load_method=%s", task_config.get("load_method"))
-                writer = TargetWriter(tgt_session, tgt_dialect)
-                writer.prepare(task_config)
-
-                # ---- Phase 3: RUN ----
-                _log.info("C07 Run fazı: %d partition", len(specs))
-                base_where = task_config.get("_resolved_where")
-                results: list[ETLResult] = []
-                manager = ETLManager()
-
-                for spec in specs:
-                    effective = dict(task_config)
-                    effective["_resolved_where"] = combine_where(
-                        base_where, spec.get("where")
-                    )
-
-                    result = manager.run_etl_task(
-                        src_session=src_session,
-                        tgt_session=tgt_session,
-                        src_dialect=src_dialect,
-                        tgt_dialect=tgt_dialect,
-                        task_config=effective,
-                        partition_spec=None,
-                        skip_prepare=True,
-                    )
-                    results.append(result)
-
-        # ---- Aggregate + XCom ----
-        aggregated = aggregate_results(results)
-
-        # XCom push (Airflow context varsa)
+        retry_telemetry = self._retry_telemetry(context)
         ti = context.get("ti")
-        if ti is not None:
-            ti.xcom_push(key="rows_transferred", value=aggregated.rows)
-            ti.xcom_push(key="duration_seconds", value=aggregated.duration_seconds)
-            ti.xcom_push(key="rows_per_second", value=aggregated.throughput)
+        source_db = "unknown"
+        target_db = "unknown"
+        try:
+            # ---- Phase 1: PLAN ----
+            _log_structured(
+                level=logging.INFO,
+                stage="airflow",
+                message="Operator plan phase started.",
+                task_group_id=self.task_group_id,
+                source_db=source_db,
+                target_db=target_db,
+                retry_telemetry=retry_telemetry,
+            )
 
-        summary = {
-            "rows": aggregated.rows,
-            "duration_seconds": aggregated.duration_seconds,
-            "throughput": aggregated.throughput,
-            "partitions_completed": aggregated.partitions_completed,
-            "errors": aggregated.errors,
-        }
-        _log.info("C07 Tamamlandı: %s", summary)
-        return summary
+            # 1. Config yükle
+            task_config = ConfigLoader().load(self.config_path, self.task_group_id)
+
+            # 2. Connection parametreleri
+            src_params = AirflowConnectionAdapter.get_connection_params(
+                self.source_conn_id
+            )
+            tgt_params = AirflowConnectionAdapter.get_connection_params(
+                self.target_conn_id
+            )
+
+            # 3. Dialect çöz
+            src_dialect = resolve_dialect(src_params["conn_type"])
+            tgt_dialect = resolve_dialect(tgt_params["conn_type"])
+            source_db = src_params.get("conn_type", "unknown")
+            target_db = tgt_params.get("conn_type", "unknown")
+
+            # 4. Binding çöz
+            airflow_ctx = self._airflow_context or build_airflow_variable_context()
+            task_config = BindingResolver().resolve(task_config, airflow_ctx)
+
+            # 5. Session'lar aç, mapping çöz, partition planla, çalıştır
+            with DBSession(src_params, src_dialect) as src_session:
+                with DBSession(tgt_params, tgt_dialect) as tgt_session:
+                    # 6. Mapping çöz (C09 entegrasyonu)
+                    mapping = MappingResolver().resolve(
+                        task_config,
+                        src_session.conn,
+                        src_dialect,
+                        tgt_dialect,
+                    )
+                    task_config["source_columns"] = mapping.source_columns
+                    task_config["target_columns"] = mapping.target_columns
+                    task_config["target_columns_meta"] = mapping.target_columns_meta
+
+                    # 7. Partition planla
+                    specs = Partitioner().plan(
+                        task_config, src_session.conn, src_dialect
+                    )
+
+                    # ---- Phase 2: PREPARE ----
+                    _log_structured(
+                        level=logging.INFO,
+                        stage="airflow",
+                        message="Operator prepare phase.",
+                        task_group_id=self.task_group_id,
+                        source_db=source_db,
+                        target_db=target_db,
+                    )
+                    writer = TargetWriter(tgt_session, tgt_dialect)
+                    writer.prepare(task_config)
+
+                    # ---- Phase 3: RUN ----
+                    _log_structured(
+                        level=logging.INFO,
+                        stage="airflow",
+                        message="Operator run phase.",
+                        task_group_id=self.task_group_id,
+                        source_db=source_db,
+                        target_db=target_db,
+                        partition_id=len(specs),
+                    )
+                    base_where = task_config.get("_resolved_where")
+                    results: list[ETLResult] = []
+                    manager = ETLManager()
+
+                    for spec in specs:
+                        effective = dict(task_config)
+                        effective["_resolved_where"] = combine_where(
+                            base_where, spec.get("where")
+                        )
+
+                        result = manager.run_etl_task(
+                            src_session=src_session,
+                            tgt_session=tgt_session,
+                            src_dialect=src_dialect,
+                            tgt_dialect=tgt_dialect,
+                            task_config=effective,
+                            partition_spec=None,
+                            skip_prepare=True,
+                        )
+                        results.append(result)
+
+            # ---- Aggregate + XCom ----
+            aggregated = aggregate_results(results)
+
+            # XCom push (Airflow context varsa)
+            if ti is not None:
+                ti.xcom_push(key="rows_transferred", value=aggregated.rows)
+                ti.xcom_push(key="duration_seconds", value=aggregated.duration_seconds)
+                ti.xcom_push(key="rows_per_second", value=aggregated.throughput)
+                ti.xcom_push(key="retry_telemetry", value=retry_telemetry)
+
+            summary = {
+                "rows": aggregated.rows,
+                "duration_seconds": aggregated.duration_seconds,
+                "throughput": aggregated.throughput,
+                "partitions_completed": aggregated.partitions_completed,
+                "errors": aggregated.errors,
+                "retry_telemetry": retry_telemetry,
+            }
+            _log_structured(
+                level=logging.INFO,
+                stage="airflow",
+                message="Operator completed.",
+                task_group_id=self.task_group_id,
+                source_db=source_db,
+                target_db=target_db,
+                rows=aggregated.rows,
+                duration_seconds=aggregated.duration_seconds,
+                throughput=aggregated.throughput,
+                delivery_semantics="best_effort",
+            )
+            return summary
+        except Exception as exc:
+            norm = normalize_exception(exc)
+            payload = error_payload(norm)
+            payload["retry_telemetry"] = retry_telemetry
+            _log_structured(
+                level=logging.ERROR,
+                stage="airflow",
+                message="Operator failed.",
+                task_group_id=self.task_group_id,
+                source_db=source_db,
+                target_db=target_db,
+                error_type=payload.get("error_type"),
+                error_message=payload.get("message"),
+                retry_telemetry=retry_telemetry,
+            )
+            if ti is not None:
+                ti.xcom_push(key="error_summary", value=payload)
+                ti.xcom_push(key="retry_telemetry", value=retry_telemetry)
+            raise norm from exc
+
+    def _retry_telemetry(self, context: dict) -> dict:
+        """Task retry bilgilerini context'ten normalize eder."""
+        ti = (context or {}).get("ti")
+        if ti is None:
+            return {"try_number": None, "max_tries": None}
+        try_number = getattr(ti, "try_number", None)
+        max_tries = getattr(ti, "max_tries", None)
+        return {"try_number": try_number, "max_tries": max_tries}

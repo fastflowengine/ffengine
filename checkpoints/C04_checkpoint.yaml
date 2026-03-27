@@ -1,0 +1,114 @@
+epic_id: "C04"
+epic_name: "Core Engine"
+status: "COMPLETED"
+session_id: "sess_20260326_c04_001"
+wave: 4
+scope: Community
+started_at: "2026-03-26T00:00:00Z"
+completed_at: "2026-03-26T00:00:00Z"
+test_results:
+  pytest: "PASSED"
+  total: 242
+  c04_core: 49
+  c04_cross_dialect: 105
+  c02_regression: 13
+  c03_regression: 75
+  coverage: "full unit coverage"
+open_risks:
+  - "PythonEngine.run() şu an NotImplementedError fırlatıyor; C05 (YAML Config) ConfigLoader implement edildiğinde _load_task() metodu bağlanmalı."
+  - "TargetWriter.prepare() 'upsert' load_method için PK/UNIQUE ön koşul doğrulaması yapmıyor; C05 veya C11'de eklenebilir."
+  - "Integration test (test_pg_to_pg + test_cross_db_etl) C05 + docker-compose.test.yml tüm DB instance'ları gerektirir; pytest.mark.skip ile işaretli."
+  - "DROP TABLE IF EXISTS Oracle'da syntax hatası verir (Oracle sözdizimi farklı); hedef dialect Oracle ise TargetWriter._drop_if_exists() EXCEPTION WHEN OTHERS bloğuna dönüştürülmeli — C04 scope dışı."
+  - "ETLManager structured log emit etmiyor; LOGGING_SCHEMA.md'deki zorunlu alanlar (stage, task_group_id, rows, duration_seconds vb.) C07 veya C10 kapsamında eklenmelidir."
+  - "Raw DB exception'lar (psycopg, pyodbc, oracledb) EngineError(FFEngineError)'a wrap edilmiyor; C10 exception hiyerarşisi kurulduğunda refactor edilmeli."
+  - "CONFIG_SCHEMA.md'deki 'truncate+insert' load_method, LOAD_METHODS.md'de tanımlı değil ve TargetWriter'da implement edilmedi; referans dokümanlar arasındaki bu tutarsızlık C05 config validasyonunda giderilmeli."
+next_action: "Proceed to C05 (YAML Config) — Wave 3 pending, C04 gate için ön koşul"
+completed_tasks:
+  - task_id: "C04_T01"
+    description: "Package init dosyaları — pipeline, core, integration"
+    files_created:
+      - src/ffengine/pipeline/__init__.py
+      - src/ffengine/core/__init__.py
+      - tests/integration/__init__.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C04_T02"
+    description: "BaseEngine ABC + ETLResult dataclass"
+    files_created:
+      - src/ffengine/core/base_engine.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C04_T03"
+    description: "Transformer — identity passthrough, kural tabanlı cast altyapısı"
+    files_created:
+      - src/ffengine/pipeline/transformer.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C04_T04"
+    description: "SourceReader — fetchmany tabanlı server-side cursor chunk okuyucu"
+    files_created:
+      - src/ffengine/pipeline/source_reader.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C04_T05"
+    description: "TargetWriter — 7 load_method, executemany, per-chunk commit, rollback_batch"
+    files_created:
+      - src/ffengine/pipeline/target_writer.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C04_T06"
+    description: "Streamer — generator pipeline, Queue backpressure, rollback on chunk error"
+    files_created:
+      - src/ffengine/pipeline/streamer.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C04_T07"
+    description: "ETLManager + PythonEngine — BaseEngine implementasyonu, partition_spec WHERE enjeksiyonu"
+    files_created:
+      - src/ffengine/core/etl_manager.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C04_T08"
+    description: "Unit testler — 4 dosya, 49 test, tümü PASSED"
+    files_created:
+      - tests/unit/test_source_reader.py
+      - tests/unit/test_streamer.py
+      - tests/unit/test_target_writer.py
+      - tests/unit/test_etl_manager.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C04_T09"
+    description: "Integration test stub — C05 sonrası aktif edilmek üzere pytest.mark.skip ile işaretli"
+    files_created:
+      - tests/integration/test_pg_to_pg.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C04_T10"
+    description: "C03 typo fix — test_dialect_oracle.py init_oraclee_client → init_oracle_client"
+    files_modified:
+      - tests/unit/test_dialect_oracle.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C04_T11"
+    description: "Cross-dialect unit testleri — 9 kombinasyon (PG/MSSQL/Oracle → PG/MSSQL/Oracle), 105 test"
+    files_created:
+      - tests/unit/test_etl_cross_dialect.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C04_T12"
+    description: "Cross-DB integration test stubs — 9 kombinasyon, pytest.mark.skip ile işaretli"
+    files_created:
+      - tests/integration/test_cross_db_etl.py
+    completed_at: "2026-03-26T00:00:00Z"
+  - task_id: "C04_T13"
+    description: "TEST_MATRIX.md güncelleme — cross-dialect test matrisi ve quoting kuralları tablosu"
+    files_modified:
+      - handbook/reference/TEST_MATRIX.md
+    completed_at: "2026-03-26T00:00:00Z"
+created_files:
+  - src/ffengine/pipeline/__init__.py
+  - src/ffengine/pipeline/source_reader.py
+  - src/ffengine/pipeline/streamer.py
+  - src/ffengine/pipeline/target_writer.py
+  - src/ffengine/pipeline/transformer.py
+  - src/ffengine/core/__init__.py
+  - src/ffengine/core/base_engine.py
+  - src/ffengine/core/etl_manager.py
+  - tests/unit/test_source_reader.py
+  - tests/unit/test_streamer.py
+  - tests/unit/test_target_writer.py
+  - tests/unit/test_etl_manager.py
+  - tests/integration/__init__.py
+  - tests/integration/test_pg_to_pg.py
+  - checkpoints/C04_checkpoint.yaml
+modified_files:
+  - tests/unit/test_dialect_oracle.py
