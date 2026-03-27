@@ -1,0 +1,58 @@
+epic: C07
+title: Airflow Entegrasyonu
+status: COMPLETED
+date: 2026-03-27
+
+summary: |
+  C07 Airflow operator, 3-fazlı DAG pattern ve otomatik DAG üreteci uygulaması tamamlandı.
+
+  Tamamlanan deliverables:
+  - FFEngineOperator (src/ffengine/airflow/operator.py)
+  - XComKeys + build_task_group (src/ffengine/airflow/dag_patterns.py)
+  - generate_dags + register_dags (src/ffengine/airflow/dag_generator.py)
+  - 30 operator unit test (test_operator.py)
+  - 18 DAG pattern/generator test (test_airflow_dag.py)
+  - 3 ETLManager skip_prepare regression test (test_etl_manager.py)
+
+  C06 ve C09 deferred item'lar çözüldü:
+  1. Base WHERE + Partition WHERE AND kombinasyonu (operator'da)
+  2. MappingResolver entegrasyonu (operator plan fazında)
+  3. TargetWriter.prepare() tek sefer çağrılması (skip_prepare parametresi via)
+
+test_metrics: |
+  - 435 total tests passing
+  - 51 new tests added (30 operator + 18 DAG + 3 skip_prepare)
+  - 0 failures, 0 skips
+  - Airflow 3.1.6 compatible
+
+files_created:
+  - src/ffengine/airflow/__init__.py
+  - src/ffengine/airflow/operator.py (280+ lines)
+  - src/ffengine/airflow/dag_patterns.py (180+ lines)
+  - src/ffengine/airflow/dag_generator.py (100+ lines)
+  - tests/unit/test_operator.py (370+ lines)
+  - tests/unit/test_airflow_dag.py (230+ lines)
+
+files_modified:
+  - src/ffengine/core/etl_manager.py (skip_prepare parameter)
+  - tests/unit/test_etl_manager.py (+3 tests)
+  - src/ffengine/airflow/__init__.py (exports)
+
+critical_patterns:
+  - FFEngineOperator.execute() 3-fazlı iç orkestrasyon
+  - combine_where(base, partition) AND kombinasyonu
+  - resolve_dialect(conn_type) → dialect instance
+  - aggregate_results(list[ETLResult]) → ETLResult
+  - build_task_group() → 3 Airflow task (plan >> prepare >> run)
+  - generate_dags() YAML config directory scanning
+  - XComKeys standardized keys for inter-task communication
+
+gate_verification:
+  - plan → prepare → run sırası test ile doğrulandi (test_dependency_order_*)
+  - XCom anahtarları assert edildi (TestXComKeys)
+  - WHERE kombinasyonu doğrulandi (test_where_combination)
+  - MappingResolver entegrasyonu doğrulandi (test_mapping_integration)
+  - skip_prepare usage doğrulandi (test_skip_prepare_used)
+  - Multi-partition scenario doğrulandi (test_happy_path_multi_partition)
+
+next_epic: C08 (ETL Studio UI) — planned but not started

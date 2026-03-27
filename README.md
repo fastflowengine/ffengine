@@ -13,6 +13,36 @@ This repository is intended to become the public `ffengine/ffengine` repository.
 - Public docs: `ffengine-docs`
 - Private website: `ffengine-www`
 
+## Version Compatibility
+
+| Component | Minimum | Tested |
+|---|---|---|
+| Python | 3.12 | 3.12.x |
+| Apache Airflow | 3.0.0 | 3.1.6+ |
+| psycopg2 (Postgres) | 2.9 | 2.9.x |
+| pyodbc (MSSQL) | 4.0 | 4.0.x |
+| oracledb (Oracle) | 2.0 | 2.x |
+
+> **Note:** Airflow is not officially supported on Windows. Use WSL2 or Docker for local development.
+
+## Development Progress (Wave Plan)
+
+| Wave | Epic | Status | Description |
+|---|---|---|---|
+| 1 | C01 | ✅ Done | Project scaffold, Docker, CI skeleton |
+| 2 | C02 | ✅ Done | DBSession + AirflowConnectionAdapter |
+| 3 | C03 | ✅ Done | Dialect layer (Postgres / MSSQL / Oracle) |
+| 3 | C05 | ✅ Done | YAML Config |
+| 4 | C04 | ✅ Done | Core Engine |
+| 4 | C06 | ✅ Done | Partition |
+| 4 | C09 | ✅ Done | Mapping Tools |
+| 5 | C07 | ✅ Done | Airflow Operator & DAG |
+| 5 | C08 | ⬜ Pending | ETL Studio |
+| 5 | C10 | ⬜ Pending | Error Handling |
+| 6 | C11 | ⬜ Pending | Integration Tests & Release |
+
+📖 Full epic specs and agent execution handbook: [`handbook/`](handbook/)
+
 ## Installation
 
 ```bash
@@ -24,6 +54,8 @@ pip install -e .
 - Repository ownership model: GitHub organization, not a shared user account
 - Required branch: `main`
 - Expected protections: PR review, status checks, no direct push to `main`
+- Local and generated artifacts must stay out of Git; update `.gitignore` and
+  untrack accidental binary/runtime files before push
 
 See [docs/github-organization-runbook.md](/c:/fast-flow/FFEngineCommunity/docs/github-organization-runbook.md)
 for the organization bootstrap and migration steps.
@@ -43,6 +75,7 @@ To avoid local port conflicts, the FFEngine development environment allocates is
 ```bash
 docker-compose -p ffengine-core -f docker/docker-compose.yml --env-file .env up -d --remove-orphans
 ```
+*(This launches the Webserver on port 8085, the internal background Scheduler, the Airflow 3 DAG Processor, and the Metadata Postgres database.)*
 
 **Start the Test Databases (Isolated):**
 ```bash
