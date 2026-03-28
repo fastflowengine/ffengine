@@ -53,6 +53,7 @@ services:
     volumes:
       - ../src:/opt/airflow/src
       - ../dags:/opt/airflow/dags
+      - ../projects:/opt/airflow/projects
       - ../plugins:/opt/airflow/plugins
       - ../logs:/opt/airflow/logs
     command: >
@@ -80,6 +81,7 @@ services:
     volumes:
       - ../src:/opt/airflow/src
       - ../dags:/opt/airflow/dags
+      - ../projects:/opt/airflow/projects
       - ../plugins:/opt/airflow/plugins
       - ../logs:/opt/airflow/logs
     command: >
@@ -107,6 +109,7 @@ services:
     volumes:
       - ../src:/opt/airflow/src
       - ../dags:/opt/airflow/dags
+      - ../projects:/opt/airflow/projects
       - ../plugins:/opt/airflow/plugins
       - ../logs:/opt/airflow/logs
     command: >

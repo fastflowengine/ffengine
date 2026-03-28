@@ -20,7 +20,9 @@ from ffengine.errors import http_status_for, normalize_exception
 from ffengine.ui.studio_service import (
     STUDIO_DAG_MARKER,
     create_or_update_dag,
+    discover_connections,
     discover_columns,
+    discover_hierarchy_options,
     discover_schemas,
     discover_tables,
     fetch_timeline_runs,
@@ -56,7 +58,11 @@ def _optional_api_key_dep(
 class DagUpsertPayload(BaseModel):
     model_config = {"extra": "forbid"}
 
-    project: str = "webhook"
+    project: str = Field(..., min_length=1)
+    domain: str = Field(..., min_length=1)
+    level: str = Field(..., min_length=1)
+    flow: str = Field(..., min_length=1)
+    group_no: int = Field(..., ge=1)
     source_conn_id: str = Field(..., min_length=1)
     target_conn_id: str = Field(..., min_length=1)
     source_schema: str = Field(..., min_length=1)
@@ -138,6 +144,28 @@ def api_schemas(conn_id: str = Query(..., min_length=1)) -> dict[str, Any]:
     try:
         items = discover_schemas(conn_id)
         return {"ok": True, "items": items, "count": len(items)}
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@etl_studio_app.get("/api/connections")
+def api_connections() -> dict[str, Any]:
+    try:
+        items = discover_connections()
+        return {"ok": True, "items": items, "count": len(items)}
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@etl_studio_app.get("/api/folder-options")
+def api_folder_options(
+    project: str | None = Query(None),
+    domain: str | None = Query(None),
+    level: str | None = Query(None),
+) -> dict[str, Any]:
+    try:
+        data = discover_hierarchy_options(project=project, domain=domain, level=level)
+        return {"ok": True, **data}
     except Exception as exc:
         _raise_http_from_exception(exc)
 

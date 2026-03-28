@@ -1,0 +1,24 @@
+source_db_var: test_postgres
+target_db_var: test_mssql
+etl_tasks:
+- task_group_id: public_ff_test_data_to_dbo_ff_test_data_psql_v12
+  source_schema: public
+  source_table: ff_test_data
+  source_type: table
+  column_mapping_mode: source
+  target_schema: dbo
+  target_table: ff_test_data_psql
+  load_method: create_if_not_exists_or_truncate
+  where: null
+  batch_size: 10000
+  partitioning:
+    enabled: false
+    mode: auto
+    column: null
+    parts: 2
+    ranges: []
+  tags:
+  - test
+  - public
+  - level1
+  - src_to_odc

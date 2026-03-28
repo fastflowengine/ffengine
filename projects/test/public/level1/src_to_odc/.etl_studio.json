@@ -1,0 +1,20 @@
+{
+  "flow_dir": "/opt/airflow/projects/test/public/level1/src_to_odc",
+  "config_path": "/opt/airflow/projects/test/public/level1/src_to_odc/test_public_level1_src_to_odc_group_12.yaml",
+  "dag_path": "/opt/airflow/dags/test/public/level1/src_to_odc/public_to_odc_level1_group_12_dag.py",
+  "task_group_id": "public_ff_test_data_to_dbo_ff_test_data_psql_v12",
+  "group_no": 12,
+  "tags": [
+    "test",
+    "public",
+    "level1",
+    "src_to_odc"
+  ],
+  "auto_tags": [
+    "test",
+    "public",
+    "level1",
+    "src_to_odc"
+  ],
+  "user_tags": []
+}

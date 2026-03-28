@@ -232,17 +232,41 @@
       <div class="panel-body grid-3">
         <label>
           Project Folder
-          <input id="project" value="webhook" placeholder="ornek: webhook">
+          <input id="project" list="project_options" value="webhook" placeholder="ornek: webhook">
+        </label>
+        <label>
+          Domain
+          <input id="domain" list="domain_options" value="whk" placeholder="ornek: whk">
+        </label>
+        <label>
+          Level
+          <input id="level" list="level_options" value="level1" placeholder="ornek: level1">
+        </label>
+        <label>
+          Flow
+          <input id="flow" list="flow_options" value="src_to_stg" placeholder="ornek: src_to_stg">
+        </label>
+        <label>
+          Group No
+          <input id="group_no" type="number" min="1" value="1">
         </label>
         <label>
           Source DB Connection
-          <input id="source_conn_id" value="ffengine_source" placeholder="ornek: ffengine_source">
+          <select id="source_conn_id">
+            <option value="">Yukleniyor...</option>
+          </select>
         </label>
         <label>
           Target DB Connection
-          <input id="target_conn_id" value="ffengine_target" placeholder="ornek: ffengine_target">
+          <select id="target_conn_id">
+            <option value="">Yukleniyor...</option>
+          </select>
         </label>
       </div>
+      <datalist id="project_options"></datalist>
+      <datalist id="domain_options"></datalist>
+      <datalist id="level_options"></datalist>
+      <datalist id="flow_options"></datalist>
     </section>
 
     <section class="panel">
@@ -465,6 +489,80 @@
       }
     }
 
+    function fillConnectionSelect(selectId, items, preferredConnId) {
+      const select = el(selectId);
+      select.innerHTML = "";
+      if (!items.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "Connection bulunamadi";
+        select.appendChild(opt);
+        return;
+      }
+      for (const item of items) {
+        const opt = document.createElement("option");
+        opt.value = item.conn_id;
+        const suffix = item.conn_type ? ` (${item.conn_type})` : "";
+        opt.textContent = `${item.conn_id}${suffix}`;
+        select.appendChild(opt);
+      }
+      const matched = items.some((x) => x.conn_id === preferredConnId);
+      select.value = matched ? preferredConnId : items[0].conn_id;
+    }
+
+    function fillDatalist(listId, items) {
+      const list = el(listId);
+      list.innerHTML = "";
+      for (const item of items || []) {
+        const opt = document.createElement("option");
+        opt.value = item;
+        list.appendChild(opt);
+      }
+    }
+
+    async function loadFolderOptions() {
+      const p = encodeURIComponent(el("project").value.trim());
+      const d = encodeURIComponent(el("domain").value.trim());
+      const l = encodeURIComponent(el("level").value.trim());
+      const r = await fetch(`${base}/api/folder-options?project=${p}&domain=${d}&level=${l}`);
+      const data = await r.json();
+      if (!r.ok || !data.ok) {
+        show({ status_code: r.status, ...data });
+        return;
+      }
+      fillDatalist("project_options", data.projects || []);
+      fillDatalist("domain_options", data.domains || []);
+      fillDatalist("level_options", data.levels || []);
+      fillDatalist("flow_options", data.flows || []);
+    }
+
+    async function loadConnections() {
+      let items = [];
+      const studioResp = await fetch(`${base}/api/connections`);
+      if (studioResp.ok) {
+        const studioData = await studioResp.json();
+        items = Array.isArray(studioData.items) ? studioData.items : [];
+      } else {
+        // Backward compatibility for running containers that do not yet expose /etl-studio/api/connections.
+        const airflowResp = await fetch("/api/v2/connections?limit=1000&offset=0&order_by=connection_id");
+        const airflowData = await airflowResp.json();
+        if (!airflowResp.ok) {
+          show({ status_code: airflowResp.status, ...airflowData });
+          fillConnectionSelect("source_conn_id", [], "");
+          fillConnectionSelect("target_conn_id", [], "");
+          return;
+        }
+        const rows = Array.isArray(airflowData.connections) ? airflowData.connections : [];
+        items = rows.map((row) => ({
+          conn_id: row.connection_id || "",
+          conn_type: row.connection_type || "",
+        }));
+      }
+
+      fillConnectionSelect("source_conn_id", items, "ffengine_source");
+      fillConnectionSelect("target_conn_id", items, "ffengine_target");
+    }
+
     async function getJson(url) {
       const r = await fetch(url);
       const data = await r.json();
@@ -486,9 +584,13 @@
     function collectPayload() {
       const payload = {
         project: el("project").value.trim() || "webhook",
+        domain: el("domain").value.trim(),
+        level: el("level").value.trim(),
+        flow: el("flow").value.trim(),
+        group_no: Number(el("group_no").value || 1),
         task_group_id: el("task_group_id").value.trim() || undefined,
-        source_conn_id: el("source_conn_id").value.trim(),
-        target_conn_id: el("target_conn_id").value.trim(),
+        source_conn_id: el("source_conn_id").value,
+        target_conn_id: el("target_conn_id").value,
         source_schema: el("source_schema").value.trim(),
         source_table: el("source_table").value.trim(),
         source_type: el("source_type").value,
@@ -554,6 +656,13 @@
       if (state) u += `&state=${encodeURIComponent(state)}`;
       getJson(u);
     };
+
+    el("project").addEventListener("input", loadFolderOptions);
+    el("domain").addEventListener("input", loadFolderOptions);
+    el("level").addEventListener("input", loadFolderOptions);
+
+    loadFolderOptions();
+    loadConnections();
   </script>
 </body>
 </html>

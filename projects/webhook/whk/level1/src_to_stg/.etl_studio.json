@@ -1,0 +1,20 @@
+{
+  "flow_dir": "/opt/airflow/projects/webhook/whk/level1/src_to_stg",
+  "config_path": "/opt/airflow/projects/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_1.yaml",
+  "dag_path": "/opt/airflow/dags/webhook/whk/level1/src_to_stg/whk_to_stg_level1_group_1_dag.py",
+  "task_group_id": "public_ff_test_data_to_master_ff_test_data_psql_v1",
+  "group_no": 1,
+  "tags": [
+    "webhook",
+    "whk",
+    "level1",
+    "src_to_stg"
+  ],
+  "auto_tags": [
+    "webhook",
+    "whk",
+    "level1",
+    "src_to_stg"
+  ],
+  "user_tags": []
+}

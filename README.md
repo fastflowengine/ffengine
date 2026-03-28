@@ -37,16 +37,32 @@ This repository is intended to become the public `ffengine/ffengine` repository.
 | 4 | C06 | ✅ Done | Partition |
 | 4 | C09 | ✅ Done | Mapping Tools |
 | 5 | C07 | ✅ Done | Airflow Operator & DAG |
-| 5 | C08 | ✅ Done | ETL Studio (Airflow 3 FastAPI plugin) — [`handbook/context/C08_ETL_STUDIO.md`](handbook/context/C08_ETL_STUDIO.md) |
+| 5 | C08 | ✅ Done | ETL Studio (Airflow 3 FastAPI plugin) |
 | 5 | C10 | ✅ Done | Error Handling (typed exceptions, handler normalization, structured logs) |
 | 6 | C11 | ✅ Done | Integration Tests & Release |
-
-📖 Full epic specs and agent execution handbook: [`handbook/`](handbook/)
 
 ## UI Architecture Standard
 
 - Airflow 3 plugin extensions (ETL Studio) follow `fastapi_apps + external_views` as the
-  standard model: [`handbook/reference/AIRFLOW3_PLUGIN_STANDARD.md`](handbook/reference/AIRFLOW3_PLUGIN_STANDARD.md)
+  standard model.
+
+## ETL Studio Hierarchical Model
+
+ETL Studio now uses a hard-switched hierarchical model for YAML and DAG generation.
+
+- Projects root (required shape): `FFENGINE_STUDIO_PROJECTS_ROOT/<project>/<domain>/<level>/<flow>/`
+- YAML naming:
+  `<project>_<domain>_<level>_<flow>_group_<n>.yaml` (`n` is positive integer)
+- DAG root mirrors the same hierarchy:
+  `FFENGINE_STUDIO_DAG_ROOT/<project>/<domain>/<level>/<flow>/`
+- DAG naming standard:
+  `<domain>_to_<flow_target>_<level>_group_<n>_dag.py`
+- One DAG Python file per group under the flow path; each DAG parses its own YAML and creates `FFEngineOperator` tasks from `etl_tasks`.
+
+Environment defaults (if not overridden):
+
+- `FFENGINE_STUDIO_PROJECTS_ROOT=/opt/airflow/projects`
+- `FFENGINE_STUDIO_DAG_ROOT=/opt/airflow/dags`
 
 ## Installation
 

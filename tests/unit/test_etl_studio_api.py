@@ -30,7 +30,7 @@ def client():
 def studio_paths(monkeypatch):
     base = Path("logs") / "etl_studio_test_tmp" / f"case_{uuid.uuid4().hex}"
     proj = base / "projects"
-    gen = base / "generated"
+    gen = base / "dags"
     proj.mkdir(parents=True, exist_ok=True)
     gen.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("FFENGINE_STUDIO_PROJECTS_ROOT", str(proj))
@@ -43,6 +43,11 @@ def studio_paths(monkeypatch):
 
 def _minimal_table_payload():
     return {
+        "project": "webhook",
+        "domain": "whk",
+        "level": "level1",
+        "flow": "src_to_stg",
+        "group_no": 1,
         "source_conn_id": "src_c",
         "target_conn_id": "tgt_c",
         "source_schema": "public",
@@ -51,7 +56,6 @@ def _minimal_table_payload():
         "target_table": "orders_stg",
         "source_type": "table",
         "load_method": "append",
-        "project": "p1",
     }
 
 
@@ -70,6 +74,9 @@ def test_index_html_ok(client):
     assert "ETL Configuration Studio" in r.text
     assert 'const base = "/etl-studio"' in r.text
     assert "tryAttachAirflowCss" in r.text
+    assert "loadConnections" in r.text
+    assert "loadFolderOptions" in r.text
+    assert "project_options" in r.text
     assert "Filter & Bindings" in r.text
     assert "Create DAG + YAML" in r.text
 
@@ -133,6 +140,36 @@ def test_columns_mocked(client):
     assert r.json()["count"] == 1
 
 
+def test_connections_mocked(client):
+    conns = [
+        {"conn_id": "ffengine_source", "conn_type": "postgres"},
+        {"conn_id": "ffengine_target", "conn_type": "mssql"},
+    ]
+    with patch.object(api_app_module, "discover_connections", return_value=conns):
+        r = client.get("/api/connections")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["count"] == 2
+    assert body["items"][0]["conn_id"] == "ffengine_source"
+
+
+def test_folder_options_mocked(client):
+    data = {
+        "projects": ["webhook", "ocean"],
+        "domains": ["whk"],
+        "levels": ["level1", "level2"],
+        "flows": ["src_to_stg"],
+    }
+    with patch.object(api_app_module, "discover_hierarchy_options", return_value=data):
+        r = client.get("/api/folder-options?project=webhook&domain=whk&level=level1")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["projects"] == ["webhook", "ocean"]
+    assert body["flows"] == ["src_to_stg"]
+
+
 def test_create_dag_writes_files(client, studio_paths):
     payload = _minimal_table_payload()
     r = client.post("/api/create-dag", json=payload)
@@ -141,14 +178,24 @@ def test_create_dag_writes_files(client, studio_paths):
     assert body["ok"] is True
     assert "task_group_id" in body
     flow = Path(body["flow_dir"])
-    assert (flow / "config.yaml").is_file()
+    assert flow.as_posix().endswith("/projects/webhook/whk/level1/src_to_stg")
     assert (flow / ss.STUDIO_METADATA_NAME).is_file()
     meta = json.loads((flow / ss.STUDIO_METADATA_NAME).read_text(encoding="utf-8"))
     assert "user_tags" in meta
     assert "auto_tags" in meta
     dag_py = Path(body["dag_path"])
+    yaml_name = "webhook_whk_level1_src_to_stg_group_1.yaml"
+    assert (flow / yaml_name).is_file()
+    assert dag_py.as_posix().endswith(
+        "/dags/webhook/whk/level1/src_to_stg/whk_to_stg_level1_group_1_dag.py"
+    )
     assert dag_py.is_file()
-    assert ss.STUDIO_DAG_MARKER in dag_py.read_text(encoding="utf-8")
+    dag_source = dag_py.read_text(encoding="utf-8")
+    assert ss.STUDIO_DAG_MARKER in dag_source
+    assert "yaml.safe_load" in dag_source
+    assert "FFEngineOperator" in dag_source
+    assert "_resolve_task_dependencies" in dag_source
+    assert yaml_name in dag_source
 
 
 def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
@@ -171,7 +218,9 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
     assert r.status_code == 201, r.text
 
     flow = Path(r.json()["flow_dir"])
-    cfg = yaml.safe_load((flow / "config.yaml").read_text(encoding="utf-8"))
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+    )
     task = cfg["etl_tasks"][0]
 
     assert task["source_type"] == "view"
@@ -199,6 +248,52 @@ def test_create_dag_rejects_removed_tags_field(client, studio_paths):
     assert r.status_code == 422
 
 
+def test_create_dag_requires_new_hierarchy_fields(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.pop("flow")
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+
+
+def test_create_dag_rejects_invalid_group_no(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["group_no"] = 0
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+
+
+def test_dag_filename_fallback_when_flow_not_to_pattern(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["flow"] = "delta_sync"
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201
+    dag_py = Path(r.json()["dag_path"])
+    assert dag_py.name == "whk_to_delta_sync_level1_group_1_dag.py"
+
+
+def test_create_dag_same_flow_creates_group_based_dags_and_yamls(client, studio_paths):
+    p1 = _minimal_table_payload()
+    p2 = _minimal_table_payload()
+    p2["group_no"] = 2
+    p2["source_table"] = "customers"
+    p2["target_table"] = "customers_stg"
+
+    r1 = client.post("/api/create-dag", json=p1)
+    assert r1.status_code == 201, r1.text
+    r2 = client.post("/api/create-dag", json=p2)
+    assert r2.status_code == 201, r2.text
+
+    body1 = r1.json()
+    body2 = r2.json()
+    assert body1["dag_path"] != body2["dag_path"]
+
+    flow = Path(body1["flow_dir"])
+    assert (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").is_file()
+    assert (flow / "webhook_whk_level1_src_to_stg_group_2.yaml").is_file()
+    assert Path(body1["dag_path"]).name == "whk_to_stg_level1_group_1_dag.py"
+    assert Path(body2["dag_path"]).name == "whk_to_stg_level1_group_2_dag.py"
+
+
 def test_update_dag_requires_studio_marker(client, studio_paths):
     payload = _minimal_table_payload()
     r0 = client.post("/api/create-dag", json=payload)
@@ -214,9 +309,77 @@ def test_update_dag_ok(client, studio_paths):
     payload = _minimal_table_payload()
     r1 = client.post("/api/create-dag", json=payload)
     assert r1.status_code == 201
+    dag_path = r1.json()["dag_path"]
+    cfg_path = r1.json()["config_path"]
     payload["load_method"] = "replace"
     r2 = client.post("/api/update-dag", json=payload)
     assert r2.status_code == 200
+    assert r2.json()["dag_path"] == dag_path
+    assert r2.json()["config_path"] == cfg_path
+
+
+def test_create_dag_migrates_legacy_generated_dag(client, studio_paths):
+    proj, gen = studio_paths
+    legacy_dir = gen / "generated"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_dag = legacy_dir / "webhook_whk_level1_src_to_stg.py"
+    legacy_dag.write_text(
+        f"{ss.STUDIO_DAG_MARKER}\nprint('legacy')\n",
+        encoding="utf-8",
+    )
+
+    payload = _minimal_table_payload()
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    dag_path = Path(r.json()["dag_path"])
+    assert dag_path.as_posix().endswith("/dags/webhook/whk/level1/src_to_stg/whk_to_stg_level1_group_1_dag.py")
+    assert dag_path.is_file()
+    assert ss.STUDIO_DAG_MARKER in dag_path.read_text(encoding="utf-8")
+
+
+def test_resolve_task_dependencies_depends_on_and_default_order():
+    tasks = [
+        {"task_group_id": "t1"},
+        {"task_group_id": "t2", "depends_on": ["t1"]},
+        {"task_group_id": "t3"},
+    ]
+    edges = ss.resolve_task_dependencies(tasks)
+    assert ("t1", "t2") in edges
+    assert ("t2", "t3") in edges
+
+
+def test_resolve_task_dependencies_invalid_upstream():
+    tasks = [
+        {"task_group_id": "t1"},
+        {"task_group_id": "t2", "depends_on": ["missing"]},
+    ]
+    with pytest.raises(ValueError, match="depends_on gecersiz"):
+        ss.resolve_task_dependencies(tasks)
+
+
+def test_resolve_task_dependencies_cycle_error():
+    tasks = [
+        {"task_group_id": "t1", "depends_on": ["t2"]},
+        {"task_group_id": "t2", "depends_on": ["t1"]},
+    ]
+    with pytest.raises(ValueError, match="cycle"):
+        ss.resolve_task_dependencies(tasks)
+
+
+def test_create_dag_rejects_legacy_payload_shape(client, studio_paths):
+    legacy_payload = {
+        "project_folder": "webhook",
+        "source_conn_id": "src_c",
+        "target_conn_id": "tgt_c",
+        "source_schema": "public",
+        "source_table": "orders",
+        "target_schema": "dwh",
+        "target_table": "orders_stg",
+        "source_type": "table",
+        "load_method": "append",
+    }
+    r = client.post("/api/create-dag", json=legacy_payload)
+    assert r.status_code == 422
 
 
 def test_timeline_mocked(client):
@@ -238,9 +401,15 @@ def test_timeline_mocked(client):
 def test_dag_payload_invalid_source_type():
     with pytest.raises(ValidationError):
         DagUpsertPayload(
+            project="p",
+            domain="d",
+            level="level1",
+            flow="src_to_stg",
+            group_no=1,
             source_conn_id="a",
             target_conn_id="b",
             source_schema="s",
+            source_table="tbl",
             target_schema="t",
             target_table="x",
             source_type="not_a_type",

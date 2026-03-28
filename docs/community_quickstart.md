@@ -110,4 +110,4 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 - [ ] `FFENGINE_ENABLE_CROSS_DB_TESTS=1` ile `test_cross_db_etl.py` 9/9 PASS
 - [ ] `FFENGINE_ENABLE_CROSS_DB_TESTS=1` ile `test_mapping_chain.py` 1/1 PASS
 - [ ] Unit testler 466+ PASS, 0 FAIL
-- [ ] `README.md` ve `handbook/wbs/WBS_COMMUNITY.md` durumu güncel
+- [ ] `README.md` durumu güncel

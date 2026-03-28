@@ -8,6 +8,18 @@ FFEngineOperator, Airflow ortamında FFEngine ETL pipeline'ını orkestre eder:
 import logging
 from datetime import UTC, datetime
 
+try:
+    from airflow.sdk.bases.operator import BaseOperator
+except Exception:  # pragma: no cover - airflow olmayan ortamlarda import fallback
+    try:
+        from airflow.models.baseoperator import BaseOperator
+    except Exception:
+        class BaseOperator:  # type: ignore[no-redef]
+            template_fields: tuple[str, ...] = ()
+
+            def __init__(self, *args, **kwargs):
+                self.task_id = kwargs.get("task_id")
+
 from ffengine.core.base_engine import ETLResult
 from ffengine.errors import error_payload, normalize_exception
 from ffengine.errors.exceptions import ConfigError
@@ -176,7 +188,7 @@ def build_airflow_variable_context() -> dict:
 # ---------------------------------------------------------------------------
 
 
-class FFEngineOperator:
+class FFEngineOperator(BaseOperator):
     """
     FFEngine ETL pipeline'ını Airflow ortamında orkestre eden operatör.
 
@@ -215,15 +227,7 @@ class FFEngineOperator:
         task_id: str = "ffengine_etl",
         **kwargs,
     ):
-        # Airflow BaseOperator uyumluluğu — kurulu ise miras al
-        try:
-            from airflow.models import BaseOperator
-
-            if not isinstance(self, BaseOperator):
-                # Runtime'da BaseOperator mixin
-                pass
-        except ImportError:
-            pass
+        super().__init__(task_id=task_id, **kwargs)
 
         self.config_path = config_path
         self.task_group_id = task_group_id
@@ -231,9 +235,6 @@ class FFEngineOperator:
         self.target_conn_id = target_conn_id
         self.engine = engine
         self._airflow_context = airflow_context
-        self.task_id = task_id
-        # kwargs Airflow BaseOperator'a iletilir
-        self._kwargs = kwargs
 
     def execute(self, context: dict | None = None) -> dict:
         """
