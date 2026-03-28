@@ -90,7 +90,7 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
     level = _slugify(payload.get("level", "level1"), "level1")
     direction = _slugify(payload.get("direction", "src_to_stg"), "src_to_stg")
     source_schema = payload["source_schema"]
-    source_table = payload.get("source_table") or ""
+    source_table = payload["source_table"]
     target_schema = payload["target_schema"]
     target_table = payload["target_table"]
     source_type = payload.get("source_type", "table")
@@ -106,7 +106,7 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
     task: dict[str, Any] = {
         "task_group_id": task_group_id,
         "source_schema": source_schema,
-        "source_table": source_table or None,
+        "source_table": source_table,
         "source_type": source_type,
         "column_mapping_mode": payload.get("column_mapping_mode", "source"),
         "target_schema": target_schema,
@@ -114,10 +114,6 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
         "load_method": load_method,
         "where": payload.get("where"),
         "batch_size": int(payload.get("batch_size", 10000)),
-        "pipe_queue_max": int(payload.get("pipe_queue_max", 8)),
-        "reader_workers": int(payload.get("reader_workers", 3)),
-        "writer_workers": int(payload.get("writer_workers", 5)),
-        "extraction_method": payload.get("extraction_method", "auto"),
         "partitioning": {
             "enabled": bool(payload.get("partitioning_enabled", False)),
             "mode": payload.get("partitioning_mode", "auto"),
@@ -125,17 +121,11 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
             "parts": int(payload.get("partitioning_parts", 2)),
             "ranges": payload.get("partitioning_ranges") or [],
         },
-        "passthrough_full": payload.get("passthrough_full", True),
     }
     if payload.get("column_mapping_mode") == "mapping_file":
         mf = (payload.get("mapping_file") or "").strip()
         if mf:
             task["mapping_file"] = mf
-    sql_text = (payload.get("sql_text") or "").strip()
-    if source_type == "sql" and sql_text:
-        task["inline_sql"] = sql_text
-    if payload.get("sql_file"):
-        task["sql_file"] = payload["sql_file"]
     return task
 
 
@@ -239,7 +229,7 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
     direction = _slugify(payload.get("direction", "src_to_stg"), "src_to_stg")
 
     source_schema = payload["source_schema"]
-    source_table = payload.get("source_table", "")
+    source_table = payload["source_table"]
     target_schema = payload["target_schema"]
     target_table = payload["target_table"]
     source_type = payload.get("source_type", "table")
@@ -256,7 +246,6 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
     flow_dir = root / project / domain / level / direction
     flow_dir.mkdir(parents=True, exist_ok=True)
     _ensure_path_under_root(flow_dir, root)
-    (flow_dir / "sql").mkdir(parents=True, exist_ok=True)
     (flow_dir / "mappings").mkdir(parents=True, exist_ok=True)
 
     config_path = flow_dir / "config.yaml"
@@ -271,14 +260,6 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
         )
     if update and STUDIO_DAG_MARKER not in dag_path.read_text(encoding="utf-8"):
         raise ValueError("Bu DAG ETL Studio tarafindan uretilmemis.")
-
-    sql_file = None
-    sql_text = (payload.get("sql_text") or "").strip()
-    if source_type == "sql" and sql_text:
-        sql_filename = f"{task_group_id}.sql"
-        sql_rel = Path("sql") / sql_filename
-        (flow_dir / sql_rel).write_text(sql_text + "\n", encoding="utf-8")
-        sql_file = str(sql_rel).replace("\\", "/")
 
     auto_tags = _derive_tags(domain, level, direction)
     meta_prev = _load_studio_metadata(flow_dir) if update else None
@@ -299,7 +280,7 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
     task_cfg: dict[str, Any] = {
         "task_group_id": task_group_id,
         "source_schema": source_schema,
-        "source_table": source_table or None,
+        "source_table": source_table,
         "source_type": source_type,
         "column_mapping_mode": payload.get("column_mapping_mode", "source"),
         "target_schema": target_schema,
@@ -307,11 +288,6 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
         "load_method": load_method,
         "where": payload.get("where") or None,
         "batch_size": int(payload.get("batch_size", 10000)),
-        "pipe_queue_max": int(payload.get("pipe_queue_max", 8)),
-        "reader_workers": int(payload.get("reader_workers", 3)),
-        "writer_workers": int(payload.get("writer_workers", 5)),
-        "extraction_method": payload.get("extraction_method", "auto"),
-        "passthrough_full": payload.get("passthrough_full", True),
         "partitioning": {
             "enabled": bool(payload.get("partitioning_enabled", False)),
             "mode": payload.get("partitioning_mode", "auto"),
@@ -324,8 +300,6 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
     mf = (payload.get("mapping_file") or "").strip()
     if mf:
         task_cfg["mapping_file"] = mf
-    if sql_file:
-        task_cfg["sql_file"] = sql_file
 
     config_obj = {
         "source_db_var": payload["source_conn_id"],

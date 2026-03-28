@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ffengine.config.schema import (
     VALID_COLUMN_MAPPING_MODES,
-    VALID_EXTRACTION_METHODS,
     VALID_LOAD_METHODS,
     VALID_PARTITION_MODES,
     VALID_SOURCE_TYPES,
@@ -55,15 +54,13 @@ def _optional_api_key_dep(
 
 
 class DagUpsertPayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
     project: str = "webhook"
-    domain: str = "whk"
-    level: str = "level1"
-    direction: str = "src_to_stg"
-    dag_prefix: str = "ffengine"
     source_conn_id: str = Field(..., min_length=1)
     target_conn_id: str = Field(..., min_length=1)
     source_schema: str = Field(..., min_length=1)
-    source_table: str | None = None
+    source_table: str = Field(..., min_length=1)
     source_type: str = "table"
     target_schema: str = Field(..., min_length=1)
     target_table: str = Field(..., min_length=1)
@@ -71,24 +68,19 @@ class DagUpsertPayload(BaseModel):
     column_mapping_mode: str = "source"
     mapping_file: str | None = None
     where: str | None = None
-    sql_text: str | None = None
-    tags: list[str] | None = None
     batch_size: int = Field(10000, ge=1, le=1_000_000)
-    pipe_queue_max: int = Field(8, ge=1, le=10_000)
-    reader_workers: int = Field(3, ge=1, le=256)
-    writer_workers: int = Field(5, ge=1, le=256)
-    extraction_method: str = "auto"
-    passthrough_full: bool = True
     partitioning_enabled: bool = False
     partitioning_mode: str = "auto"
     partitioning_column: str | None = None
     partitioning_parts: int = Field(2, ge=1, le=10_000)
     partitioning_ranges: list[Any] | None = None
-    task_group_id: str | None = None
+    task_group_id: str | None = Field(default=None, min_length=1)
 
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
+        if v not in {"table", "view"}:
+            raise ValueError("source_type yalnizca 'table' veya 'view' olabilir.")
         if v not in VALID_SOURCE_TYPES:
             raise ValueError(f"source_type gecersiz: {v!r}")
         return v
@@ -107,13 +99,6 @@ class DagUpsertPayload(BaseModel):
             raise ValueError(f"column_mapping_mode gecersiz: {v!r}")
         return v
 
-    @field_validator("extraction_method")
-    @classmethod
-    def _v_extract(cls, v: str) -> str:
-        if v not in VALID_EXTRACTION_METHODS:
-            raise ValueError(f"extraction_method gecersiz: {v!r}")
-        return v
-
     @field_validator("partitioning_mode")
     @classmethod
     def _v_part_mode(cls, v: str) -> str:
@@ -122,9 +107,7 @@ class DagUpsertPayload(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _v_sql_and_mapping(self) -> DagUpsertPayload:
-        if self.source_type == "sql" and not (self.sql_text or "").strip():
-            raise ValueError("source_type='sql' icin sql_text gerekir.")
+    def _v_mapping(self) -> DagUpsertPayload:
         if self.column_mapping_mode == "mapping_file" and not (self.mapping_file or "").strip():
             raise ValueError("column_mapping_mode='mapping_file' icin mapping_file yolu gerekir.")
         return self
@@ -199,11 +182,8 @@ def api_columns(
 
 
 def _payload_to_service_dict(payload: DagUpsertPayload) -> dict[str, Any]:
-    """Pydantic modelden servis dict; tags=None iken anahtari dusur (T09 guncelleme)."""
-    d = payload.model_dump(exclude_none=True)
-    if payload.tags is None:
-        d.pop("tags", None)
-    return d
+    """Pydantic modelden servis katmanina dict donustur."""
+    return payload.model_dump(exclude_none=True)
 
 
 @etl_studio_app.post("/api/create-dag", status_code=201)

@@ -266,9 +266,6 @@
                 <select id="source_type">
                   <option value="table">table</option>
                   <option value="view">view</option>
-                  <option value="sql">sql</option>
-                  <option value="csv">csv</option>
-                  <option value="script">script</option>
                 </select>
               </label>
               <div class="row-2">
@@ -281,25 +278,11 @@
                   <input id="source_table" value="orders">
                 </label>
               </div>
-              <div class="row-2">
-                <label>
-                  Search Table
-                  <input id="search_q" placeholder="min 2 karakter">
-                </label>
-                <label>
-                  Schema Discovery Input
-                  <input id="schema_discovery" placeholder="public">
-                </label>
-              </div>
               <div class="actions">
                 <button class="btn btn-neutral" id="btn_schemas" type="button">Get Schemas</button>
                 <button class="btn btn-neutral" id="btn_tables" type="button">Get Tables</button>
                 <button class="btn btn-neutral" id="btn_columns" type="button">Get Columns</button>
               </div>
-              <label>
-                SQL Text (source_type=sql)
-                <textarea id="sql_text" rows="5" placeholder="SELECT ..."></textarea>
-              </label>
             </div>
 
             <div class="sub-card">
@@ -342,18 +325,6 @@
                 Where Clause
                 <textarea id="where" rows="4" placeholder="ornek: updated_at >= :last_sync"></textarea>
               </label>
-              <label>
-                Extra Tags (comma separated)
-                <input id="extra_tags" placeholder="prod, nightly">
-              </label>
-              <label>
-                DAG Prefix
-                <input id="dag_prefix" value="ffengine">
-              </label>
-              <label>
-                X-ETL-Studio-API-Key (opsiyonel)
-                <input id="api_key" type="password" autocomplete="off">
-              </label>
             </div>
 
             <div class="tab-panel" id="tab-partitioning">
@@ -393,37 +364,12 @@
 
             <div class="tab-panel" id="tab-performance">
               <label>
-                <input id="passthrough_full" type="checkbox" checked style="width:auto; margin-right:8px;">
-                Passthrough Full (Stream)
+                Batch Size
+                <input id="batch_size" type="number" min="1" value="10000">
               </label>
-              <div class="row-2">
-                <label>
-                  Extraction Method
-                  <select id="extraction_method">
-                    <option value="auto">auto</option>
-                    <option value="cursor">cursor</option>
-                    <option value="copy_binary">copy_binary</option>
-                  </select>
-                </label>
-                <label>
-                  Batch Size
-                  <input id="batch_size" type="number" min="1" value="10000">
-                </label>
+              <div class="muted-note">
+                Community engine tek-is parcacikli calisir; worker/extraction ayarlari v2 formdan kaldirildi.
               </div>
-              <div class="row-2">
-                <label>
-                  Pipe Queue Max
-                  <input id="pipe_queue_max" type="number" min="1" value="8">
-                </label>
-                <label>
-                  Reader Workers
-                  <input id="reader_workers" type="number" min="1" value="3">
-                </label>
-              </div>
-              <label>
-                Writer Workers
-                <input id="writer_workers" type="number" min="1" value="5">
-              </label>
             </div>
 
             <div class="tab-panel" id="tab-mapping">
@@ -447,6 +393,26 @@
           <button class="btn btn-primary" id="btn_update" type="button">Update DAG + YAML</button>
           <button class="btn btn-neutral" id="btn_timeline" type="button">Load Timeline</button>
         </div>
+        <div class="row-2" style="margin-top:10px;">
+          <label>
+            Timeline DAG ID (opsiyonel)
+            <input id="timeline_dag_id" placeholder="ffengine_config_task">
+          </label>
+          <label>
+            Timeline State (opsiyonel)
+            <select id="timeline_state">
+              <option value="">all</option>
+              <option value="success">success</option>
+              <option value="failed">failed</option>
+              <option value="running">running</option>
+              <option value="queued">queued</option>
+            </select>
+          </label>
+        </div>
+        <label style="margin-top:8px;">
+          Timeline Limit
+          <input id="timeline_limit" type="number" min="1" max="200" value="50">
+        </label>
         <div class="muted-note">
           Not: Bu surum tek task payload ile config olusturur. DAG dosyasi ve YAML otomatik uretilir.
         </div>
@@ -488,13 +454,6 @@
 
     function el(id) { return document.getElementById(id); }
 
-    function parseTags(raw) {
-      return (raw || "")
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean);
-    }
-
     function parseJsonArray(raw) {
       const text = (raw || "").trim();
       if (!text) return [];
@@ -504,13 +463,6 @@
       } catch (_err) {
         return [];
       }
-    }
-
-    function postHeaders() {
-      const headers = { "Content-Type": "application/json" };
-      const apiKey = el("api_key").value.trim();
-      if (apiKey) headers["X-ETL-Studio-API-Key"] = apiKey;
-      return headers;
     }
 
     async function getJson(url) {
@@ -523,7 +475,7 @@
     async function postJson(url, body) {
       const r = await fetch(url, {
         method: "POST",
-        headers: postHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
       const data = await r.json();
@@ -532,18 +484,13 @@
     }
 
     function collectPayload() {
-      const tags = parseTags(el("extra_tags").value);
       const payload = {
         project: el("project").value.trim() || "webhook",
-        domain: "whk",
-        level: "level1",
-        direction: "src_to_stg",
-        dag_prefix: el("dag_prefix").value.trim() || "ffengine",
         task_group_id: el("task_group_id").value.trim() || undefined,
         source_conn_id: el("source_conn_id").value.trim(),
         target_conn_id: el("target_conn_id").value.trim(),
         source_schema: el("source_schema").value.trim(),
-        source_table: el("source_table").value.trim() || undefined,
+        source_table: el("source_table").value.trim(),
         source_type: el("source_type").value,
         target_schema: el("target_schema").value.trim(),
         target_table: el("target_table").value.trim(),
@@ -551,20 +498,13 @@
         column_mapping_mode: el("column_mapping_mode").value,
         mapping_file: el("mapping_file").value.trim() || undefined,
         where: el("where").value.trim() || undefined,
-        sql_text: el("sql_text").value.trim() || undefined,
         batch_size: Number(el("batch_size").value || 10000),
-        pipe_queue_max: Number(el("pipe_queue_max").value || 8),
-        reader_workers: Number(el("reader_workers").value || 3),
-        writer_workers: Number(el("writer_workers").value || 5),
-        extraction_method: el("extraction_method").value,
-        passthrough_full: !!el("passthrough_full").checked,
         partitioning_enabled: !!el("partitioning_enabled").checked,
         partitioning_mode: el("partitioning_mode").value,
         partitioning_column: el("partitioning_column").value.trim() || undefined,
         partitioning_parts: Number(el("partitioning_parts").value || 2),
         partitioning_ranges: parseJsonArray(el("partitioning_ranges").value),
       };
-      if (tags.length) payload.tags = tags;
       return payload;
     }
 
@@ -586,12 +526,9 @@
 
     el("btn_tables").onclick = () => {
       const conn = el("source_conn_id").value.trim();
-      const schema = (el("schema_discovery").value.trim() || el("source_schema").value.trim());
-      const q = el("search_q").value.trim();
+      const schema = el("source_schema").value.trim();
       if (!conn || !schema) return show({ ok: false, detail: "conn_id ve schema zorunlu" });
-      let u = `${base}/api/tables?conn_id=${encodeURIComponent(conn)}&schema=${encodeURIComponent(schema)}&limit=50&offset=0`;
-      if (q) u += `&q=${encodeURIComponent(q)}`;
-      getJson(u);
+      getJson(`${base}/api/tables?conn_id=${encodeURIComponent(conn)}&schema=${encodeURIComponent(schema)}&limit=50&offset=0`);
     };
 
     el("btn_columns").onclick = () => {
@@ -608,9 +545,13 @@
     el("btn_update").onclick = () => postJson(`${base}/api/update-dag`, collectPayload());
 
     el("btn_timeline").onclick = () => {
-      const taskGroup = el("task_group_id").value.trim();
-      let u = `${base}/api/timeline?limit=50`;
-      if (taskGroup) u += `&dag_id=${encodeURIComponent(taskGroup)}`;
+      const dagId = el("timeline_dag_id").value.trim() || el("task_group_id").value.trim();
+      const state = el("timeline_state").value;
+      const limitRaw = Number(el("timeline_limit").value || 50);
+      const limit = Math.min(200, Math.max(1, limitRaw));
+      let u = `${base}/api/timeline?limit=${limit}`;
+      if (dagId) u += `&dag_id=${encodeURIComponent(dagId)}`;
+      if (state) u += `&state=${encodeURIComponent(state)}`;
       getJson(u);
     };
   </script>

@@ -5,6 +5,8 @@ C08_T13 — ETL Studio FastAPI endpoint unit/API testleri.
 from __future__ import annotations
 
 import json
+import shutil
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,12 +27,18 @@ def client():
 
 
 @pytest.fixture
-def studio_paths(tmp_path, monkeypatch):
-    proj = tmp_path / "projects"
-    gen = tmp_path / "generated"
+def studio_paths(monkeypatch):
+    base = Path("logs") / "etl_studio_test_tmp" / f"case_{uuid.uuid4().hex}"
+    proj = base / "projects"
+    gen = base / "generated"
+    proj.mkdir(parents=True, exist_ok=True)
+    gen.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("FFENGINE_STUDIO_PROJECTS_ROOT", str(proj))
     monkeypatch.setenv("FFENGINE_STUDIO_DAG_ROOT", str(gen))
-    return proj, gen
+    try:
+        yield proj, gen
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def _minimal_table_payload():
@@ -44,9 +52,6 @@ def _minimal_table_payload():
         "source_type": "table",
         "load_method": "append",
         "project": "p1",
-        "domain": "dom",
-        "level": "level1",
-        "direction": "src_to_stg",
     }
 
 
@@ -146,21 +151,15 @@ def test_create_dag_writes_files(client, studio_paths):
     assert ss.STUDIO_DAG_MARKER in dag_py.read_text(encoding="utf-8")
 
 
-def test_create_dag_writes_yaml_with_advanced_fields(client, studio_paths):
+def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
     payload = _minimal_table_payload()
     payload.update(
         {
-            "source_type": "sql",
-            "sql_text": "select id, amount from public.orders where amount > 10",
+            "source_type": "view",
             "column_mapping_mode": "mapping_file",
             "mapping_file": "mappings/orders_map.yaml",
             "where": "id > 10",
             "batch_size": 20000,
-            "pipe_queue_max": 16,
-            "reader_workers": 4,
-            "writer_workers": 7,
-            "extraction_method": "cursor",
-            "passthrough_full": False,
             "partitioning_enabled": True,
             "partitioning_mode": "percentile",
             "partitioning_column": "id",
@@ -175,33 +174,29 @@ def test_create_dag_writes_yaml_with_advanced_fields(client, studio_paths):
     cfg = yaml.safe_load((flow / "config.yaml").read_text(encoding="utf-8"))
     task = cfg["etl_tasks"][0]
 
-    assert task["source_type"] == "sql"
+    assert task["source_type"] == "view"
     assert task["column_mapping_mode"] == "mapping_file"
     assert task["mapping_file"] == "mappings/orders_map.yaml"
     assert task["batch_size"] == 20000
-    assert task["pipe_queue_max"] == 16
-    assert task["reader_workers"] == 4
-    assert task["writer_workers"] == 7
-    assert task["extraction_method"] == "cursor"
-    assert task["passthrough_full"] is False
     assert task["partitioning"]["enabled"] is True
     assert task["partitioning"]["mode"] == "percentile"
     assert task["partitioning"]["column"] == "id"
     assert task["partitioning"]["parts"] == 4
     assert task["partitioning"]["ranges"] == [{"min": 1, "max": 100}]
-    assert "sql_file" in task
-    assert (flow / task["sql_file"]).is_file()
 
 
-def test_create_dag_with_tags(client, studio_paths):
+def test_create_dag_rejects_removed_fields(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["reader_workers"] = 4
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+
+
+def test_create_dag_rejects_removed_tags_field(client, studio_paths):
     p = _minimal_table_payload()
     p["tags"] = ["prod", "nightly"]
     r = client.post("/api/create-dag", json=p)
-    assert r.status_code == 201
-    flow = Path(r.json()["flow_dir"])
-    meta = json.loads((flow / ss.STUDIO_METADATA_NAME).read_text(encoding="utf-8"))
-    assert "prod" in meta["user_tags"]
-    assert "nightly" in meta["tags"]
+    assert r.status_code == 422
 
 
 def test_update_dag_requires_studio_marker(client, studio_paths):
