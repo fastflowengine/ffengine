@@ -1,18 +1,15 @@
-# ETL Studio UI Plugin Pattern
+﻿# ETL Studio UI Plugin Pattern
 
-## Amaç
-Apache Airflow 3 sol menüsüne ETL Studio'yu **ayrı bir üst seviye nav öğesi** olarak eklemek
-ve FastAPI tabanlı ETL/YAML/DAG yönetim ekranını sunmak.
+## Amac
+Airflow 3 sol menuye ETL Studio'yu ayri ust seviye nav ogesi olarak eklemek ve FastAPI tabanli ETL/YAML/DAG yonetim ekranini sunmak.
 
-## Kısıt
-UI katmanı her iki versiyonda ortaktır. Enterprise özellikler UI'da görünebilir,
-ancak runtime desteği scope'a göre kontrol edilmelidir.
+## Kisit
+Bu pattern ETL Studio'nin source->target transfer odakli sade v2 sozlesmesini anlatir.
 
 ---
 
-## Airflow 3 Plugin Kayıt Yapısı
+## Airflow 3 Plugin Kayit Yapisi
 ```python
-# src/ffengine/ui/plugin.py
 from airflow.plugins_manager import AirflowPlugin
 from ffengine.ui.api_app import etl_studio_app
 
@@ -31,75 +28,54 @@ class ETLStudioPlugin(AirflowPlugin):
             "href": "/etl-studio/",
             "destination": "nav",
             "url_route": "etl_studio",
-            # "browse"|"docs"|"admin"|"user" dışı: ayrı üst menü; "admin" ile ETL Studio Yönetici altına düşer.
             "category": "etl_studio",
         }
     ]
 ```
 
-## Ekranlar ve Davranışlar
-
-| Ekran | Yol | Davranış |
+## Ekranlar ve Davranislar
+| Ekran | Yol | Davranis |
 |---|---|---|
-| Ana ekran | `/etl-studio/` | ETL Configuration Studio (Global Settings + Task #1 + sekmeler) |
-| Şema keşfi | `/etl-studio/api/schemas` | Seçili connection'daki şema listesi |
-| Tablo keşfi | `/etl-studio/api/tables?schema=X&q=Y` | 50 tablo limiti; `q` ile typeahead filtre |
-| DAG oluştur | `/etl-studio/api/create-dag` | YAML + DAG dosyası üretir; SQL ayrı `.sql` dosyasına yazılır |
-| DAG güncelle | `/etl-studio/api/update-dag` | Mevcut config güncellenir; DAG dosyası yeniden üretilir |
-| Timeline | `/etl-studio/api/timeline?limit=&dag_id=&state=` | Son DagRun kayıtları; `dag_id` ve `state` ile filtre (T10) |
+| Ana ekran | `/etl-studio/` | ETL Configuration Studio |
+| Sema kesfi | `/etl-studio/api/schemas` | Conn'a ait schema listesi |
+| Tablo kesfi | `/etl-studio/api/tables?schema=X&q=Y` | 50 limit + offset, `q` opsiyonel |
+| DAG olustur | `/etl-studio/api/create-dag` | YAML + DAG dosyasi uretir |
+| DAG guncelle | `/etl-studio/api/update-dag` | Config ve DAG'i gunceller |
+| Timeline | `/etl-studio/api/timeline?limit=&dag_id=&state=` | DagRun listesi + filtre |
 
-## Airflow 3 UI uyumu
-- Sayfa, Airflow 3 static CSS aday yollarını (`/static/dist/main.css` vb.) **dinamik** olarak
-  yüklemeyi dener; bulunamazsa local fallback CSS ile çalışır.
-- Form düzeni eski ETL studio ekranına benzer şekilde bölümlenir:
-  - Global Settings (Project & DB)
-  - Task paneli (Source/Target)
-  - Sekmeler: Filter & Bindings, Partitioning, Performance, Mapping
-- Mevcut implementasyon tek-task payload üretir; backend `config.yaml` içine tek bir `etl_tasks[0]`
-  yazar ve DAG dosyasını `register_dags(...)` üzerinden üretir.
+## Guncel Payload Pattern
+Form payload'i yalnizca aktif alanlari gonderir:
+- `project`
+- `source_conn_id`, `target_conn_id`
+- `source_schema`, `source_table`, `source_type(table|view)`
+- `target_schema`, `target_table`, `load_method`
+- `column_mapping_mode`, `mapping_file?`
+- `where?`, `batch_size`
+- `partitioning_*`
+- `task_group_id?`
 
-## Şema Keşfi Kuralları
-- Maksimum 50 tablo döner; fazlası sayfalanır
-- Arama filtresi harf girildiğinde tetiklenir (typeahead — minimum 2 karakter)
-- Kolon metadata: ad, tip, nullable, precision, scale
-- Büyük tablolarda (>1M satır) satır sayısı tahmini gösterilir, kesin değil
+`DagUpsertPayload` strict'tir (`extra=forbid`).
 
-## DAG Oluşturma Kuralları
-- `task_group_id` → `{src_schema}_{src_table}_to_{tgt_schema}_{tgt_table}_v1` formatında otomatik üretilir
-- SQL sorgusu varsa `sql/` dizinine ayrı dosya olarak yazılır; `config.yaml`'da `sql_file:` ile referans verilir
-- Tag'ler dizin yolundan otomatik türetilir: `{domain}/{level}/{direction}`; `.etl_studio.json` içinde `auto_tags` / `user_tags` ayrımı (T09)
-- Üretilen dosyalar `FFENGINE_STUDIO_PROJECTS_ROOT` altında `projects/{proje}/{domain}/level{N}/{yön}/` dizinine yazılır; DAG `.py` dosyası `FFENGINE_STUDIO_DAG_ROOT` altında (T08 path kontrolü)
-- Create/Update öncesi pipeline gövdesi `ConfigValidator` ile doğrulanır (T06)
+## Kaldirilan Alanlar
+Asagidaki alanlar UI/API v2'den kaldirilmistir:
+- `sql_text`, `tags`, `dag_prefix`
+- `reader_workers`, `writer_workers`, `pipe_queue_max`
+- `extraction_method`, `passthrough_full`
 
-## Tag Yönetimi
-```python
-# Dizin yapısından otomatik tag türetme
-path = "projects/webhook/whk/level1/src_to_stg"
-tags = ["whk", "level1", "src_to_stg"]
+## Timeline UX
+UI'da timeline icin su filtreler vardir:
+- `dag_id`
+- `state`
+- `limit` (1..200)
 
-# UI'den ek tag eklenebilir; otomatik tag'ler silinmez
-```
-
-## Enterprise UI Notu
-Enterprise özellikleri (queue depth gösterimi, throughput grafiği, multi-lane status)
-UI'da render edilebilir ancak sayfa render öncesinde şu kontrol yapılmalıdır:
-```python
-from ffengine.core.engine_interface import BaseEngine
-is_enterprise = BaseEngine.detect("auto").is_available() and \
-                type(BaseEngine.detect("auto")).__name__ == "CEngine"
-```
-
-## Mutasyon API güvenliği (T12)
-- Ortamda `ETL_STUDIO_API_KEY` tanımlıysa `POST /api/create-dag` ve `POST /api/update-dag` istekleri `X-ETL-Studio-API-Key` başlığı ile aynı değeri göndermelidir; aksi halde 401.
+## Mutasyon API Guvenligi
+- `ETL_STUDIO_API_KEY` tanimliysa `POST /api/create-dag` ve `POST /api/update-dag` icin `X-ETL-Studio-API-Key` zorunludur.
 
 ## Agent Kontrol Listesi
-1. Plugin `AirflowPlugin` sınıfından mı türetiliyor?
-2. `fastapi_apps` içinde `name/app/url_prefix` alanları var mı?
-3. `external_views` ile sol menüye ETL Studio bağlantısı eklendi mi?
-4. Legacy FAB alanları (`flask_blueprints`, `appbuilder_views`) kullanılmıyor mu?
-5. Şema keşfi 50 tablo limitini uyguluyor mu?
-6. DAG oluşturma SQL'i ayrı dosyaya mı yazıyor?
-7. Tag'ler dizin yolundan türetiliyor mu?
-8. Enterprise-only görünümler `is_enterprise` kontrolüne bağlı mı?
-9. Production’da mutasyon endpoint’leri için `ETL_STUDIO_API_KEY` + başlık politikası net mi?
-10. `DagUpsertPayload` alanları `VALID_*` şema sabitleriyle uyumlu mu (T05/T06)?
+1. Plugin `AirflowPlugin`'den turemis mi?
+2. `fastapi_apps` icinde `name/app/url_prefix` var mi?
+3. `external_views` ile nav girisi ekli mi?
+4. Legacy FAB alanlari kullanilmiyor mu?
+5. UI payload'i guncel sade sozlesmeyle uyumlu mu?
+6. Kaldirilan alanlar API'de 422 donuyor mu?
+7. Timeline filtreleri UI'dan API'ye dogru tasiniyor mu?
