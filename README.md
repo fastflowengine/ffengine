@@ -64,6 +64,11 @@ pip install -e .
 py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/integration/test_cross_db_etl.py::test_pg_to_mssql tests/integration/test_cross_db_etl.py::test_pg_to_oracle tests/integration/test_mapping_chain.py -q
 ```
 
+## Airflow Bugfix Notes
+
+- Detailed Airflow 3.1.6 execution/scheduler bugfix and verification guide:
+  [`docs/airflow-execution-api-bugfix.md`](docs/airflow-execution-api-bugfix.md)
+
 ## Governance
 
 - Repository ownership model: GitHub organization, not a shared user account

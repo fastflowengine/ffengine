@@ -1,52 +1,52 @@
-# FFEngine — Agent Execution Handbook
+﻿# FFEngine - Agent Authority and Execution Rules
 
-Bu paket, FFEngine için **uygulanabilir agent execution handbook** setidir.
+This file is the single canonical authority for agent behavior in this repository.
 
-## Paket Bölümleri
-- `skills/`: Kod yazma kalıpları ve çalıştırılabilir örüntüler
-- `context/`: Epic ve dalga bazlı bağlam dosyaları
-- `reference/`: Bağlayıcı teknik sözleşmeler
-- `wbs/`: Wave planı, gate testleri, review ve handoff süreçleri
-- `.agent/workflows/`: `/komut` ile tetiklenen yürütme protokolleri
-- `.antigravity/skills/`: Hızlı yüklenen özet skill girişleri
+## Purpose
+Define mandatory rules, precedence, and execution flow for all agents (Claude, Gemini, and others) working on FFEngine.
 
-## Agent Otonomi Dokümanları
-- `reference/SESSION_CHECKPOINT.md`: Oturumlar arası ilerleme takibi ve checkpoint şeması
-- `reference/AGENT_DECISION_TREE.md`: Agent karar ağacı — dur/devam/eskalasyon kuralları
-- `reference/AIRFLOW3_PLUGIN_STANDARD.md`: Airflow 3 ETL Studio standart plugin mimarisi
-- `.agent/workflows/error-recovery.md`: Hata kurtarma workflow'u
-- `wbs/EPIC_ARTIFACTS.md`: Epic bazlı beklenen çıktı artefaktları
-- `reference/BREAKING_CHANGE_POLICY.md`: Kırılıcı değişiklik yönetim politikası
-- `reference/MULTI_AGENT_HANDOFF.md`: Multi-agent işbirliği protokolü
+## Canonical Authority
+Conflict resolution must follow this order:
+1. `AGENTS.md` (this file)
+2. Relevant `wbs/*.md` (wave plan, gates, delivery)
+3. Relevant `context/*.md` (epic scope and constraints)
+4. `reference/*.md` (technical contracts and policies)
+5. `.agent/workflows/*.md` (operational protocols)
+6. `skills/*.md` (implementation patterns)
+7. Legacy code examples or historical outputs
 
-## Authority Order
-Çelişki halinde aşağıdaki sıra geçerlidir:
-1. `GEMINI.md`
-2. İlgili `wbs/*.md`
-3. İlgili `context/*.md`
-4. `reference/*.md`
-5. `.agent/workflows/*.md`
-6. `skills/*.md`
-7. Kod içi eski örnekler / geçmiş çıktılar
+`CLAUDE.md` and `GEMINI.md` are entry wrappers only. They cannot override this file.
 
-## Temel Mimari Özeti
-- **Community**: Query-centric Python Engine, `fetchmany + executemany`, standart DBAPI, Airflow-native orchestration
-- **Enterprise**: Queue-aware C Engine, ingress/egress queue, native bulk API, adaptive micro-batch, multi-lane runtime
-- **Ortak Katmanlar**: ETL Studio UI, dialect layer, TypeMapper, YAML config, DBSession, FFEngineOperator, Auto-DAG Generator, 3 fazlı DAG pattern
+## Mandatory Rules
+- Decide scope first: `Common`, `Community`, or `Enterprise`.
+- Do not break wave order. Do not implement a task before prior gate criteria pass.
+- Community scope uses Python engine only (`fetchmany + executemany`, DBAPI-based path).
+- Do not leak Enterprise-only capabilities into Community (`COPY`, `BCP`, `OCI_BATCH`, `ack/nack`, `DLQ`).
+- Write tests for every change. Do not ship without tests.
+- Use structured logging. Do not use `print()`.
+- Every delivery must include review result and handoff/checkpoint update.
 
-## Çalışma Şekli
-1. Scope'u belirle: Common / Community / Enterprise.
-2. İşi WBS task seviyesinde al.
-3. Gerekirse `.agent/workflows/` altındaki uygun workflow'u başlat.
-4. Context ile kapsamı netleştir.
-5. Reference dosyalarına göre kontratları kilitle.
-6. Skills içindeki örüntülerle uygula.
-7. Review prompt ile doğrula.
-8. Handoff üret.
+## Workflow Requirements
+Use workflow docs when relevant:
+- New epic start: `.agent/workflows/start-epic.md`
+- Config generation: `.agent/workflows/generate-config.md`
+- Mapping generation: `.agent/workflows/generate-mapping.md`
+- Test/gate execution: `.agent/workflows/run-tests.md`
+- Incident recovery: `.agent/workflows/error-recovery.md`
 
-## Zorunlu Kurallar
-- Wave sırasını bozma.
-- Community fazında Enterprise capability sızdırma.
-- Enterprise fazında ortak katmanları kırma.
-- Testsiz teslim yapma.
-- Her görevde kapsam sınırı ve delivery semantics kararını açıkla.
+## Working Model
+1. Lock scope and wave from WBS.
+2. Read epic context and related contracts.
+3. Implement with skills and coding standards.
+4. Run required tests and gate checks.
+5. Produce review + handoff/checkpoint artifacts.
+
+## Project Status Baseline
+- Active baseline: Community GA waves.
+- Enterprise waves open only after Community GA acceptance criteria are met.
+
+## Document Roles
+- `wbs/`: planning, dependencies, gate checks, release progression
+- `context/`: epic-level implementation boundaries
+- `reference/`: stable technical contracts and policies
+- `skills/`: coding patterns and reusable implementation templates
