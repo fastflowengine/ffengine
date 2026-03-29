@@ -23,5 +23,12 @@ class ETLStudioPlugin(AirflowPlugin):
             "destination": "nav",
             "url_route": "etl_studio",
             "category": "etl_studio",
-        }
+        },
+        {
+            "name": "ETL Studio Update",
+            "href": "/etl-studio/?dag_id={DAG_ID}",
+            "destination": "dag",
+            "url_route": "etl_studio_update",
+            "category": "etl_studio",
+        },
     ]

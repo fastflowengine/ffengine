@@ -6,7 +6,6 @@ FFEngineOperator, Airflow ortamında FFEngine ETL pipeline'ını orkestre eder:
 """
 
 import logging
-import os
 from datetime import UTC, datetime
 
 try:
@@ -26,7 +25,6 @@ from ffengine.errors import error_payload, normalize_exception
 from ffengine.errors.exceptions import ConfigError
 
 _log = logging.getLogger(__name__)
-_DEBUG_BREAK_DAG_ID = "ffengine_config_group_12_public_ff_test_data_to_dbo_ff_test_data_psql_v12"
 
 
 def _log_structured(
@@ -185,32 +183,6 @@ def build_airflow_variable_context() -> dict:
     return _AirflowVarProxy()
 
 
-def _maybe_debug_breakpoint(context: dict, *, enabled_once: bool) -> bool:
-    if enabled_once:
-        return True
-    if os.getenv("ENABLE_DEBUG", "0") != "1":
-        return False
-    dag = (context or {}).get("dag")
-    ti = (context or {}).get("ti")
-    dag_id = getattr(dag, "dag_id", "") or getattr(ti, "dag_id", "")
-    if dag_id != _DEBUG_BREAK_DAG_ID:
-        return False
-    try:
-        import debugpy
-
-        if not debugpy.is_client_connected():
-            _log.warning(
-                "Debug breakpoint skipped: debug client not connected (dag_id=%s, port=%s)",
-                dag_id,
-                os.getenv("DEBUGPY_PORT", ""),
-            )
-            return False
-        debugpy.breakpoint()
-        return True
-    except Exception:
-        return False
-
-
 # ---------------------------------------------------------------------------
 # FFEngineOperator
 # ---------------------------------------------------------------------------
@@ -364,12 +336,8 @@ class FFEngineOperator(BaseOperator):
                     base_where = task_config.get("_resolved_where")
                     results: list[ETLResult] = []
                     manager = ETLManager()
-                    debug_break_done = False
 
                     for spec in specs:
-                        debug_break_done = _maybe_debug_breakpoint(
-                            context, enabled_once=debug_break_done
-                        )
                         effective = dict(task_config)
                         effective["_resolved_where"] = combine_where(
                             base_where, spec.get("where")
