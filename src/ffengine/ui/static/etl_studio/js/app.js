@@ -13,16 +13,24 @@ const base = "/etl-studio";
       try {
         const root = (doc && doc.documentElement) ? doc.documentElement : document.documentElement;
         const body = (doc && doc.body) ? doc.body : document.body;
+        let isExplicitlyDark = false;
         if (root.hasAttribute("data-theme")) {
             document.documentElement.setAttribute("data-theme", root.getAttribute("data-theme"));
+            if (root.getAttribute("data-theme") === "dark") isExplicitlyDark = true;
         }
         if (root.hasAttribute("data-color-mode")) {
             document.documentElement.setAttribute("data-color-mode", root.getAttribute("data-color-mode"));
+            if (root.getAttribute("data-color-mode") === "dark") isExplicitlyDark = true;
         }
         if (root.classList.contains("chakra-ui-dark") || (body && body.classList.contains("chakra-ui-dark"))) {
             document.documentElement.classList.add("chakra-ui-dark");
+            isExplicitlyDark = true;
         } else if (root.classList.contains("chakra-ui-light") || (body && body.classList.contains("chakra-ui-light"))) {
             document.documentElement.classList.add("chakra-ui-light");
+        }
+        
+        if (isExplicitlyDark) {
+            document.documentElement.classList.add("force-dark-mode");
         }
         const rootStyle = window.getComputedStyle(root);
         const st = window.getComputedStyle(body);
