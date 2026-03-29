@@ -1,5 +1,5 @@
-"""
-C08_T13 — ETL Studio FastAPI endpoint unit/API testleri.
+﻿"""
+C08_T13 â€” ETL Studio FastAPI endpoint unit/API testleri.
 """
 
 from __future__ import annotations
@@ -47,7 +47,6 @@ def _minimal_table_payload():
         "domain": "whk",
         "level": "level1",
         "flow": "src_to_stg",
-        "group_no": 1,
         "source_conn_id": "src_c",
         "target_conn_id": "tgt_c",
         "source_schema": "public",
@@ -76,13 +75,22 @@ def test_index_html_ok(client):
     assert "tryAttachAirflowCss" in r.text
     assert "loadConnections" in r.text
     assert "loadFolderOptions" in r.text
-    assert "preload_dag_id" in r.text
-    assert "Load DAG Context" in r.text
+    assert "preload_dag_id" not in r.text
+    assert "Load DAG Context" not in r.text
     assert "resolveInitialDagId" in r.text
     assert "/api/dag-config" in r.text
-    assert "project_options" in r.text
+    assert "folder_path_display" in r.text
+    assert "Select / Create Folder" in r.text
+    assert "folder_picker_modal" in r.text
+    assert "Group No" not in r.text
     assert "Filter & Bindings" in r.text
-    assert "Create DAG + YAML" in r.text
+    assert "Save Configuration" in r.text
+    assert "+ Add New Task" in r.text
+    assert "Update DAG + YAML" not in r.text
+    assert "Load Timeline" not in r.text
+    assert "Timeline DAG ID (opsiyonel)" not in r.text
+    assert "Timeline State (opsiyonel)" not in r.text
+    assert "Timeline Limit" not in r.text
 
 
 def test_schemas_mocked(client):
@@ -174,6 +182,24 @@ def test_folder_options_mocked(client):
     assert body["flows"] == ["src_to_stg"]
 
 
+def test_folder_options_source_param_passed(client):
+    data = {
+        "projects": ["webhook"],
+        "domains": ["whk"],
+        "levels": ["level1"],
+        "flows": ["src_to_stg"],
+    }
+    with patch.object(api_app_module, "discover_hierarchy_options", return_value=data) as mocked:
+        r = client.get("/api/folder-options?project=webhook&source=dag")
+    assert r.status_code == 200
+    mocked.assert_called_once_with(
+        project="webhook",
+        domain=None,
+        level=None,
+        source="dag",
+    )
+
+
 def test_create_dag_writes_files(client, studio_paths):
     payload = _minimal_table_payload()
     r = client.post("/api/create-dag", json=payload)
@@ -245,6 +271,13 @@ def test_create_dag_rejects_removed_fields(client, studio_paths):
     assert r.status_code == 422
 
 
+def test_create_dag_rejects_group_no_field(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["group_no"] = 3
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+
+
 def test_create_dag_rejects_removed_tags_field(client, studio_paths):
     p = _minimal_table_payload()
     p["tags"] = ["prod", "nightly"]
@@ -278,7 +311,6 @@ def test_dag_filename_fallback_when_flow_not_to_pattern(client, studio_paths):
 def test_create_dag_same_flow_creates_group_based_dags_and_yamls(client, studio_paths):
     p1 = _minimal_table_payload()
     p2 = _minimal_table_payload()
-    p2["group_no"] = 2
     p2["source_table"] = "customers"
     p2["target_table"] = "customers_stg"
 
@@ -476,6 +508,67 @@ def test_resolve_dag_config_for_update_legacy_guard():
     assert resolved["reason"] == "legacy_dag_id_not_supported"
 
 
+def test_resolve_dag_config_for_update_legacy_id_allowed_when_studio_dag_exists(studio_paths):
+    proj_root, dag_root = studio_paths
+    dag_id = "ffengine_config_group_12_public_ff_test_data_to_dbo_ff_test_data_psql_v12"
+
+    flow_dir = proj_root / "test" / "public" / "level1" / "src_to_odc"
+    flow_dir.mkdir(parents=True, exist_ok=True)
+    yaml_path = flow_dir / "test_public_level1_src_to_odc_group_12.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "source_db_var": "src_c",
+                "target_db_var": "tgt_c",
+                "etl_tasks": [
+                    {
+                        "task_group_id": "public_ff_test_data_to_dbo_ff_test_data_psql_v12",
+                        "source_schema": "public",
+                        "source_table": "ff_test_data",
+                        "source_type": "table",
+                        "target_schema": "dbo",
+                        "target_table": "ff_test_data_psql_v12",
+                        "load_method": "append",
+                        "column_mapping_mode": "source",
+                        "batch_size": 10000,
+                        "partitioning": {
+                            "enabled": False,
+                            "mode": "auto",
+                            "column": None,
+                            "parts": 2,
+                            "ranges": [],
+                        },
+                    }
+                ],
+            },
+            sort_keys=False,
+            allow_unicode=False,
+        ),
+        encoding="utf-8",
+    )
+
+    dag_path = dag_root / "test" / "public" / "level1" / "src_to_odc" / f"{dag_id}.py"
+    dag_path.parent.mkdir(parents=True, exist_ok=True)
+    dag_path.write_text(
+        "\n".join(
+            [
+                ss.STUDIO_DAG_MARKER,
+                "from pathlib import Path",
+                f'CONFIG_PATH = Path("{yaml_path.as_posix()}")',
+                f'DAG_ID = "{dag_id}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    resolved = ss.resolve_dag_config_for_update(dag_id)
+    assert resolved["supported_for_update"] is True
+    assert resolved["payload"]["project"] == "test"
+    assert resolved["payload"]["domain"] == "public"
+    assert resolved["payload"]["level"] == "level1"
+    assert resolved["payload"]["flow"] == "src_to_odc"
+
+
 def test_dag_payload_invalid_source_type():
     with pytest.raises(ValidationError):
         DagUpsertPayload(
@@ -483,7 +576,6 @@ def test_dag_payload_invalid_source_type():
             domain="d",
             level="level1",
             flow="src_to_stg",
-            group_no=1,
             source_conn_id="a",
             target_conn_id="b",
             source_schema="s",
@@ -505,3 +597,4 @@ def test_api_key_required_when_env_set(client, studio_paths, monkeypatch):
         headers={"X-ETL-Studio-API-Key": "secret123"},
     )
     assert r2.status_code == 201
+

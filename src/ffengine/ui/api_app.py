@@ -56,16 +56,10 @@ def _optional_api_key_dep(
         )
 
 
-class DagUpsertPayload(BaseModel):
+class EtlTaskPayload(BaseModel):
     model_config = {"extra": "forbid"}
 
-    project: str = Field(..., min_length=1)
-    domain: str = Field(..., min_length=1)
-    level: str = Field(..., min_length=1)
-    flow: str = Field(..., min_length=1)
-    group_no: int = Field(..., ge=1)
-    source_conn_id: str = Field(..., min_length=1)
-    target_conn_id: str = Field(..., min_length=1)
+    task_group_id: str | None = Field(default=None, min_length=1)
     source_schema: str = Field(..., min_length=1)
     source_table: str = Field(..., min_length=1)
     source_type: str = "table"
@@ -81,7 +75,70 @@ class DagUpsertPayload(BaseModel):
     partitioning_column: str | None = None
     partitioning_parts: int = Field(2, ge=1, le=10_000)
     partitioning_ranges: list[Any] | None = None
+
+    @field_validator("source_type")
+    @classmethod
+    def _v_source_type(cls, v: str) -> str:
+        if v not in {"table", "view"}:
+            raise ValueError("source_type yalnizca 'table' veya 'view' olabilir.")
+        if v not in VALID_SOURCE_TYPES:
+            raise ValueError(f"source_type gecersiz: {v!r}")
+        return v
+
+    @field_validator("load_method")
+    @classmethod
+    def _v_load_method(cls, v: str) -> str:
+        if v not in VALID_LOAD_METHODS:
+            raise ValueError(f"load_method gecersiz: {v!r}")
+        return v
+
+    @field_validator("column_mapping_mode")
+    @classmethod
+    def _v_col_map(cls, v: str) -> str:
+        if v not in VALID_COLUMN_MAPPING_MODES:
+            raise ValueError(f"column_mapping_mode gecersiz: {v!r}")
+        return v
+
+    @field_validator("partitioning_mode")
+    @classmethod
+    def _v_part_mode(cls, v: str) -> str:
+        if v not in VALID_PARTITION_MODES:
+            raise ValueError(f"partitioning.mode gecersiz: {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def _v_mapping(self) -> EtlTaskPayload:
+        if self.column_mapping_mode == "mapping_file" and not (self.mapping_file or "").strip():
+            raise ValueError("column_mapping_mode='mapping_file' icin mapping_file yolu gerekir.")
+        return self
+
+
+class DagUpsertPayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    project: str = Field(..., min_length=1)
+    domain: str = Field(..., min_length=1)
+    level: str = Field(..., min_length=1)
+    flow: str = Field(..., min_length=1)
+    source_conn_id: str = Field(..., min_length=1)
+    target_conn_id: str = Field(..., min_length=1)
+    source_schema: str | None = Field(default=None, min_length=1)
+    source_table: str | None = Field(default=None, min_length=1)
+    source_type: str = "table"
+    target_schema: str | None = Field(default=None, min_length=1)
+    target_table: str | None = Field(default=None, min_length=1)
+    load_method: str = "create_if_not_exists_or_truncate"
+    column_mapping_mode: str = "source"
+    mapping_file: str | None = None
+    where: str | None = None
+    batch_size: int = Field(10000, ge=1, le=1_000_000)
+    partitioning_enabled: bool = False
+    partitioning_mode: str = "auto"
+    partitioning_column: str | None = None
+    partitioning_parts: int = Field(2, ge=1, le=10_000)
+    partitioning_ranges: list[Any] | None = None
     task_group_id: str | None = Field(default=None, min_length=1)
+    etl_tasks: list[EtlTaskPayload] | None = None
 
     @field_validator("source_type")
     @classmethod
@@ -115,6 +172,20 @@ class DagUpsertPayload(BaseModel):
 
     @model_validator(mode="after")
     def _v_mapping(self) -> DagUpsertPayload:
+        has_task_list = isinstance(self.etl_tasks, list) and len(self.etl_tasks) > 0
+        if has_task_list:
+            return self
+        if not all(
+            [
+                (self.source_schema or "").strip(),
+                (self.source_table or "").strip(),
+                (self.target_schema or "").strip(),
+                (self.target_table or "").strip(),
+            ]
+        ):
+            raise ValueError(
+                "etl_tasks verilmediyse source_schema/source_table/target_schema/target_table zorunludur."
+            )
         if self.column_mapping_mode == "mapping_file" and not (self.mapping_file or "").strip():
             raise ValueError("column_mapping_mode='mapping_file' icin mapping_file yolu gerekir.")
         return self
@@ -163,9 +234,15 @@ def api_folder_options(
     project: str | None = Query(None),
     domain: str | None = Query(None),
     level: str | None = Query(None),
+    source: str | None = Query(None),
 ) -> dict[str, Any]:
     try:
-        data = discover_hierarchy_options(project=project, domain=domain, level=level)
+        data = discover_hierarchy_options(
+            project=project,
+            domain=domain,
+            level=level,
+            source=source,
+        )
         return {"ok": True, **data}
     except Exception as exc:
         _raise_http_from_exception(exc)

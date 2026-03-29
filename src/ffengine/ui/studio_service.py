@@ -36,11 +36,12 @@ def _auto_task_group_id(
     src_table: str,
     tgt_schema: str,
     tgt_table: str,
-    version: str = "v1",
+    task_index: int = 1,
 ) -> str:
+    idx = max(1, int(task_index))
     return (
         f"{_slugify(src_schema, 'src')}_{_slugify(src_table, 'table')}"
-        f"_to_{_slugify(tgt_schema, 'tgt')}_{_slugify(tgt_table, 'table')}_{version}"
+        f"_to_{_slugify(tgt_schema, 'tgt')}_{_slugify(tgt_table, 'table')}_task_{idx}"
     )
 
 
@@ -80,6 +81,35 @@ def _build_yaml_filename(
     return (
         f"{project}_{domain}_{level}_{flow}_group_{int(group_no)}.yaml"
     )
+
+
+def _extract_group_no_from_name(name: str) -> int | None:
+    match = re.search(r"_group_(\d+)", name or "")
+    if not match:
+        return None
+    try:
+        value = int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _next_group_no(flow_dir: Path, flow_dag_dir: Path) -> int:
+    groups: set[int] = set()
+
+    if flow_dir.is_dir():
+        for item in flow_dir.glob("*_group_*.yaml"):
+            g = _extract_group_no_from_name(item.name)
+            if g is not None:
+                groups.add(g)
+
+    if flow_dag_dir.is_dir():
+        for item in flow_dag_dir.glob("*_group_*_dag.py"):
+            g = _extract_group_no_from_name(item.name)
+            if g is not None:
+                groups.add(g)
+
+    return (max(groups) + 1) if groups else 1
 
 
 def _find_existing_studio_dag(flow_dag_dir: Path) -> Path | None:
@@ -395,23 +425,36 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
     if not did:
         raise ValueError("dag_id zorunludur.")
 
-    if _is_legacy_dag_id(did):
-        return {
-            "dag_id": did,
-            "supported_for_update": False,
-            "reason": "legacy_dag_id_not_supported",
-            "migration_hint": (
-                "Bu DAG legacy formatta. ETL Studio'da yeni naming ile "
-                "'Create DAG + YAML' calistirip yeni DAG uzerinden update edin."
-            ),
-            "migration_url": "/etl-studio/",
-        }
-
     dag_path = _find_studio_dag_file_by_id(did)
     if dag_path is None:
+        if _is_legacy_dag_id(did):
+            return {
+                "dag_id": did,
+                "supported_for_update": False,
+                "reason": "legacy_dag_id_not_supported",
+                "migration_hint": (
+                    "Bu DAG legacy formatta. ETL Studio'da yeni naming ile "
+                    "'Create DAG + YAML' calistirip yeni DAG uzerinden update edin."
+                ),
+                "migration_url": "/etl-studio/",
+            }
         raise FileNotFoundError(f"DAG bulunamadi: {did}")
 
-    config_path = _extract_config_path_from_dag_source(dag_path)
+    try:
+        config_path = _extract_config_path_from_dag_source(dag_path)
+    except ValueError:
+        if _is_legacy_dag_id(did):
+            return {
+                "dag_id": did,
+                "supported_for_update": False,
+                "reason": "legacy_dag_id_not_supported",
+                "migration_hint": (
+                    "Bu DAG legacy formatta. ETL Studio'da yeni naming ile "
+                    "'Create DAG + YAML' calistirip yeni DAG uzerinden update edin."
+                ),
+                "migration_url": "/etl-studio/",
+            }
+        raise
     if not config_path.is_file():
         raise ValueError("DAG bulundu ancak bagli YAML dosyasi bulunamadi.")
 
@@ -431,13 +474,40 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
     tasks = raw.get("etl_tasks") or []
     if not isinstance(tasks, list) or not tasks:
         raise ValueError("YAML etl_tasks listesi bos veya gecersiz.")
-    task = tasks[0]
-    if not isinstance(task, dict):
-        raise ValueError("etl_tasks[0] dict olmalidir.")
+    normalized_tasks: list[dict[str, Any]] = []
+    for idx, task in enumerate(tasks, start=1):
+        if not isinstance(task, dict):
+            raise ValueError(f"etl_tasks[{idx-1}] dict olmalidir.")
+        partitioning = task.get("partitioning") or {}
+        if not isinstance(partitioning, dict):
+            partitioning = {}
+        normalized_tasks.append(
+            {
+                "task_group_id": str(task.get("task_group_id") or "").strip() or None,
+                "source_schema": str(task.get("source_schema") or "").strip(),
+                "source_table": str(task.get("source_table") or "").strip(),
+                "source_type": str(task.get("source_type") or "table").strip() or "table",
+                "target_schema": str(task.get("target_schema") or "").strip(),
+                "target_table": str(task.get("target_table") or "").strip(),
+                "load_method": (
+                    str(task.get("load_method") or "create_if_not_exists_or_truncate").strip()
+                    or "create_if_not_exists_or_truncate"
+                ),
+                "column_mapping_mode": (
+                    str(task.get("column_mapping_mode") or "source").strip() or "source"
+                ),
+                "mapping_file": str(task.get("mapping_file") or "").strip() or None,
+                "where": str(task.get("where") or "").strip() or None,
+                "batch_size": int(task.get("batch_size") or 10000),
+                "partitioning_enabled": bool(partitioning.get("enabled", False)),
+                "partitioning_mode": str(partitioning.get("mode") or "auto").strip() or "auto",
+                "partitioning_column": str(partitioning.get("column") or "").strip() or None,
+                "partitioning_parts": int(partitioning.get("parts") or 2),
+                "partitioning_ranges": partitioning.get("ranges") or [],
+            }
+        )
 
-    partitioning = task.get("partitioning") or {}
-    if not isinstance(partitioning, dict):
-        partitioning = {}
+    first_task = normalized_tasks[0]
 
     payload = {
         "project": project,
@@ -445,29 +515,25 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "level": level,
         "flow": flow,
         "group_no": _extract_group_no(did, config_path),
-        "task_group_id": str(task.get("task_group_id") or "").strip() or None,
+        "task_group_id": first_task["task_group_id"],
         "source_conn_id": str(raw.get("source_db_var") or "").strip(),
         "target_conn_id": str(raw.get("target_db_var") or "").strip(),
-        "source_schema": str(task.get("source_schema") or "").strip(),
-        "source_table": str(task.get("source_table") or "").strip(),
-        "source_type": str(task.get("source_type") or "table").strip() or "table",
-        "target_schema": str(task.get("target_schema") or "").strip(),
-        "target_table": str(task.get("target_table") or "").strip(),
-        "load_method": (
-            str(task.get("load_method") or "create_if_not_exists_or_truncate").strip()
-            or "create_if_not_exists_or_truncate"
-        ),
-        "column_mapping_mode": (
-            str(task.get("column_mapping_mode") or "source").strip() or "source"
-        ),
-        "mapping_file": str(task.get("mapping_file") or "").strip() or None,
-        "where": str(task.get("where") or "").strip() or None,
-        "batch_size": int(task.get("batch_size") or 10000),
-        "partitioning_enabled": bool(partitioning.get("enabled", False)),
-        "partitioning_mode": str(partitioning.get("mode") or "auto").strip() or "auto",
-        "partitioning_column": str(partitioning.get("column") or "").strip() or None,
-        "partitioning_parts": int(partitioning.get("parts") or 2),
-        "partitioning_ranges": partitioning.get("ranges") or [],
+        "source_schema": first_task["source_schema"],
+        "source_table": first_task["source_table"],
+        "source_type": first_task["source_type"],
+        "target_schema": first_task["target_schema"],
+        "target_table": first_task["target_table"],
+        "load_method": first_task["load_method"],
+        "column_mapping_mode": first_task["column_mapping_mode"],
+        "mapping_file": first_task["mapping_file"],
+        "where": first_task["where"],
+        "batch_size": first_task["batch_size"],
+        "partitioning_enabled": first_task["partitioning_enabled"],
+        "partitioning_mode": first_task["partitioning_mode"],
+        "partitioning_column": first_task["partitioning_column"],
+        "partitioning_parts": first_task["partitioning_parts"],
+        "partitioning_ranges": first_task["partitioning_ranges"],
+        "etl_tasks": normalized_tasks,
     }
 
     return {
@@ -498,6 +564,7 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
         src_table=source_table or "sql_source",
         tgt_schema=target_schema,
         tgt_table=target_table,
+        task_index=1,
     )
 
     task: dict[str, Any] = {
@@ -526,10 +593,73 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
     return task
 
 
+def build_task_dict_for_validation_from_task(
+    task_payload: dict[str, Any],
+    *,
+    task_index: int,
+) -> dict[str, Any]:
+    source_schema = str(task_payload.get("source_schema") or "").strip()
+    source_table = str(task_payload.get("source_table") or "").strip()
+    target_schema = str(task_payload.get("target_schema") or "").strip()
+    target_table = str(task_payload.get("target_table") or "").strip()
+    source_type = str(task_payload.get("source_type") or "table").strip() or "table"
+    load_method = (
+        str(task_payload.get("load_method") or "create_if_not_exists_or_truncate").strip()
+        or "create_if_not_exists_or_truncate"
+    )
+    task_group_id = str(task_payload.get("task_group_id") or "").strip() or _auto_task_group_id(
+        src_schema=source_schema,
+        src_table=source_table or "sql_source",
+        tgt_schema=target_schema,
+        tgt_table=target_table,
+        task_index=task_index,
+    )
+
+    task: dict[str, Any] = {
+        "task_group_id": task_group_id,
+        "source_schema": source_schema,
+        "source_table": source_table,
+        "source_type": source_type,
+        "column_mapping_mode": str(task_payload.get("column_mapping_mode") or "source").strip() or "source",
+        "target_schema": target_schema,
+        "target_table": target_table,
+        "load_method": load_method,
+        "where": task_payload.get("where"),
+        "batch_size": int(task_payload.get("batch_size", 10000)),
+        "partitioning": {
+            "enabled": bool(task_payload.get("partitioning_enabled", False)),
+            "mode": task_payload.get("partitioning_mode", "auto"),
+            "column": task_payload.get("partitioning_column"),
+            "parts": int(task_payload.get("partitioning_parts", 2)),
+            "ranges": task_payload.get("partitioning_ranges") or [],
+        },
+    }
+    if task["column_mapping_mode"] == "mapping_file":
+        mf = str(task_payload.get("mapping_file") or "").strip()
+        if mf:
+            task["mapping_file"] = mf
+    return task
+
+
 def validate_pipeline_payload(payload: dict[str, Any]) -> None:
     """Pipeline formu (T06): task kurallarini ConfigValidator ile dogrular."""
+    validator = ConfigValidator()
+    task_items = payload.get("etl_tasks")
+    if isinstance(task_items, list) and task_items:
+        normalized_tasks: list[dict[str, Any]] = []
+        for idx, task_payload in enumerate(task_items, start=1):
+            task = build_task_dict_for_validation_from_task(
+                dict(task_payload or {}),
+                task_index=idx,
+            )
+            validator.validate(task)
+            normalized_tasks.append(task)
+        resolve_task_dependencies(normalized_tasks)
+        return
+
     task = build_task_dict_for_validation(payload)
-    ConfigValidator().validate(task)
+    validator.validate(task)
+    resolve_task_dependencies([task])
 
 
 def fetch_timeline_runs(
@@ -590,7 +720,11 @@ def _list_child_dirs(path: Path) -> list[str]:
     items: list[str] = []
     try:
         for entry in path.iterdir():
-            if entry.is_dir():
+            name = entry.name
+            if not entry.is_dir():
+                continue
+            if name.startswith(".") or name.startswith("__"):
+                continue
                 items.append(entry.name)
     except OSError:
         return []
@@ -601,6 +735,7 @@ def discover_hierarchy_options(
     project: str | None = None,
     domain: str | None = None,
     level: str | None = None,
+    source: str | None = None,
 ) -> dict[str, list[str]]:
     """
     ETL Studio hiyerarsisi icin mevcut klasor seceneklerini dondurur.
@@ -609,7 +744,16 @@ def discover_hierarchy_options(
     project_val = (project or "").strip()
     domain_val = (domain or "").strip()
     level_val = (level or "").strip()
-    roots = [_projects_root(), _generated_dag_root()]
+    source_val = (source or "union").strip().lower()
+
+    if source_val == "dag":
+        roots = [_generated_dag_root()]
+    elif source_val == "projects":
+        roots = [_projects_root()]
+    elif source_val == "union":
+        roots = [_projects_root(), _generated_dag_root()]
+    else:
+        raise ValueError("source yalnizca 'dag', 'projects' veya 'union' olabilir.")
 
     projects: set[str] = set()
     domains: set[str] = set()
@@ -698,29 +842,38 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
     domain = _slugify(payload["domain"], "default_domain")
     level = _slugify(payload["level"], "level1")
     flow = _slugify(payload["flow"], "src_to_stg")
-    group_no = int(payload["group_no"])
-    if group_no < 1:
-        raise ValueError("group_no pozitif bir tamsayi olmalidir.")
 
-    source_schema = payload["source_schema"]
-    source_table = payload["source_table"]
-    target_schema = payload["target_schema"]
-    target_table = payload["target_table"]
-    source_type = payload.get("source_type", "table")
-    load_method = payload.get("load_method", "create_if_not_exists_or_truncate")
-
-    task_group_id = payload.get("task_group_id") or _auto_task_group_id(
-        src_schema=source_schema,
-        src_table=source_table or "sql_source",
-        tgt_schema=target_schema,
-        tgt_table=target_table,
-    )
+    task_payloads = payload.get("etl_tasks")
+    if isinstance(task_payloads, list) and task_payloads:
+        tasks_input = [dict(item or {}) for item in task_payloads]
+    else:
+        tasks_input = [dict(payload)]
 
     root = _projects_root()
     flow_dir = root / project / domain / level / flow
     flow_dir.mkdir(parents=True, exist_ok=True)
     _ensure_path_under_root(flow_dir, root)
     (flow_dir / "mappings").mkdir(parents=True, exist_ok=True)
+
+    gen_root = _generated_dag_root()
+    flow_dag_dir = gen_root / project / domain / level / flow
+    flow_dag_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_path_under_root(flow_dag_dir, gen_root)
+
+    existing_studio_dag = _find_existing_studio_dag(flow_dag_dir)
+    if update:
+        if existing_studio_dag is None:
+            raise ValueError(
+                "Guncellenecek DAG bulunamadi veya ETL Studio tarafindan uretilmemis."
+            )
+        dag_path = existing_studio_dag
+        group_no = _extract_group_no_from_name(dag_path.stem)
+        if group_no is None:
+            raise ValueError("Mevcut DAG dosyasindan group_no cozumlenemedi.")
+    else:
+        group_no = _next_group_no(flow_dir, flow_dag_dir)
+        dag_path = flow_dag_dir / _build_dag_filename(domain, level, flow, group_no)
+    _ensure_path_under_root(dag_path, gen_root)
 
     config_path = flow_dir / _build_yaml_filename(project, domain, level, flow, group_no)
     for legacy_yaml in _legacy_yaml_candidates(flow_dir, group_no):
@@ -730,13 +883,6 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
                 legacy_yaml.unlink()
             except OSError:
                 pass
-
-    gen_root = _generated_dag_root()
-    flow_dag_dir = gen_root / project / domain / level / flow
-    flow_dag_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_path_under_root(flow_dag_dir, gen_root)
-    dag_path = flow_dag_dir / _build_dag_filename(domain, level, flow, group_no)
-    _ensure_path_under_root(dag_path, gen_root)
 
     legacy_dag = _find_legacy_studio_dag(
         gen_root=gen_root,
@@ -757,10 +903,6 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
         except OSError:
             pass
 
-    if update and not dag_path.exists():
-        raise ValueError(
-            "Guncellenecek DAG bulunamadi veya ETL Studio tarafindan uretilmemis."
-        )
     if update and not config_path.exists():
         raise ValueError("Guncellenecek YAML dosyasi bulunamadi.")
     if update and STUDIO_DAG_MARKER not in dag_path.read_text(encoding="utf-8"):
@@ -768,35 +910,55 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
 
     tags = _derive_tags(project, domain, level, flow)
 
-    task_cfg: dict[str, Any] = {
-        "task_group_id": task_group_id,
-        "source_schema": source_schema,
-        "source_table": source_table,
-        "source_type": source_type,
-        "column_mapping_mode": payload.get("column_mapping_mode", "source"),
-        "target_schema": target_schema,
-        "target_table": target_table,
-        "load_method": load_method,
-        "where": payload.get("where") or None,
-        "batch_size": int(payload.get("batch_size", 10000)),
-        "partitioning": {
-            "enabled": bool(payload.get("partitioning_enabled", False)),
-            "mode": payload.get("partitioning_mode", "auto"),
-            "column": payload.get("partitioning_column") or None,
-            "parts": int(payload.get("partitioning_parts", 2)),
-            "ranges": payload.get("partitioning_ranges") or [],
-        },
-        "tags": tags,
-    }
-    mf = (payload.get("mapping_file") or "").strip()
-    if mf:
-        task_cfg["mapping_file"] = mf
-    resolve_task_dependencies([task_cfg])
+    task_cfgs: list[dict[str, Any]] = []
+    for idx, item in enumerate(tasks_input, start=1):
+        source_schema = str(item.get("source_schema") or "").strip()
+        source_table = str(item.get("source_table") or "").strip()
+        target_schema = str(item.get("target_schema") or "").strip()
+        target_table = str(item.get("target_table") or "").strip()
+        source_type = str(item.get("source_type") or "table").strip() or "table"
+        load_method = (
+            str(item.get("load_method") or "create_if_not_exists_or_truncate").strip()
+            or "create_if_not_exists_or_truncate"
+        )
+        task_group_id = str(item.get("task_group_id") or "").strip() or _auto_task_group_id(
+            src_schema=source_schema,
+            src_table=source_table or "sql_source",
+            tgt_schema=target_schema,
+            tgt_table=target_table,
+            task_index=idx,
+        )
+        task_cfg: dict[str, Any] = {
+            "task_group_id": task_group_id,
+            "source_schema": source_schema,
+            "source_table": source_table,
+            "source_type": source_type,
+            "column_mapping_mode": str(item.get("column_mapping_mode") or "source").strip() or "source",
+            "target_schema": target_schema,
+            "target_table": target_table,
+            "load_method": load_method,
+            "where": item.get("where") or None,
+            "batch_size": int(item.get("batch_size", 10000)),
+            "partitioning": {
+                "enabled": bool(item.get("partitioning_enabled", False)),
+                "mode": item.get("partitioning_mode", "auto"),
+                "column": item.get("partitioning_column") or None,
+                "parts": int(item.get("partitioning_parts", 2)),
+                "ranges": item.get("partitioning_ranges") or [],
+            },
+            "tags": tags,
+        }
+        mf = str(item.get("mapping_file") or "").strip()
+        if mf:
+            task_cfg["mapping_file"] = mf
+        task_cfgs.append(task_cfg)
+
+    resolve_task_dependencies(task_cfgs)
 
     config_obj = {
         "source_db_var": payload["source_conn_id"],
         "target_db_var": payload["target_conn_id"],
-        "etl_tasks": [task_cfg],
+        "etl_tasks": task_cfgs,
     }
     config_path.write_text(
         yaml.safe_dump(config_obj, sort_keys=False, allow_unicode=False),
@@ -814,7 +976,8 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
         "flow_dir": flow_dir.as_posix(),
         "config_path": config_path.as_posix(),
         "dag_path": dag_path.as_posix(),
-        "task_group_id": task_group_id,
+        "task_group_id": task_cfgs[0]["task_group_id"],
+        "task_count": len(task_cfgs),
         "group_no": group_no,
         "tags": tags,
         "auto_tags": tags,
@@ -829,5 +992,5 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
         "flow_dir": metadata["flow_dir"],
         "config_path": metadata["config_path"],
         "dag_path": metadata["dag_path"],
-        "task_group_id": task_group_id,
+        "task_group_id": task_cfgs[0]["task_group_id"],
     }
