@@ -117,6 +117,22 @@ class TestMappingResolverSourceMode:
         result = MappingResolver().resolve(_task(), _conn(), src, tgt)
         assert result.source_columns == ["c", "a", "b"]
 
+    def test_integer_precision_not_carried_to_mssql(self):
+        cols = [ColumnInfo("id", "INTEGER", False, 32, 0)]
+        src = _src_dialect(cols, "PostgresDialect")
+        tgt = _tgt_dialect("MSSQLDialect")
+        result = MappingResolver().resolve(_task(), _conn(), src, tgt)
+        assert result.target_columns_meta[0].data_type == "INT"
+        assert result.target_columns_meta[0].precision is None
+        assert result.target_columns_meta[0].scale is None
+
+    def test_mssql_decimal_precision_overflow_raises(self):
+        cols = [ColumnInfo("amount", "NUMERIC", True, 65, 10)]
+        src = _src_dialect(cols, "PostgresDialect")
+        tgt = _tgt_dialect("MSSQLDialect")
+        with pytest.raises(MappingError, match="precision limiti"):
+            MappingResolver().resolve(_task(), _conn(), src, tgt)
+
     def test_passthrough_partial_filters_columns(self):
         cols = [ColumnInfo("id", "INTEGER"), ColumnInfo("name", "VARCHAR"), ColumnInfo("secret", "TEXT")]
         src = _src_dialect(cols)

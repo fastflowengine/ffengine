@@ -29,6 +29,12 @@ contracts only. Enterprise-only runtime capabilities must not be added here.
 - Allowed here: Community runtime, shared interfaces, public docs references
 - Not allowed here: Enterprise queue runtime, bulk-only private adapters, commercial secrets
 
+## Airflow API Policy
+
+- Airflow execution in Community must use `FFEngineOperator` as the canonical path.
+- Do not introduce parallel orchestration interfaces for the same runtime flow.
+- `ffengine.airflow.XComKeys` and `ffengine.airflow.build_task_group` are removed and must not be reintroduced.
+
 ## Security
 
 Do not commit credentials, tokens, production URLs with secrets, or customer data.

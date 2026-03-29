@@ -111,3 +111,25 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 - [ ] `FFENGINE_ENABLE_CROSS_DB_TESTS=1` ile `test_mapping_chain.py` 1/1 PASS
 - [ ] Unit testler 466+ PASS, 0 FAIL
 - [ ] `README.md` durumu güncel
+
+## Airflow Runtime Model (Current)
+
+- Airflow tarafinda tek kanonik yol: `FFEngineOperator`.
+- `plan/prepare/run` fazlari operator icinde calisir.
+- Performans icin XCom minimal tutulur:
+  - `rows_transferred`
+  - `duration_seconds`
+  - `rows_per_second`
+  - `retry_telemetry`
+  - `error_summary` (yalnizca hata durumunda)
+- Ara fazlara ait buyuk payload'lar XCom'a yazilmaz.
+
+### Migration Note
+
+- `ffengine.airflow.XComKeys` ve `ffengine.airflow.build_task_group` kullanimi kaldirildi.
+- Yeni ve mevcut DAG akislarinda `FFEngineOperator` kullanilmalidir.
+
+## Type Conversion Reference
+
+- Type conversion policy and matrix:
+  `docs/type-mapping-policy.md`

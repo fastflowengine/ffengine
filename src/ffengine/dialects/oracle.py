@@ -172,9 +172,28 @@ class OracleDialect(BaseDialect):
 
     @staticmethod
     def _column_type_sql(col: ColumnInfo) -> str:
-        base = col.data_type
-        if col.precision is not None and col.scale is not None:
-            return f"{base}({col.precision},{col.scale})"
-        if col.precision is not None:
+        base = (col.data_type or "").strip().upper()
+        if not base:
+            return "VARCHAR2(4000)"
+
+        # Respect explicit type parameters from mapper/config.
+        if "(" in base and base.endswith(")"):
+            return base
+
+        if base in {"NUMBER", "NUMERIC", "DECIMAL"} and col.precision is not None:
+            if col.scale is not None:
+                return f"{base}({col.precision},{col.scale})"
             return f"{base}({col.precision})"
+
+        if base in {"VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR", "RAW"}:
+            if col.precision is not None:
+                return f"{base}({col.precision})"
+            if base == "VARCHAR2":
+                return "VARCHAR2(4000)"
+            if base == "NVARCHAR2":
+                return "NVARCHAR2(2000)"
+            if base == "RAW":
+                return "RAW(2000)"
+            return f"{base}(1)"
+
         return base

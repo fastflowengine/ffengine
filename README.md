@@ -46,6 +46,18 @@ This repository is intended to become the public `ffengine/ffengine` repository.
 - Airflow 3 plugin extensions (ETL Studio) follow `fastapi_apps + external_views` as the
   standard model.
 
+## Airflow Execution Model
+
+- Canonical execution path is `FFEngineOperator` only.
+- `plan/prepare/run` phases are orchestrated inside `src/ffengine/airflow/operator.py`.
+- XCom policy is minimal for performance:
+  - `rows_transferred`
+  - `duration_seconds`
+  - `rows_per_second`
+  - `retry_telemetry`
+  - `error_summary` (only on failure)
+- Large intermediate phase payloads are not pushed to XCom.
+
 ## ETL Studio Hierarchical Model
 
 ETL Studio now uses a hard-switched hierarchical model for YAML and DAG generation.
@@ -63,6 +75,11 @@ Environment defaults (if not overridden):
 
 - `FFENGINE_STUDIO_PROJECTS_ROOT=/opt/airflow/projects`
 - `FFENGINE_STUDIO_DAG_ROOT=/opt/airflow/dags`
+
+## Breaking Changes
+
+- `ffengine.airflow.XComKeys` and `ffengine.airflow.build_task_group` are no longer public API.
+- Use `ffengine.airflow.operator.FFEngineOperator` for all Airflow execution flows.
 
 ## Installation
 
@@ -84,6 +101,11 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 
 - Detailed Airflow 3.1.6 execution/scheduler bugfix and verification guide:
   [`docs/airflow-execution-api-bugfix.md`](docs/airflow-execution-api-bugfix.md)
+
+## Type Mapping Contract
+
+- Cross-dialect type conversion policy and matrix:
+  [`docs/type-mapping-policy.md`](docs/type-mapping-policy.md)
 
 ## Governance
 

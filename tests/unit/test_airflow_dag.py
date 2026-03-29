@@ -1,138 +1,11 @@
+﻿"""
+C07 - DAG generator unit tests.
+
+Scope: generate_dags, register_dags, and FFEngineOperator-based DAG generation.
 """
-C07 — DAG pattern ve DAG generator birim testleri.
 
-Kapsam: XComKeys, build_task_group, generate_dags, register_dags.
-"""
-
-import os
-import pytest
-from unittest.mock import MagicMock, patch, ANY
-
-from ffengine.airflow.dag_patterns import XComKeys, build_task_group
 from ffengine.airflow.dag_generator import generate_dags, register_dags
-
-
-# ---------------------------------------------------------------------------
-# XComKeys
-# ---------------------------------------------------------------------------
-
-
-class TestXComKeys:
-    def test_task_config_resolved_is_string(self):
-        assert isinstance(XComKeys.TASK_CONFIG_RESOLVED, str)
-
-    def test_partition_specs_is_string(self):
-        assert isinstance(XComKeys.PARTITION_SPECS, str)
-
-    def test_rows_transferred_is_string(self):
-        assert isinstance(XComKeys.ROWS_TRANSFERRED, str)
-
-    def test_all_keys_unique(self):
-        keys = [
-            XComKeys.TASK_CONFIG_RESOLVED,
-            XComKeys.PARTITION_SPECS,
-            XComKeys.ROWS_TRANSFERRED,
-            XComKeys.DURATION_SECONDS,
-            XComKeys.ROWS_PER_SECOND,
-        ]
-        assert len(keys) == len(set(keys))
-
-
-# ---------------------------------------------------------------------------
-# build_task_group
-# ---------------------------------------------------------------------------
-
-
-class TestBuildTaskGroup:
-    @pytest.fixture
-    def dag(self):
-        from datetime import datetime
-        from airflow import DAG
-
-        return DAG(
-            dag_id="test_dag",
-            start_date=datetime(2023, 1, 1),
-            schedule=None,
-        )
-
-    def test_returns_task_group(self, dag):
-        from airflow.utils.task_group import TaskGroup
-
-        tg = build_task_group(
-            dag,
-            config_path="/tmp/cfg.yaml",
-            task_group_id="t1",
-            source_conn_id="src",
-            target_conn_id="tgt",
-        )
-        assert isinstance(tg, TaskGroup)
-
-    def test_contains_three_tasks(self, dag):
-        tg = build_task_group(
-            dag,
-            config_path="/tmp/cfg.yaml",
-            task_group_id="t1",
-            source_conn_id="src",
-            target_conn_id="tgt",
-        )
-        # TaskGroup.children keys = task_ids within group
-        assert len(tg.children) == 3
-
-    def test_task_ids(self, dag):
-        tg = build_task_group(
-            dag,
-            config_path="/tmp/cfg.yaml",
-            task_group_id="t1",
-            source_conn_id="src",
-            target_conn_id="tgt",
-        )
-        child_ids = set(tg.children.keys())
-        assert "ffengine_etl.plan_partitions" in child_ids
-        assert "ffengine_etl.prepare_target" in child_ids
-        assert "ffengine_etl.run_partitions" in child_ids
-
-    def test_dependency_order_plan_before_prepare(self, dag):
-        """plan_partitions → prepare_target bağımlılığı."""
-        tg = build_task_group(
-            dag,
-            config_path="/tmp/cfg.yaml",
-            task_group_id="t1",
-            source_conn_id="src",
-            target_conn_id="tgt",
-        )
-        plan = tg.children["ffengine_etl.plan_partitions"]
-        prepare = tg.children["ffengine_etl.prepare_target"]
-        # downstream_task_ids plan'ın çıktısını kontrol eder
-        assert prepare.task_id in plan.downstream_task_ids
-
-    def test_dependency_order_prepare_before_run(self, dag):
-        """prepare_target → run_partitions bağımlılığı."""
-        tg = build_task_group(
-            dag,
-            config_path="/tmp/cfg.yaml",
-            task_group_id="t1",
-            source_conn_id="src",
-            target_conn_id="tgt",
-        )
-        prepare = tg.children["ffengine_etl.prepare_target"]
-        run = tg.children["ffengine_etl.run_partitions"]
-        assert run.task_id in prepare.downstream_task_ids
-
-    def test_custom_group_id(self, dag):
-        tg = build_task_group(
-            dag,
-            config_path="/tmp/cfg.yaml",
-            task_group_id="t1",
-            source_conn_id="src",
-            target_conn_id="tgt",
-            group_id="custom_group",
-        )
-        assert tg.group_id == "custom_group"
-
-
-# ---------------------------------------------------------------------------
-# generate_dags
-# ---------------------------------------------------------------------------
+from ffengine.airflow.operator import FFEngineOperator
 
 
 class TestGenerateDags:
@@ -218,15 +91,24 @@ class TestGenerateDags:
             "  - task_group_id: x\n",
             encoding="utf-8",
         )
-        dags = generate_dags(
-            str(tmp_path), dag_prefix="myapp", tags=["prod"],
-        )
+        dags = generate_dags(str(tmp_path), dag_prefix="myapp", tags=["prod"])
         assert "myapp_test_x" in dags
 
+    def test_uses_ffengine_operator(self, tmp_path):
+        cfg = tmp_path / "orders.yaml"
+        cfg.write_text(
+            "source_db_var: src_pg\n"
+            "target_db_var: tgt_pg\n"
+            "etl_tasks:\n"
+            "  - task_group_id: load_orders\n",
+            encoding="utf-8",
+        )
 
-# ---------------------------------------------------------------------------
-# register_dags
-# ---------------------------------------------------------------------------
+        dags = generate_dags(str(tmp_path))
+        dag = dags["ffengine_orders_load_orders"]
+
+        assert len(dag.tasks) == 1
+        assert isinstance(dag.tasks[0], FFEngineOperator)
 
 
 class TestRegisterDags:
@@ -251,3 +133,12 @@ class TestRegisterDags:
         g = {}
         register_dags(str(tmp_path), g, dag_prefix="etl")
         assert "etl_pipeline_load" in g
+
+
+class TestAirflowPublicExports:
+    def test_removed_exports_not_present(self):
+        import ffengine.airflow as airflow_mod
+
+        assert hasattr(airflow_mod, "FFEngineOperator")
+        assert not hasattr(airflow_mod, "XComKeys")
+        assert not hasattr(airflow_mod, "build_task_group")

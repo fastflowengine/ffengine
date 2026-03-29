@@ -155,9 +155,20 @@ class PostgresDialect(BaseDialect):
     @staticmethod
     def _column_type_sql(col: ColumnInfo) -> str:
         """Build the SQL type expression including precision/scale."""
-        base = col.data_type
-        if col.precision is not None and col.scale is not None:
-            return f"{base}({col.precision},{col.scale})"
-        if col.precision is not None:
+        base = (col.data_type or "").strip().upper()
+        if not base:
+            return "TEXT"
+
+        # Respect explicit type parameters from mapper/config.
+        if "(" in base and base.endswith(")"):
+            return base
+
+        if base in {"NUMERIC", "DECIMAL"} and col.precision is not None:
+            if col.scale is not None:
+                return f"{base}({col.precision},{col.scale})"
             return f"{base}({col.precision})"
+
+        if base in {"VARCHAR", "CHAR", "CHARACTER VARYING", "CHARACTER"} and col.precision is not None:
+            return f"{base}({col.precision})"
+
         return base

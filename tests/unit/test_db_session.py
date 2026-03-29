@@ -3,6 +3,13 @@ from unittest.mock import MagicMock, patch
 from ffengine.db.session import DBSession
 from ffengine.db.airflow_adapter import AirflowConnectionAdapter
 
+try:
+    import airflow.sdk.bases.hook  # noqa: F401
+    BASEHOOK_GET_CONNECTION_PATH = "airflow.sdk.bases.hook.BaseHook.get_connection"
+except ImportError:
+    BASEHOOK_GET_CONNECTION_PATH = "airflow.hooks.base.BaseHook.get_connection"
+
+
 def test_db_session_commit():
     mock_dialect = MagicMock()
     mock_conn = MagicMock()
@@ -81,7 +88,7 @@ def test_db_session_create_cursor_exception():
         with pytest.raises(RuntimeError, match="Cursor Fail"):
             session.cursor()
 
-@patch("airflow.hooks.base.BaseHook.get_connection")
+@patch(BASEHOOK_GET_CONNECTION_PATH)
 def test_airflow_adapter_resolution_postgres(mock_get_connection):
     mock_conn = MagicMock()
     mock_conn.host = "postgres1"
@@ -104,7 +111,7 @@ def test_airflow_adapter_resolution_postgres(mock_get_connection):
     assert params["conn_type"] == "postgres"
     assert params["extra"] == {"options": "-c search_path=public"}
 
-@patch("airflow.hooks.base.BaseHook.get_connection")
+@patch(BASEHOOK_GET_CONNECTION_PATH)
 def test_airflow_adapter_resolution_mssql(mock_get_connection):
     mock_conn = MagicMock()
     mock_conn.host = "mssql-server"
@@ -122,7 +129,7 @@ def test_airflow_adapter_resolution_mssql(mock_get_connection):
     assert params["conn_type"] == "mssql"
     assert params["extra"] == {"Encrypt": "yes"}
 
-@patch("airflow.hooks.base.BaseHook.get_connection")
+@patch(BASEHOOK_GET_CONNECTION_PATH)
 def test_airflow_adapter_resolution_oracle(mock_get_connection):
     mock_conn = MagicMock()
     mock_conn.host = "oracle-db"

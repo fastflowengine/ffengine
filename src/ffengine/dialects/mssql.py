@@ -170,9 +170,36 @@ class MSSQLDialect(BaseDialect):
 
     @staticmethod
     def _column_type_sql(col: ColumnInfo) -> str:
-        base = col.data_type
-        if col.precision is not None and col.scale is not None:
-            return f"{base}({col.precision},{col.scale})"
-        if col.precision is not None:
-            return f"{base}({col.precision})"
+        base = (col.data_type or "").strip().upper()
+        if not base:
+            return "NVARCHAR(4000)"
+
+        # Respect explicit type parameters from mapper/config (e.g. DECIMAL(18,4), NVARCHAR(MAX)).
+        if "(" in base and base.endswith(")"):
+            return base
+
+        precision = col.precision
+        scale = col.scale
+
+        # Precision/scale only applies to true numeric precision types.
+        if base in {"DECIMAL", "NUMERIC"} and precision is not None:
+            if scale is not None:
+                return f"{base}({precision},{scale})"
+            return f"{base}({precision})"
+
+        # Length-bearing text/binary types need explicit defaults when length is unknown.
+        if base in {"NVARCHAR", "VARCHAR", "NCHAR", "CHAR", "VARBINARY", "BINARY"}:
+            if precision is not None:
+                return f"{base}({precision})"
+            if base == "NVARCHAR":
+                return "NVARCHAR(4000)"
+            if base == "VARCHAR":
+                return "VARCHAR(8000)"
+            if base == "NCHAR":
+                return "NCHAR(1)"
+            if base == "CHAR":
+                return "CHAR(1)"
+            return "VARBINARY(MAX)"
+
+        # Integer/date/time/uuid families are intentionally parameterless in MSSQL DDL.
         return base

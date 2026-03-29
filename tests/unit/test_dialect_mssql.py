@@ -127,8 +127,24 @@ def test_generate_ddl(dialect):
 
     assert "IF OBJECT_ID" in ddl
     assert "CREATE TABLE dbo.Orders" in ddl
-    assert "[id] INT(10,0) NOT NULL" in ddl
+    assert "[id] INT NOT NULL" in ddl
     assert "[price] DECIMAL(18,4)" in ddl
+
+
+def test_generate_ddl_nvarchar_fallback_length(dialect):
+    ddl = dialect.generate_ddl(
+        "dbo.T",
+        [ColumnInfo("name", "NVARCHAR", True)],
+    )
+    assert "[name] NVARCHAR(4000)" in ddl
+
+
+def test_generate_ddl_respects_explicit_params(dialect):
+    ddl = dialect.generate_ddl(
+        "dbo.T",
+        [ColumnInfo("name", "NVARCHAR(MAX)", True, 200, None)],
+    )
+    assert "[name] NVARCHAR(MAX)" in ddl
 
 
 def test_generate_ddl_deterministic(dialect):
