@@ -22,11 +22,17 @@ const base = "/etl-studio";
             document.documentElement.setAttribute("data-color-mode", root.getAttribute("data-color-mode"));
             if (root.getAttribute("data-color-mode") === "dark") isExplicitlyDark = true;
         }
-        if (root.classList.contains("chakra-ui-dark") || (body && body.classList.contains("chakra-ui-dark"))) {
+        
+        const isClassDark = root.classList.contains("chakra-ui-dark") || (body && body.classList.contains("chakra-ui-dark")) || root.classList.contains("dark") || (body && body.classList.contains("dark"));
+        if (isClassDark) {
             document.documentElement.classList.add("chakra-ui-dark");
             isExplicitlyDark = true;
-        } else if (root.classList.contains("chakra-ui-light") || (body && body.classList.contains("chakra-ui-light"))) {
+        } else if (root.classList.contains("chakra-ui-light") || (body && body.classList.contains("chakra-ui-light")) || root.classList.contains("light")) {
             document.documentElement.classList.add("chakra-ui-light");
+        }
+
+        if (root.style && root.style.colorScheme === "dark") {
+            isExplicitlyDark = true;
         }
         
         if (isExplicitlyDark) {
@@ -34,6 +40,29 @@ const base = "/etl-studio";
         }
         const rootStyle = window.getComputedStyle(root);
         const st = window.getComputedStyle(body);
+
+        const isVeryLightRgb = (value) => {
+          const m = value && value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+          if (!m) return false;
+          const r = Number(m[1]), g = Number(m[2]), b = Number(m[3]);
+          const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          return luma > 128;
+        };
+
+        const isTextLight = isVeryLightRgb(st.color);
+        
+        if (isTextLight) {
+            document.documentElement.classList.add("force-dark-mode");
+            isExplicitlyDark = true;
+        }
+
+        const debugRoot = root ? root.outerHTML.substring(0, 150) : "";
+        const debugBody = body ? body.outerHTML.substring(0, 150) : "";
+        
+        const tryDump = document.getElementById("out");
+        if (tryDump) {
+            tryDump.textContent = "HTML: " + debugRoot + "\n\nBODY: " + debugBody + "\n\nTextLuma: " + (isTextLight ? "LIGHT" : "DARK") + "\n\nIs Explicitly Dark: " + isExplicitlyDark;
+        }
         const font = st.fontFamily;
         const textColor = st.color;
         const backgroundColor = st.backgroundColor;
@@ -53,13 +82,6 @@ const base = "/etl-studio";
           if (!value) return true;
           const v = value.toLowerCase();
           return v === "transparent" || v.includes("rgba(") && v.includes(", 0)");
-        };
-
-        const isVeryLightRgb = (value) => {
-          const m = value && value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
-          if (!m) return false;
-          const r = Number(m[1]), g = Number(m[2]), b = Number(m[3]);
-          return r > 220 && g > 220 && b > 220;
         };
 
         const isDarkRgb = (value) => {
