@@ -1,0 +1,20 @@
+services:
+  airflow-webserver:
+    ports:
+      - "5679:5679"
+    environment:
+      ENABLE_DEBUG: "1"
+      DEBUGPY_PORT: "5679"
+      DEBUGPY_WAIT_FOR_CLIENT: "0"
+    command: >
+      bash -lc "sed -i 's|^jwt_secret =.*|jwt_secret = ffengine_api_auth_jwt_secret_dev|' /opt/airflow/airflow.cfg && if [ \"$$ENABLE_DEBUG\" = \"1\" ]; then if [ \"$$DEBUGPY_WAIT_FOR_CLIENT\" = \"1\" ]; then exec python -m debugpy --listen 0.0.0.0:$$DEBUGPY_PORT --wait-for-client -m airflow api-server; else exec python -m debugpy --listen 0.0.0.0:$$DEBUGPY_PORT -m airflow api-server; fi; else exec airflow api-server; fi"
+
+  airflow-scheduler:
+    ports:
+      - "5678:5678"
+    environment:
+      ENABLE_DEBUG: "1"
+      DEBUGPY_PORT: "5678"
+      DEBUGPY_WAIT_FOR_CLIENT: "0"
+    command: >
+      bash -lc "sed -i 's|^jwt_secret =.*|jwt_secret = ffengine_api_auth_jwt_secret_dev|' /opt/airflow/airflow.cfg && if [ \"$$ENABLE_DEBUG\" = \"1\" ]; then if [ \"$$DEBUGPY_WAIT_FOR_CLIENT\" = \"1\" ]; then exec python -m debugpy --listen 0.0.0.0:$$DEBUGPY_PORT --wait-for-client -m airflow scheduler; else exec python -m debugpy --listen 0.0.0.0:$$DEBUGPY_PORT -m airflow scheduler; fi; else exec airflow scheduler; fi"

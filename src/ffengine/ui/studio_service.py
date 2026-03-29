@@ -22,6 +22,7 @@ from ffengine.db.session import DBSession
 
 STUDIO_METADATA_NAME = ".etl_studio.json"
 STUDIO_DAG_MARKER = "# generated_by: etl_studio"
+LEGACY_DAG_ID_PREFIXES = ("ffengine_config_", "ffengine_")
 
 
 def _slugify(value: str, default: str) -> str:
@@ -350,6 +351,135 @@ def _load_studio_metadata(flow_dir: Path) -> dict[str, Any] | None:
         return json.loads(meta_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
+
+
+def _is_legacy_dag_id(dag_id: str) -> bool:
+    did = (dag_id or "").strip().lower()
+    return any(did.startswith(prefix) for prefix in LEGACY_DAG_ID_PREFIXES)
+
+
+def _extract_group_no(dag_id: str, config_path: Path) -> int:
+    match = re.search(r"_group_(\d+)_dag$", dag_id)
+    if match:
+        return int(match.group(1))
+    cfg_match = re.search(r"_group_(\d+)\.ya?ml$", config_path.name)
+    if cfg_match:
+        return int(cfg_match.group(1))
+    raise ValueError("group_no dag_id/config isminden cozumlenemedi.")
+
+
+def _extract_config_path_from_dag_source(dag_path: Path) -> Path:
+    source = dag_path.read_text(encoding="utf-8")
+    if STUDIO_DAG_MARKER not in source:
+        raise ValueError("Bu DAG ETL Studio tarafindan uretilmemis.")
+    match = re.search(
+        r"CONFIG_PATH\s*=\s*Path\((['\"])(?P<path>.+?)\1\)",
+        source,
+    )
+    if not match:
+        raise ValueError("DAG icinde CONFIG_PATH cozumlenemedi.")
+    return Path(match.group("path"))
+
+
+def _find_studio_dag_file_by_id(dag_id: str) -> Path | None:
+    gen_root = _generated_dag_root()
+    candidate_name = f"{dag_id}.py"
+    for path in gen_root.rglob(candidate_name):
+        if path.is_file():
+            return path
+    return None
+
+
+def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
+    did = (dag_id or "").strip()
+    if not did:
+        raise ValueError("dag_id zorunludur.")
+
+    if _is_legacy_dag_id(did):
+        return {
+            "dag_id": did,
+            "supported_for_update": False,
+            "reason": "legacy_dag_id_not_supported",
+            "migration_hint": (
+                "Bu DAG legacy formatta. ETL Studio'da yeni naming ile "
+                "'Create DAG + YAML' calistirip yeni DAG uzerinden update edin."
+            ),
+            "migration_url": "/etl-studio/",
+        }
+
+    dag_path = _find_studio_dag_file_by_id(did)
+    if dag_path is None:
+        raise FileNotFoundError(f"DAG bulunamadi: {did}")
+
+    config_path = _extract_config_path_from_dag_source(dag_path)
+    if not config_path.is_file():
+        raise ValueError("DAG bulundu ancak bagli YAML dosyasi bulunamadi.")
+
+    projects_root = _projects_root().resolve()
+    config_resolved = config_path.resolve()
+    try:
+        rel = config_resolved.relative_to(projects_root)
+    except ValueError as exc:
+        raise ValueError("YAML path ETL Studio projects root altinda degil.") from exc
+    if len(rel.parts) < 5:
+        raise ValueError("YAML path hiyerarsisi gecersiz.")
+    project, domain, level, flow = rel.parts[:4]
+
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("YAML root dict olmalidir.")
+    tasks = raw.get("etl_tasks") or []
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError("YAML etl_tasks listesi bos veya gecersiz.")
+    task = tasks[0]
+    if not isinstance(task, dict):
+        raise ValueError("etl_tasks[0] dict olmalidir.")
+
+    partitioning = task.get("partitioning") or {}
+    if not isinstance(partitioning, dict):
+        partitioning = {}
+
+    payload = {
+        "project": project,
+        "domain": domain,
+        "level": level,
+        "flow": flow,
+        "group_no": _extract_group_no(did, config_path),
+        "task_group_id": str(task.get("task_group_id") or "").strip() or None,
+        "source_conn_id": str(raw.get("source_db_var") or "").strip(),
+        "target_conn_id": str(raw.get("target_db_var") or "").strip(),
+        "source_schema": str(task.get("source_schema") or "").strip(),
+        "source_table": str(task.get("source_table") or "").strip(),
+        "source_type": str(task.get("source_type") or "table").strip() or "table",
+        "target_schema": str(task.get("target_schema") or "").strip(),
+        "target_table": str(task.get("target_table") or "").strip(),
+        "load_method": (
+            str(task.get("load_method") or "create_if_not_exists_or_truncate").strip()
+            or "create_if_not_exists_or_truncate"
+        ),
+        "column_mapping_mode": (
+            str(task.get("column_mapping_mode") or "source").strip() or "source"
+        ),
+        "mapping_file": str(task.get("mapping_file") or "").strip() or None,
+        "where": str(task.get("where") or "").strip() or None,
+        "batch_size": int(task.get("batch_size") or 10000),
+        "partitioning_enabled": bool(partitioning.get("enabled", False)),
+        "partitioning_mode": str(partitioning.get("mode") or "auto").strip() or "auto",
+        "partitioning_column": str(partitioning.get("column") or "").strip() or None,
+        "partitioning_parts": int(partitioning.get("parts") or 2),
+        "partitioning_ranges": partitioning.get("ranges") or [],
+    }
+
+    return {
+        "dag_id": did,
+        "supported_for_update": True,
+        "reason": None,
+        "migration_hint": None,
+        "migration_url": None,
+        "payload": payload,
+        "dag_path": dag_path.as_posix(),
+        "config_path": config_path.as_posix(),
+    }
 
 
 def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:

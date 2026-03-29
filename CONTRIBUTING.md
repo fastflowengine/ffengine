@@ -39,3 +39,11 @@ contracts only. Enterprise-only runtime capabilities must not be added here.
 
 Do not commit credentials, tokens, production URLs with secrets, or customer data.
 Report vulnerabilities using the process in `SECURITY.md`.
+
+## WBS Tracking Policy
+
+- Canonical work breakdown source: `handbook/wbs/WBS_COMMUNITY.md`
+- Wave 7 epic sequence: `C12 -> C13 -> C14`
+- When starting or closing an epic, update both:
+  - WBS row in `handbook/wbs/WBS_COMMUNITY.md`
+  - Related context file under `handbook/context/`

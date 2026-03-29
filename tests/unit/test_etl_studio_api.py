@@ -76,6 +76,10 @@ def test_index_html_ok(client):
     assert "tryAttachAirflowCss" in r.text
     assert "loadConnections" in r.text
     assert "loadFolderOptions" in r.text
+    assert "preload_dag_id" in r.text
+    assert "Load DAG Context" in r.text
+    assert "resolveInitialDagId" in r.text
+    assert "/api/dag-config" in r.text
     assert "project_options" in r.text
     assert "Filter & Bindings" in r.text
     assert "Create DAG + YAML" in r.text
@@ -396,6 +400,80 @@ def test_timeline_mocked(client):
         r = client.get("/api/timeline?dag_id=d1&state=success&limit=10")
     assert r.status_code == 200
     assert r.json()["count"] == 1
+
+
+def test_dag_config_mocked_success(client):
+    mocked = {
+        "dag_id": "whk_to_stg_level1_group_1_dag",
+        "supported_for_update": True,
+        "reason": None,
+        "migration_hint": None,
+        "migration_url": None,
+        "payload": {"project": "webhook"},
+    }
+    with patch.object(api_app_module, "resolve_dag_config_for_update", return_value=mocked):
+        r = client.get("/api/dag-config?dag_id=whk_to_stg_level1_group_1_dag")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["supported_for_update"] is True
+    assert body["payload"]["project"] == "webhook"
+
+
+def test_dag_config_mocked_legacy_guard(client):
+    mocked = {
+        "dag_id": "ffengine_config_group_12_public_ff_test_data_to_dbo_ff_test_data_psql_v12",
+        "supported_for_update": False,
+        "reason": "legacy_dag_id_not_supported",
+        "migration_hint": "legacy",
+        "migration_url": "/etl-studio/",
+    }
+    with patch.object(api_app_module, "resolve_dag_config_for_update", return_value=mocked):
+        r = client.get(
+            "/api/dag-config?dag_id=ffengine_config_group_12_public_ff_test_data_to_dbo_ff_test_data_psql_v12"
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["supported_for_update"] is False
+    assert body["reason"] == "legacy_dag_id_not_supported"
+
+
+def test_dag_config_not_found_returns_404(client):
+    with patch.object(
+        api_app_module,
+        "resolve_dag_config_for_update",
+        side_effect=FileNotFoundError("DAG bulunamadi: missing_dag"),
+    ):
+        r = client.get("/api/dag-config?dag_id=missing_dag")
+    assert r.status_code == 404
+    assert "missing_dag" in r.json()["detail"]
+
+
+def test_resolve_dag_config_for_update_roundtrip(client, studio_paths):
+    payload = _minimal_table_payload()
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    dag_id = Path(r.json()["dag_path"]).stem
+
+    resolved = ss.resolve_dag_config_for_update(dag_id)
+    assert resolved["supported_for_update"] is True
+    assert resolved["payload"]["project"] == "webhook"
+    assert resolved["payload"]["domain"] == "whk"
+    assert resolved["payload"]["level"] == "level1"
+    assert resolved["payload"]["flow"] == "src_to_stg"
+    assert resolved["payload"]["group_no"] == 1
+    assert resolved["payload"]["source_conn_id"] == "src_c"
+    assert resolved["payload"]["target_conn_id"] == "tgt_c"
+    assert resolved["payload"]["source_table"] == "orders"
+    assert resolved["payload"]["target_table"] == "orders_stg"
+
+
+def test_resolve_dag_config_for_update_legacy_guard():
+    dag_id = "ffengine_config_group_12_public_ff_test_data_to_dbo_ff_test_data_psql_v12"
+    resolved = ss.resolve_dag_config_for_update(dag_id)
+    assert resolved["supported_for_update"] is False
+    assert resolved["reason"] == "legacy_dag_id_not_supported"
 
 
 def test_dag_payload_invalid_source_type():

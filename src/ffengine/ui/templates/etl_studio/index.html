@@ -200,6 +200,32 @@
       margin-top: 6px;
     }
 
+    .status-note {
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      color: #334155;
+    }
+
+    .status-note.ok {
+      border-color: #86efac;
+      background: #f0fdf4;
+      color: #166534;
+    }
+
+    .status-note.warn {
+      border-color: #fca5a5;
+      background: #fef2f2;
+      color: #991b1b;
+    }
+
+    .hidden {
+      display: none;
+    }
+
     .response {
       margin-top: 14px;
       border: 1px solid var(--line);
@@ -280,6 +306,17 @@
           Task Group ID (Folder Name)
           <input id="task_group_id" placeholder="ornek: src_orders_to_dwh_orders_v1">
         </label>
+        <div class="row-2" style="margin-top:10px;">
+          <label>
+            Update Preload DAG ID
+            <input id="preload_dag_id" placeholder="ornek: whk_to_stg_level1_group_12_dag">
+          </label>
+          <div style="display:flex; align-items:flex-end;">
+            <button class="btn btn-neutral" id="btn_preload_dag" type="button">Load DAG Context</button>
+          </div>
+        </div>
+        <div id="update_mode_status" class="status-note hidden"></div>
+        <div id="legacy_guard" class="status-note warn hidden"></div>
 
         <div class="task-layout">
           <div class="stack">
@@ -477,6 +514,34 @@
     const show = (value) => { out.textContent = JSON.stringify(value, null, 2); };
 
     function el(id) { return document.getElementById(id); }
+    let updateGuardLocked = false;
+
+    function setUpdateModeStatus(message, variant) {
+      const box = el("update_mode_status");
+      box.classList.remove("hidden", "ok", "warn");
+      if (variant === "ok") box.classList.add("ok");
+      if (variant === "warn") box.classList.add("warn");
+      box.textContent = message;
+    }
+
+    function setLegacyGuard(data) {
+      const hint = (data && data.migration_hint) || "Legacy DAG update mode desteklenmiyor.";
+      const url = (data && data.migration_url) || "/etl-studio/";
+      const box = el("legacy_guard");
+      box.classList.remove("hidden");
+      box.innerHTML = `${hint} <a href="${url}">Migration rehberi</a>`;
+      updateGuardLocked = true;
+      el("btn_update").disabled = true;
+      setUpdateModeStatus("Legacy DAG icin update kilitlendi.", "warn");
+    }
+
+    function clearLegacyGuard() {
+      const box = el("legacy_guard");
+      box.classList.add("hidden");
+      box.textContent = "";
+      updateGuardLocked = false;
+      el("btn_update").disabled = false;
+    }
 
     function parseJsonArray(raw) {
       const text = (raw || "").trim();
@@ -487,6 +552,19 @@
       } catch (_err) {
         return [];
       }
+    }
+
+    function setConnectionValue(selectId, connId) {
+      const select = el(selectId);
+      if (!connId) return;
+      const has = Array.from(select.options).some((opt) => opt.value === connId);
+      if (!has) {
+        const opt = document.createElement("option");
+        opt.value = connId;
+        opt.textContent = `${connId} (missing)`;
+        select.appendChild(opt);
+      }
+      select.value = connId;
     }
 
     function fillConnectionSelect(selectId, items, preferredConnId) {
@@ -561,6 +639,74 @@
 
       fillConnectionSelect("source_conn_id", items, "ffengine_source");
       fillConnectionSelect("target_conn_id", items, "ffengine_target");
+    }
+
+    function applyPreloadPayload(payload, dagId) {
+      el("project").value = payload.project || "";
+      el("domain").value = payload.domain || "";
+      el("level").value = payload.level || "";
+      el("flow").value = payload.flow || "";
+      el("group_no").value = String(payload.group_no || 1);
+      el("task_group_id").value = payload.task_group_id || "";
+      el("source_schema").value = payload.source_schema || "";
+      el("source_table").value = payload.source_table || "";
+      el("source_type").value = payload.source_type || "table";
+      el("target_schema").value = payload.target_schema || "";
+      el("target_table").value = payload.target_table || "";
+      el("load_method").value = payload.load_method || "create_if_not_exists_or_truncate";
+      el("column_mapping_mode").value = payload.column_mapping_mode || "source";
+      el("mapping_file").value = payload.mapping_file || "";
+      el("where").value = payload.where || "";
+      el("batch_size").value = String(payload.batch_size || 10000);
+      el("partitioning_enabled").checked = !!payload.partitioning_enabled;
+      el("partitioning_mode").value = payload.partitioning_mode || "auto";
+      el("partitioning_column").value = payload.partitioning_column || "";
+      el("partitioning_parts").value = String(payload.partitioning_parts || 2);
+      el("partitioning_ranges").value = JSON.stringify(payload.partitioning_ranges || []);
+      el("timeline_dag_id").value = dagId || "";
+      setConnectionValue("source_conn_id", payload.source_conn_id || "");
+      setConnectionValue("target_conn_id", payload.target_conn_id || "");
+    }
+
+    async function preloadByDagId(rawDagId) {
+      const dagId = (rawDagId || "").trim();
+      if (!dagId) {
+        setUpdateModeStatus("Preload icin dag_id girin.", "warn");
+        return;
+      }
+      el("preload_dag_id").value = dagId;
+      const r = await fetch(`${base}/api/dag-config?dag_id=${encodeURIComponent(dagId)}`);
+      const data = await r.json();
+      show({ status_code: r.status, ...data });
+      if (!r.ok || !data.ok) {
+        clearLegacyGuard();
+        setUpdateModeStatus(`DAG preload basarisiz: ${data.detail || r.status}`, "warn");
+        return;
+      }
+      if (!data.supported_for_update) {
+        setLegacyGuard(data);
+        return;
+      }
+      clearLegacyGuard();
+      applyPreloadPayload(data.payload || {}, dagId);
+      await loadFolderOptions();
+      setUpdateModeStatus(`Update mode loaded: ${dagId}`, "ok");
+    }
+
+    function resolveInitialDagId() {
+      const params = new URLSearchParams(window.location.search || "");
+      const fromQuery = (params.get("dag_id") || "").trim();
+      if (fromQuery) return fromQuery;
+
+      const ref = (document.referrer || "").trim();
+      if (!ref) return "";
+      try {
+        const u = new URL(ref);
+        const m = u.pathname.match(/\/dags\/([^\/?#]+)/);
+        return m ? decodeURIComponent(m[1]) : "";
+      } catch (_err) {
+        return "";
+      }
     }
 
     async function getJson(url) {
@@ -644,7 +790,16 @@
     };
 
     el("btn_create").onclick = () => postJson(`${base}/api/create-dag`, collectPayload());
-    el("btn_update").onclick = () => postJson(`${base}/api/update-dag`, collectPayload());
+    el("btn_update").onclick = () => {
+      if (updateGuardLocked) {
+        return show({
+          ok: false,
+          detail: "Legacy DAG update mode desteklenmiyor. Yeni naming ile DAG olusturun.",
+        });
+      }
+      return postJson(`${base}/api/update-dag`, collectPayload());
+    };
+    el("btn_preload_dag").onclick = () => preloadByDagId(el("preload_dag_id").value);
 
     el("btn_timeline").onclick = () => {
       const dagId = el("timeline_dag_id").value.trim() || el("task_group_id").value.trim();
@@ -661,8 +816,16 @@
     el("domain").addEventListener("input", loadFolderOptions);
     el("level").addEventListener("input", loadFolderOptions);
 
-    loadFolderOptions();
-    loadConnections();
+    async function initPage() {
+      await loadFolderOptions();
+      await loadConnections();
+      const initialDagId = resolveInitialDagId();
+      if (initialDagId) {
+        await preloadByDagId(initialDagId);
+      }
+    }
+
+    initPage();
   </script>
 </body>
 </html>

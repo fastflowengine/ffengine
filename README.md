@@ -70,6 +70,9 @@ ETL Studio now uses a hard-switched hierarchical model for YAML and DAG generati
 - DAG naming standard:
   `<domain>_to_<flow_target>_<level>_group_<n>_dag.py`
 - One DAG Python file per group under the flow path; each DAG parses its own YAML and creates `FFEngineOperator` tasks from `etl_tasks`.
+- Update mode deep-link:
+  `/etl-studio/?dag_id=<dag_id>` opens ETL Studio with DAG config preload.
+- Legacy DAG IDs (`ffengine_config_*`, `ffengine_*`) are read-only for update mode; ETL Studio shows a migration guard instead of silent fallback.
 
 Environment defaults (if not overridden):
 
@@ -101,6 +104,11 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 
 - Detailed Airflow 3.1.6 execution/scheduler bugfix and verification guide:
   [`docs/airflow-execution-api-bugfix.md`](docs/airflow-execution-api-bugfix.md)
+
+## Debugpy UAT
+
+- Docker icinde asamali breakpoint UAT playbook:
+  [`docs/debugpy-uat-playbook.md`](docs/debugpy-uat-playbook.md)
 
 ## Type Mapping Contract
 
@@ -139,3 +147,11 @@ docker-compose -p ffengine-core -f docker/docker-compose.yml --env-file .env up 
 ```bash
 docker-compose -p ffengine-test -f docker/docker-compose.test.yml --env-file .env up -d --remove-orphans
 ```
+
+## Wave Tracking
+
+- Canonical WBS source: [`handbook/wbs/WBS_COMMUNITY.md`](handbook/wbs/WBS_COMMUNITY.md)
+- Wave 7 contexts:
+  - [`handbook/context/C12_ETL_STUDIO_EVOLUTION.md`](handbook/context/C12_ETL_STUDIO_EVOLUTION.md)
+  - [`handbook/context/C13_DEBUGPY_UAT.md`](handbook/context/C13_DEBUGPY_UAT.md)
+  - [`handbook/context/C14_UAT_RELEASE_GATES.md`](handbook/context/C14_UAT_RELEASE_GATES.md)

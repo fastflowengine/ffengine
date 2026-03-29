@@ -20,6 +20,7 @@ from ffengine.errors import http_status_for, normalize_exception
 from ffengine.ui.studio_service import (
     STUDIO_DAG_MARKER,
     create_or_update_dag,
+    resolve_dag_config_for_update,
     discover_connections,
     discover_columns,
     discover_hierarchy_options,
@@ -247,5 +248,16 @@ def api_timeline(
     try:
         items = fetch_timeline_runs(limit=limit, dag_id=dag_id, state=state)
         return {"ok": True, "items": items, "count": len(items)}
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@etl_studio_app.get("/api/dag-config")
+def api_dag_config(dag_id: str = Query(..., min_length=1)) -> dict[str, Any]:
+    try:
+        result = resolve_dag_config_for_update(dag_id=dag_id)
+        return {"ok": True, **result}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         _raise_http_from_exception(exc)
