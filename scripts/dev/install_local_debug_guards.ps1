@@ -62,8 +62,9 @@ if ((Test-Path $prePushPath) -and -not $Force) {
     throw "pre-push hook zaten var. Uzerine yazmak icin -Force kullanin."
 }
 
-Set-Content -Path $preCommitPath -Value $preCommitContent -Encoding UTF8
-Set-Content -Path $prePushPath -Value $prePushContent -Encoding UTF8
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($preCommitPath, ($preCommitContent -replace "`r`n", "`n"), $utf8NoBom)
+[System.IO.File]::WriteAllText($prePushPath, ($prePushContent -replace "`r`n", "`n"), $utf8NoBom)
 
 Write-Host "Local debug guard hook'lari yazildi:"
 Write-Host " - $preCommitPath"
