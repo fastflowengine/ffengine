@@ -15,3 +15,4 @@ tempdir/
 tempdir_ready/
 handbook/
 docker/docker-compose.local.debug.yml
+/.vscode/
