@@ -73,6 +73,11 @@ def test_index_html_ok(client):
     assert "ETL Configuration Studio" in r.text
     assert 'const base = "/etl-studio"' in r.text
     assert "tryAttachAirflowCss" in r.text
+    assert "applyAirflowThemeAssets" in r.text
+    assert "loadThemeFromPluginEntryScript" in r.text
+    assert "theme_notice" in r.text
+    assert "theme_source_debug" in r.text
+    assert "data-theme-source" in r.text
     assert "loadConnections" in r.text
     assert "loadFolderOptions" in r.text
     assert "preload_dag_id" not in r.text

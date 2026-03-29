@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="tr">
 <head>
   <meta charset="utf-8">
@@ -6,12 +6,21 @@
   <title>ETL Studio</title>
   <style>
     :root {
-      --bg: #f3f6fb;
-      --card: #ffffff;
-      --line: #dbe2ea;
-      --text: #17233a;
-      --muted: #5a6b85;
-      --focus: var(--primary-color, #0175ff);
+      --bg: var(--color-bg-main, var(--bs-body-bg, #f5f7fb));
+      --card: var(--color-bg-1, var(--bs-secondary-bg, #ffffff));
+      --line: var(--color-border, var(--bs-border-color, #dbe2ea));
+      --text: var(--color-text, var(--bs-body-color, #0f172a));
+      --muted: var(--color-text-secondary, var(--bs-secondary-color, #64748b));
+      --focus: var(--bs-primary, var(--primary-color, #0175ff));
+    }
+
+    :root[data-theme="dark"], :root[data-color-mode="dark"], .chakra-ui-dark {
+      --bg: var(--chakra-colors-chakra-body-bg, #0f172a) !important;
+      --card: var(--chakra-colors-chakra-subtle-bg, #1e293b) !important;
+      --line: var(--chakra-colors-chakra-border-color, #334155) !important;
+      --text: var(--chakra-colors-chakra-body-text, #f8fafc) !important;
+      --muted: var(--chakra-colors-chakra-subtle-text, #94a3b8) !important;
+      --focus: var(--chakra-colors-default, #38bdf8) !important;
     }
 
     body {
@@ -19,6 +28,12 @@
       background: var(--bg);
       color: var(--text);
       font-family: var(--font-family-base, "Segoe UI", Arial, sans-serif);
+    }
+
+    body.etl-studio-root {
+      opacity: 1 !important;
+      filter: none !important;
+      mix-blend-mode: normal !important;
     }
 
     .page {
@@ -48,12 +63,45 @@
     }
 
     .panel-title {
-      background: #eef3fa;
+      background: color-mix(in srgb, var(--card) 92%, var(--line) 8%);
       padding: 10px 14px;
       font-size: 13px;
       font-weight: 700;
       border-bottom: 1px solid var(--line);
     }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background 0.15s, border 0.15s;
+      background: color-mix(in srgb, var(--card) 90%, var(--line) 10%);
+      color: var(--text);
+    }
+    .btn-primary {
+      background: var(--focus);
+      color: #fff;
+    }
+    .btn-secondary {
+      background: color-mix(in srgb, var(--bg) 90%, var(--line) 10%);
+      border-color: var(--line);
+    }
+    .btn-success {
+      background: color-mix(in srgb, #16a34a 90%, var(--card) 10%);
+      color: #fff;
+    }
+    .btn-danger {
+      background: color-mix(in srgb, #dc2626 90%, var(--card) 10%);
+      color: #fff;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
     .panel-body {
       padding: 14px;
@@ -74,7 +122,7 @@
       padding: 10px 12px;
       border-radius: 8px;
       border: 1px solid var(--line);
-      background: #eef4fb;
+      background: color-mix(in srgb, var(--card) 94%, var(--line) 6%);
     }
 
     .task-head h3 {
@@ -98,7 +146,7 @@
     }
 
     .task-card:nth-child(even) .task-head {
-      background: #e9f1fb;
+      background: transparent;
     }
 
     .stack {
@@ -109,7 +157,7 @@
     .sub-card {
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: var(--card);
+      background: color-mix(in srgb, var(--card) 96%, var(--line) 4%);
       padding: 12px;
     }
 
@@ -118,7 +166,7 @@
       font-size: 13px;
       text-transform: uppercase;
       letter-spacing: .3px;
-      color: var(--muted);
+      color: var(--text);
     }
 
     .row-2 {
@@ -163,7 +211,7 @@
 
     .tab-btn {
       border: 1px solid transparent;
-      background: transparent;
+      background: color-mix(in srgb, var(--card) 96%, var(--line) 4%);
       color: var(--text);
       cursor: pointer;
       padding: 8px 12px;
@@ -175,7 +223,7 @@
     .tab-btn.active {
       background: var(--card);
       border-color: var(--line);
-      border-bottom-color: var(--card);
+      border-bottom-color: transparent;
       font-weight: 700;
     }
 
@@ -196,25 +244,10 @@
     }
 
     .source-card {
-      background: #f6faff;
-      border-color: #cfe0fb;
+      background: color-mix(in srgb, var(--card) 96%, #dbeafe 4%);
     }
-
-    .source-card h4 {
-      color: #0c4a8a;
-    }
-
     .target-card {
-      background: #f3faf2;
-      border-color: #cde6c8;
-    }
-
-    .target-card h4 {
-      color: #2f6b22;
-    }
-
-    .btn {
-      font-weight: 600;
+      background: color-mix(in srgb, var(--card) 96%, #dcfce7 4%);
     }
 
     .muted-note {
@@ -229,20 +262,20 @@
       border-radius: 6px;
       font-size: 12px;
       border: 1px solid #cbd5e1;
-      background: #f8fafc;
-      color: #334155;
+      background: color-mix(in srgb, var(--card) 96%, #fef2f2 4%);
+      color: var(--text);
     }
 
     .status-note.ok {
-      border-color: #86efac;
-      background: #f0fdf4;
-      color: #166534;
+      border-color: color-mix(in srgb, #16a34a 35%, var(--line) 65%);
+      background: color-mix(in srgb, #16a34a 10%, var(--card) 90%);
+      color: var(--text);
     }
 
     .status-note.warn {
-      border-color: #fca5a5;
-      background: #fef2f2;
-      color: #991b1b;
+      border-color: color-mix(in srgb, #dc2626 35%, var(--line) 65%);
+      background: color-mix(in srgb, #dc2626 10%, var(--card) 90%);
+      color: var(--text);
     }
 
     .hidden {
@@ -253,8 +286,8 @@
       margin-top: 14px;
       border: 1px solid var(--line);
       border-radius: 8px;
-      background: #0b1220;
-      color: #d6e0f0;
+      background: color-mix(in srgb, var(--card) 92%, var(--line) 8%);
+      color: var(--text);
       padding: 12px;
       font-size: 12px;
       white-space: pre-wrap;
@@ -289,7 +322,7 @@
       position: relative;
       margin: 4vh auto 0;
       width: min(1200px, 96vw);
-      background: #fff;
+      background: transparent;
       border: 1px solid var(--line);
       border-radius: 10px;
       box-shadow: 0 20px 40px rgba(2, 6, 23, 0.25);
@@ -303,7 +336,7 @@
       gap: 10px;
       padding: 12px 14px;
       border-bottom: 1px solid var(--line);
-      background: #f8fafc;
+      background: transparent;
     }
 
     .picker-head h3 {
@@ -313,10 +346,10 @@
 
     .picker-summary {
       font-size: 12px;
-      color: #334155;
+      color: inherit;
       padding: 8px 14px;
       border-bottom: 1px solid var(--line);
-      background: #fff;
+      background: transparent;
     }
 
     .picker-grid {
@@ -348,7 +381,7 @@
       border-radius: 8px;
       max-height: 260px;
       overflow: auto;
-      background: #fff;
+      background: transparent;
     }
 
     .picker-item {
@@ -356,10 +389,10 @@
       text-align: left;
       border: 0;
       border-bottom: 1px solid #eef2f7;
-      background: #fff;
+      background: transparent;
       padding: 8px 10px;
       font-size: 13px;
-      color: #1e293b;
+      color: inherit;
       cursor: pointer;
     }
 
@@ -369,14 +402,14 @@
 
     .picker-item.active {
       font-weight: 700;
-      background: #eff6ff;
-      color: #1d4ed8;
+      background: transparent;
+      color: inherit;
     }
 
     .picker-empty {
       padding: 10px;
       font-size: 12px;
-      color: #64748b;
+      color: inherit;
     }
 
     .picker-add {
@@ -397,7 +430,7 @@
       gap: 8px;
       padding: 10px 14px;
       border-top: 1px solid var(--line);
-      background: #f8fafc;
+      background: transparent;
     }
 
     @media (max-width: 1100px) {
@@ -407,63 +440,9 @@
       .picker-col { border-right: none; border-bottom: 1px solid var(--line); }
       .picker-col:last-child { border-bottom: none; }
     }
-    /* Airflow global CSS override'larına karşı scoped, yüksek öncelikli ETL Studio stilleri */
-    .etl-studio .panel,
-    .etl-studio .task-card,
-    .etl-studio .sub-card {
-      background: var(--card);
-    }
-
-    .etl-studio .btn {
-      border: 0;
-      border-radius: 7px;
-      padding: 9px 12px;
-      font-size: 13px;
-      font-weight: 700;
-      cursor: pointer;
-      line-height: 1.2;
-    }
-
-    .etl-studio .btn.btn-primary {
-      background: #2563eb;
-      color: #fff;
-    }
-
-    .etl-studio .btn.btn-success {
-      background: #0f9d58;
-      color: #fff;
-    }
-
-    .etl-studio .btn.btn-danger {
-      background: #dc2626;
-      color: #fff;
-    }
-
-    .etl-studio .btn.btn-secondary {
-      background: #475569;
-      color: #fff;
-    }
-
-    .etl-studio .task-head {
-      background: color-mix(in srgb, var(--card) 86%, var(--text) 14%);
-    }
-
-    .etl-studio .task-card:nth-child(even) .task-head {
-      background: color-mix(in srgb, var(--card) 82%, var(--text) 18%);
-    }
-
-    .etl-studio .source-card {
-      background: color-mix(in srgb, var(--card) 92%, #3b82f6 8%);
-      border-color: color-mix(in srgb, var(--line) 78%, #3b82f6 22%);
-    }
-
-    .etl-studio .target-card {
-      background: color-mix(in srgb, var(--card) 92%, #22c55e 8%);
-      border-color: color-mix(in srgb, var(--line) 78%, #22c55e 22%);
-    }
   </style>
 </head>
-<body>
+<body class="etl-studio-root">
   <div class="page etl-studio">
     <header class="page-header">
       <h1>ETL Configuration Studio</h1>
@@ -471,6 +450,8 @@
         Airflow 3 native ETL Studio: tek formdan YAML + DAG otomatik olustur/guncelle.
       </p>
     </header>
+    <div id="theme_notice" class="status-note warn hidden"></div>
+    <div id="theme_source_debug" class="muted-note"></div>
 
     <div class="actions hidden" id="update_actions_top">
       <button class="btn btn-primary" id="btn_update_top" type="button">Guncelle</button>
@@ -711,30 +692,240 @@
 
   <script>
     const base = "/etl-studio";
+    const THEME_CACHE_KEY = "etl_studio_airflow_theme_css_v1";
 
-    // Airflow plugin sayfasi icinde iframe olarak acildiysa parent'taki stylesheet'leri kopyalar.
-    function inheritParentStyles() {
+    function setThemeSource(source) {
+      document.documentElement.setAttribute("data-theme-source", source);
+      const debug = el("theme_source_debug");
+      if (debug) {
+        debug.textContent = `Theme source: ${source}`;
+      }
+    }
+
+    function syncThemeTokensFromDocument(doc) {
       try {
-        if (window.parent === window) return;
-        const links = window.parent.document.querySelectorAll('link[rel="stylesheet"][href]');
-        const existing = new Set(
+        const root = (doc && doc.documentElement) ? doc.documentElement : document.documentElement;
+        const body = (doc && doc.body) ? doc.body : document.body;
+        if (root.hasAttribute("data-theme")) {
+            document.documentElement.setAttribute("data-theme", root.getAttribute("data-theme"));
+        }
+        if (root.hasAttribute("data-color-mode")) {
+            document.documentElement.setAttribute("data-color-mode", root.getAttribute("data-color-mode"));
+        }
+        if (root.classList.contains("chakra-ui-dark") || (body && body.classList.contains("chakra-ui-dark"))) {
+            document.documentElement.classList.add("chakra-ui-dark");
+        } else if (root.classList.contains("chakra-ui-light") || (body && body.classList.contains("chakra-ui-light"))) {
+            document.documentElement.classList.add("chakra-ui-light");
+        }
+        const rootStyle = window.getComputedStyle(root);
+        const st = window.getComputedStyle(body);
+        const font = st.fontFamily;
+        const textColor = st.color;
+        const backgroundColor = st.backgroundColor;
+        const bodyVars = window.getComputedStyle(body);
+
+        const getToken = (...names) => {
+          for (const name of names) {
+            const v1 = (rootStyle.getPropertyValue(name) || "").trim();
+            if (v1) return v1;
+            const v2 = (bodyVars.getPropertyValue(name) || "").trim();
+            if (v2) return v2;
+          }
+          return "";
+        };
+
+        const isTransparent = (value) => {
+          if (!value) return true;
+          const v = value.toLowerCase();
+          return v === "transparent" || v.includes("rgba(") && v.includes(", 0)");
+        };
+
+        const isVeryLightRgb = (value) => {
+          const m = value && value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+          if (!m) return false;
+          const r = Number(m[1]);
+          const g = Number(m[2]);
+          const b = Number(m[3]);
+          return r > 220 && g > 220 && b > 220;
+        };
+        if (font) {
+          document.documentElement.style.setProperty("--font-family-base", font);
+        }
+        const airflowBg = getToken("--chakra-colors-chakra-body-bg", "--chakra-colors-bg-panel", "--chakra-colors-bg-base", "--color-bg-main", "--bs-body-bg");
+        const airflowCard = getToken("--chakra-colors-chakra-subtle-bg", "--chakra-colors-bg-surface", "--color-bg-1", "--bs-secondary-bg");
+        const airflowLine = getToken("--chakra-colors-chakra-border-color", "--chakra-colors-border-default", "--chakra-colors-border", "--color-border", "--bs-border-color");
+        const airflowText = getToken("--chakra-colors-chakra-body-text", "--chakra-colors-text-default", "--chakra-colors-text", "--color-text", "--bs-body-color");
+        const airflowMuted = getToken("--chakra-colors-chakra-subtle-text", "--chakra-colors-text-muted", "--color-text-secondary", "--bs-secondary-color");
+
+        if (airflowBg) {
+          document.documentElement.style.setProperty("--bg", airflowBg);
+        } else if (backgroundColor && !isTransparent(backgroundColor)) {
+          document.documentElement.style.setProperty("--bg", backgroundColor);
+        }
+        if (airflowCard) {
+          document.documentElement.style.setProperty("--card", airflowCard);
+        }
+        if (airflowLine) {
+          document.documentElement.style.setProperty("--line", airflowLine);
+        }
+        if (airflowText) {
+          document.documentElement.style.setProperty("--text", airflowText);
+        } else if (textColor && !isVeryLightRgb(textColor)) {
+          document.documentElement.style.setProperty("--text", textColor);
+        } else {
+          document.documentElement.style.setProperty("--text", "#0f172a");
+        }
+        if (airflowMuted) {
+          document.documentElement.style.setProperty("--muted", airflowMuted);
+        } else {
+          document.documentElement.style.setProperty("--muted", "#64748b");
+        }
+        // Copy critical Airflow/Chakra/Bootstrap CSS variables so controls inherit runtime theme.
+        for (let i = 0; i < rootStyle.length; i += 1) {
+          const key = rootStyle[i];
+          if (!key) continue;
+          if (key.startsWith("--bs-") || key.startsWith("--chakra-") || key.startsWith("--color-")) {
+            const value = rootStyle.getPropertyValue(key);
+            if (value) document.documentElement.style.setProperty(key, value.trim());
+          }
+        }
+      } catch (_err) {
+        // no-op
+      }
+    }
+
+    function showThemeNotice(message) {
+      const box = el("theme_notice");
+      box.classList.remove("hidden");
+      box.textContent = message;
+    }
+
+    function clearThemeNotice() {
+      const box = el("theme_notice");
+      box.classList.add("hidden");
+      box.textContent = "";
+    }
+
+    function copyParentThemeAssets() {
+      try {
+        if (window.parent === window) return 0;
+        const parentDoc = window.parent.document;
+        const existingLinks = new Set(
           Array.from(document.querySelectorAll('link[rel="stylesheet"][href]')).map((x) => x.href)
         );
-        for (const link of links) {
+        const existingStyleKeys = new Set(
+          Array.from(document.querySelectorAll("style[data-airflow-parent-style-key]"))
+            .map((x) => x.getAttribute("data-airflow-parent-style-key"))
+        );
+        let copied = 0;
+
+        const parentLinks = parentDoc.querySelectorAll('link[rel="stylesheet"][href]');
+        for (const link of parentLinks) {
           const href = link.href;
-          if (!href || existing.has(href)) continue;
+          if (!href || existingLinks.has(href)) continue;
           const clone = document.createElement("link");
           clone.rel = "stylesheet";
           clone.href = href;
           document.head.appendChild(clone);
-          existing.add(href);
+          existingLinks.add(href);
+          copied += 1;
         }
+
+        const parentStyles = parentDoc.querySelectorAll("style");
+        for (let i = 0; i < parentStyles.length; i += 1) {
+          const cssText = parentStyles[i].textContent || "";
+          if (!cssText.trim()) continue;
+          // Airflow app'in runtime global kurallarini (opacity, app layout vb.)
+          // buraya tasimamak icin yalniz tema token tanimlari olan stilleri kopyala.
+          const looksLikeThemeTokenBlock = (
+            cssText.includes("--color-bg-main")
+            || cssText.includes("--color-text")
+            || cssText.includes("--bs-body-bg")
+            || cssText.includes("--bs-body-color")
+            || cssText.includes("--chakra-colors")
+          );
+          if (!looksLikeThemeTokenBlock) continue;
+          const styleKey = `p_${i}_${cssText.length}_${cssText.slice(0, 32)}`;
+          if (existingStyleKeys.has(styleKey)) continue;
+          const clone = document.createElement("style");
+          clone.setAttribute("data-airflow-parent-style-key", styleKey);
+          clone.textContent = cssText;
+          document.head.appendChild(clone);
+          existingStyleKeys.add(styleKey);
+          copied += 1;
+        }
+        return copied;
       } catch (_err) {
-        // cross-origin veya parent erişim hatalarında sessizce devam
+        return 0;
       }
     }
 
-    // Airflow static CSS'i bulursa yukler; bulunamazsa local fallback stilleri kullanir.
+    function parseEntryScriptUrl(shellHtml) {
+      try {
+        const doc = new DOMParser().parseFromString(shellHtml, "text/html");
+        const candidates = Array.from(doc.querySelectorAll('script[type="module"][src]'))
+          .map((n) => n.getAttribute("src") || "")
+          .filter(Boolean);
+        if (!candidates.length) return "";
+        const preferred = candidates.find((s) => s.includes("/static/assets/index-")) || candidates[0];
+        return new URL(preferred, window.location.origin).toString();
+      } catch (_err) {
+        return "";
+      }
+    }
+
+    function extractInjectedCssFromEntryScript(scriptText) {
+      const match = scriptText.match(/document\.createTextNode\("((?:\\.|[^"\\])*)"\)/);
+      if (!match || !match[1]) return "";
+      try {
+        return JSON.parse(`"${match[1]}"`);
+      } catch (_err) {
+        return "";
+      }
+    }
+
+    function injectPluginCssText(cssText, marker) {
+      if (!cssText || !cssText.trim()) return false;
+      const existing = document.querySelector(`style[data-airflow-theme="${marker}"]`);
+      if (existing) return true;
+      const style = document.createElement("style");
+      style.setAttribute("data-airflow-theme", marker);
+      style.textContent = cssText;
+      document.head.appendChild(style);
+      return true;
+    }
+
+    async function loadThemeFromPluginEntryScript() {
+      const cached = sessionStorage.getItem(THEME_CACHE_KEY) || "";
+      if (cached && injectPluginCssText(cached, "plugin-script-cache")) {
+        return "plugin-script-cache";
+      }
+      const shellResp = await fetch("/plugin/etl_studio");
+      if (!shellResp.ok) {
+        throw new Error(`plugin_shell_${shellResp.status}`);
+      }
+      const shellHtml = await shellResp.text();
+      const entryUrl = parseEntryScriptUrl(shellHtml);
+      if (!entryUrl) {
+        throw new Error("plugin_entry_not_found");
+      }
+      const entryResp = await fetch(entryUrl);
+      if (!entryResp.ok) {
+        throw new Error(`plugin_entry_${entryResp.status}`);
+      }
+      const entryScript = await entryResp.text();
+      const cssText = extractInjectedCssFromEntryScript(entryScript);
+      if (!cssText) {
+        throw new Error("plugin_css_extract_failed");
+      }
+      sessionStorage.setItem(THEME_CACHE_KEY, cssText);
+      if (!injectPluginCssText(cssText, "plugin-script")) {
+        throw new Error("plugin_css_inject_failed");
+      }
+      return "plugin-script";
+    }
+
+    // Known static path fallback. Returns true if any CSS link is attached.
     async function tryAttachAirflowCss() {
       const candidates = [
         "/static/dist/main.css",
@@ -750,14 +941,60 @@
           link.rel = "stylesheet";
           link.href = href;
           document.head.appendChild(link);
-          return;
+          return true;
         } catch (_err) {
           // try next candidate
         }
       }
+      return false;
     }
-    inheritParentStyles();
-    tryAttachAirflowCss();
+
+    async function applyAirflowThemeAssets() {
+      clearThemeNotice();
+      const diagnostics = [];
+
+      let parentSynced = false;
+      try {
+        if (window.parent && window.parent !== window && window.parent.document) {
+          syncThemeTokensFromDocument(window.parent.document);
+          parentSynced = true;
+        }
+      } catch (_err) {
+        diagnostics.push("parent_cors_or_error");
+      }
+
+      const copied = copyParentThemeAssets();
+      if (parentSynced || copied > 0) {
+        if (!parentSynced) syncThemeTokensFromDocument(document);
+        setThemeSource("parent");
+        console.info(`[etl-studio-theme] source=parent copied_assets=${copied} direct_sync=${parentSynced}`);
+        return;
+      }
+      diagnostics.push("parent_assets=0");
+
+      try {
+        const source = await loadThemeFromPluginEntryScript();
+        syncThemeTokensFromDocument(document);
+        setThemeSource(source);
+        console.info(`[etl-studio-theme] source=${source}`);
+        return;
+      } catch (err) {
+        diagnostics.push(`plugin_script=${String(err && err.message || err)}`);
+      }
+
+      const linked = await tryAttachAirflowCss();
+      if (linked) {
+        syncThemeTokensFromDocument(document);
+        setThemeSource("known-static-link");
+        console.info("[etl-studio-theme] source=known-static-link");
+        return;
+      }
+      diagnostics.push("known_static_link=0");
+
+      setThemeSource("fallback");
+      showThemeNotice("Airflow tema assetleri yuklenemedi, fallback tema kullaniliyor.");
+      console.warn(`[etl-studio-theme] source=fallback ${diagnostics.join(" | ")}`);
+    }
 
     const out = document.getElementById("out");
     const show = (value) => { out.textContent = JSON.stringify(value, null, 2); };
@@ -1413,6 +1650,7 @@
     el("btn_add_flow").onclick = () => addDraftFolder("flow");
 
     async function initPage() {
+      await applyAirflowThemeAssets();
       setUpdateMode(false);
       syncFolderPathDisplay();
       clearAndLoadTasks([{}]);
