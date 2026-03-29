@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ffengine.config.schema import (
@@ -192,6 +193,11 @@ class DagUpsertPayload(BaseModel):
 
 
 etl_studio_app = FastAPI(title="ETL Studio", version="1.1.0")
+etl_studio_app.mount(
+    "/static",
+    StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
+    name="static"
+)
 
 
 def _load_index_html() -> str:
