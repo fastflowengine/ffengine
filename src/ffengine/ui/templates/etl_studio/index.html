@@ -14,7 +14,7 @@
       --focus: var(--bs-primary, var(--primary-color, #0175ff));
     }
 
-    :root[data-theme="dark"], :root[data-color-mode="dark"], .chakra-ui-dark {
+    :root[data-theme="dark"], :root[data-color-mode="dark"], .chakra-ui-dark, :root.force-dark-mode {
       --bg: var(--chakra-colors-chakra-body-bg, #0f172a) !important;
       --card: var(--chakra-colors-chakra-subtle-bg, #1e293b) !important;
       --line: var(--chakra-colors-chakra-border-color, #334155) !important;
@@ -743,11 +743,18 @@
         const isVeryLightRgb = (value) => {
           const m = value && value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
           if (!m) return false;
-          const r = Number(m[1]);
-          const g = Number(m[2]);
-          const b = Number(m[3]);
+          const r = Number(m[1]), g = Number(m[2]), b = Number(m[3]);
           return r > 220 && g > 220 && b > 220;
         };
+
+        const isDarkRgb = (value) => {
+          const m = value && value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+          if (!m) return false;
+          const r = Number(m[1]), g = Number(m[2]), b = Number(m[3]);
+          const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          return luma < 128;
+        };
+
         if (font) {
           document.documentElement.style.setProperty("--font-family-base", font);
         }
@@ -758,8 +765,10 @@
         const airflowMuted = getToken("--chakra-colors-chakra-subtle-text", "--chakra-colors-text-muted", "--color-text-secondary", "--bs-secondary-color");
 
         if (airflowBg) {
+          if (isDarkRgb(airflowBg)) document.documentElement.classList.add("force-dark-mode");
           document.documentElement.style.setProperty("--bg", airflowBg);
         } else if (backgroundColor && !isTransparent(backgroundColor)) {
+          if (isDarkRgb(backgroundColor)) document.documentElement.classList.add("force-dark-mode");
           document.documentElement.style.setProperty("--bg", backgroundColor);
         }
         if (airflowCard) {
