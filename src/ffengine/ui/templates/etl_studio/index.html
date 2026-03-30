@@ -4,14 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ETL Studio</title>
-  <link rel="stylesheet" href="/etl-studio/static/etl_studio/css/style.css?v=3">
+  <link rel="stylesheet" href="/etl-studio/static/etl_studio/css/style.css?v=8">
 </head>
-<body class="etl-studio-root">
+<body class="etl-studio-root" data-ui-variant="current">
   <div class="page etl-studio">
     <header class="page-header">
       <h1>ETL Configuration Studio</h1>
       <p>
-        Airflow 3 native ETL Studio: tek formdan YAML + DAG otomatik olustur/guncelle.
+        Airflow 3 native ETL Studio: generate/update YAML + DAG automatically from a single form.
       </p>
     </header>
     <div id="theme_notice" class="status-note warn hidden"></div>
@@ -103,11 +103,16 @@
       <div class="panel-body">
         <div id="update_mode_status" class="status-note hidden"></div>
         <div id="legacy_guard" class="status-note warn hidden"></div>
+        <div class="task-toolbar">
+          <button class="btn btn-secondary" id="btn_expand_all_tasks" type="button">Tumunu Ac</button>
+          <button class="btn btn-secondary" id="btn_collapse_all_tasks" type="button">Tumunu Kapat</button>
+        </div>
         <div id="tasks_container"></div>
         <datalist id="source_schema_options"></datalist>
         <datalist id="source_table_options"></datalist>
         <datalist id="target_schema_options"></datalist>
         <datalist id="target_table_options"></datalist>
+        <datalist id="airflow_variable_options"></datalist>
 
         <div class="muted-note">
           Not: Bir DAG icinde birden fazla task tanimlanabilir.
@@ -121,108 +126,45 @@
 
     <template id="task_card_template">
       <div class="task-card">
-        <div class="task-head">
+        <div class="task-head" role="button" tabindex="0" aria-expanded="true">
           <h3 class="task-title">Task #1</h3>
           <button class="btn btn-danger btn-delete-task" type="button">Delete</button>
         </div>
-        <label>
-          Task Group ID (Folder Name)
-          <input class="task-group-id" placeholder="ornek: src_orders_to_dwh_orders_v1">
-        </label>
-        <div class="task-layout">
-          <div class="stack">
+        <div class="task-content">
+          <label>
+            Task Group ID (Opsiyonel)
+            <input class="task-group-id" placeholder="ornek: src_orders_to_dwh_orders_v1">
+          </label>
+          <div class="task-layout">
             <div class="sub-card source-card">
-              <h4>Source Configuration</h4>
+            <h4>Source Configuration</h4>
+            <label>
+              Source Type
+              <select class="source-type">
+                <option value="table">Table</option>
+                <option value="sql">SQL Query</option>
+              </select>
+            </label>
+            <label class="source-sql-wrap hidden">
+              Source SQL Content (sql.sql)
+              <textarea
+                class="source-inline-sql"
+                rows="6"
+                placeholder="SELECT * FROM ..."
+              ></textarea>
+            </label>
+            <div class="row-2 source-table-wrap">
               <label>
-                Source Type
-                <select class="source-type">
-                  <option value="table">table</option>
-                  <option value="view">view</option>
-                </select>
+                Source Schema
+                <input class="source-schema" list="source_schema_options" value="public" placeholder="Type 3+ chars">
               </label>
-              <div class="row-2">
-                <label>
-                  Source Schema
-                  <input class="source-schema" list="source_schema_options" value="public" placeholder="Type 3+ chars">
-                </label>
-                <label>
-                  Source Table (Type to Search, 3+ chars)
-                  <input class="source-table" list="source_table_options" value="orders" placeholder="Type 3+ chars">
-                </label>
-              </div>
+              <label>
+                Source Table (Type to Search, 3+ chars)
+                <input class="source-table" list="source_table_options" value="orders" placeholder="Type 3+ chars">
+              </label>
             </div>
-            <div class="sub-card">
-              <div class="tabs" role="tablist">
-                <button class="tab-btn active" data-tab="filter" type="button">Filter & Bindings</button>
-                <button class="tab-btn" data-tab="partitioning" type="button">Partitioning</button>
-                <button class="tab-btn" data-tab="performance" type="button">Performance</button>
-                <button class="tab-btn" data-tab="mapping" type="button">Mapping</button>
-              </div>
-              <div class="tab-panel active" data-tab-panel="filter">
-                <label>
-                  Where Clause
-                  <textarea class="where" rows="4" placeholder="ornek: updated_at >= :last_sync"></textarea>
-                </label>
-              </div>
-              <div class="tab-panel" data-tab-panel="partitioning">
-                <label>
-                  <input class="partitioning-enabled" type="checkbox" style="width:auto; margin-right:8px;">
-                  Partitioning Enabled
-                </label>
-                <div class="row-2">
-                  <label>
-                    Column
-                    <input class="partitioning-column" placeholder="id">
-                  </label>
-                  <label>
-                    Mode
-                    <select class="partitioning-mode">
-                      <option value="auto">auto</option>
-                      <option value="auto_numeric">auto_numeric</option>
-                      <option value="percentile">percentile</option>
-                      <option value="hash_mod">hash_mod</option>
-                      <option value="distinct">distinct</option>
-                      <option value="explicit">explicit</option>
-                      <option value="full_scan">full_scan</option>
-                    </select>
-                  </label>
-                </div>
-                <div class="row-2">
-                  <label>
-                    Parts
-                    <input class="partitioning-parts" type="number" min="1" value="2">
-                  </label>
-                  <label>
-                    Ranges (JSON array)
-                    <input class="partitioning-ranges" placeholder='[{"min":1,"max":100}]'>
-                  </label>
-                </div>
-              </div>
-              <div class="tab-panel" data-tab-panel="performance">
-                <label>
-                  Batch Size
-                  <input class="batch-size" type="number" min="1" value="10000">
-                </label>
-                <div class="muted-note">
-                  Community engine tek-is parcacikli calisir; worker/extraction ayarlari v2 formdan kaldirildi.
-                </div>
-              </div>
-              <div class="tab-panel" data-tab-panel="mapping">
-                <label>
-                  Mapping Mode
-                  <select class="column-mapping-mode">
-                    <option value="source">source (automatic)</option>
-                    <option value="mapping_file">mapping_file</option>
-                  </select>
-                </label>
-                <label>
-                  Mapping File (mode=mapping_file)
-                  <input class="mapping-file" placeholder="mappings/orders_map.yaml">
-                </label>
-              </div>
             </div>
-          </div>
-          <div class="sub-card target-card">
+            <div class="sub-card target-card">
             <h4>Target Configuration</h4>
             <label>
               Load Method
@@ -246,6 +188,84 @@
                 <input class="target-table" list="target_table_options" value="orders_stg" placeholder="Type 3+ chars">
               </label>
             </div>
+            </div>
+            <div class="sub-card advanced-card">
+            <div class="tabs" role="tablist">
+              <button class="tab-btn active" data-tab="filter" type="button">Filter & Bindings</button>
+              <button class="tab-btn" data-tab="partitioning" type="button">Partitioning</button>
+              <button class="tab-btn" data-tab="performance" type="button">Performance</button>
+              <button class="tab-btn" data-tab="mapping" type="button">Mapping</button>
+            </div>
+            <div class="tab-panel active" data-tab-panel="filter">
+              <label>
+                Where Clause
+                <textarea class="where" rows="4" placeholder="ornek: updated_at >= :last_sync"></textarea>
+              </label>
+              <div class="bindings-block">
+                <div class="bindings-head">
+                  <span class="bindings-title">Bindings</span>
+                  <button class="btn btn-success btn-binding-add" type="button">+Add</button>
+                </div>
+                <div class="bindings-list hidden"></div>
+              </div>
+            </div>
+            <div class="tab-panel" data-tab-panel="partitioning">
+              <label>
+                <input class="partitioning-enabled" type="checkbox" style="width:auto; margin-right:8px;">
+                Partitioning Enabled
+              </label>
+              <div class="row-2">
+                <label>
+                  Column
+                  <input class="partitioning-column" placeholder="id">
+                </label>
+                <label>
+                  Mode
+                  <select class="partitioning-mode">
+                    <option value="auto">auto</option>
+                    <option value="auto_numeric">auto_numeric</option>
+                    <option value="percentile">percentile</option>
+                    <option value="hash_mod">hash_mod</option>
+                    <option value="distinct">distinct</option>
+                    <option value="explicit">explicit</option>
+                    <option value="full_scan">full_scan</option>
+                  </select>
+                </label>
+              </div>
+              <div class="row-2">
+                <label>
+                  Parts
+                  <input class="partitioning-parts" type="number" min="1" value="2">
+                </label>
+                <label>
+                  Ranges (JSON array)
+                  <input class="partitioning-ranges" placeholder='[{"min":1,"max":100}]'>
+                </label>
+              </div>
+            </div>
+            <div class="tab-panel" data-tab-panel="performance">
+              <label>
+                Batch Size
+                <input class="batch-size" type="number" min="1" value="10000">
+              </label>
+              <div class="muted-note">
+                Community engine tek-is parcacikli calisir; worker/extraction ayarlari v2 formdan kaldirildi.
+              </div>
+            </div>
+            <div class="tab-panel" data-tab-panel="mapping">
+              <label>
+                Mapping Mode
+                <select class="column-mapping-mode">
+                  <option value="source">source (automatic)</option>
+                  <option value="mapping_file">mapping_file</option>
+                </select>
+              </label>
+              <label>
+                Mapping File (mode=mapping_file)
+                <input class="mapping-file" placeholder="mappings/orders_map.yaml">
+              </label>
+            </div>
+            </div>
           </div>
         </div>
       </div>
@@ -254,7 +274,7 @@
     <pre class="response" id="out">{}</pre>
   </div>
 
-  <script src="/etl-studio/static/etl_studio/js/app.js?v=4"></script>
+  <script src="/etl-studio/static/etl_studio/js/app.js?v=15"></script>
 </body>
 </html>
 

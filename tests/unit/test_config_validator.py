@@ -71,6 +71,11 @@ class TestSourceType:
     def test_sql_with_inline_sql_passes(self):
         ConfigValidator().validate(_task(source_type="sql", inline_sql="SELECT 1"))
 
+    def test_sql_without_source_schema_passes(self):
+        ConfigValidator().validate(
+            _task(source_type="sql", source_schema=None, source_table=None, inline_sql="SELECT 1")
+        )
+
     def test_sql_without_sql_file_raises(self):
         with pytest.raises(ValidationError, match="sql_file"):
             ConfigValidator().validate(_task(source_type="sql"))

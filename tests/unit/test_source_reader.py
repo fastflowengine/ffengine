@@ -70,6 +70,27 @@ def test_build_query_no_schema(dialect, session):
     assert q == 'SELECT * FROM "orders"'
 
 
+def test_build_query_sql_inline_sql(dialect, session):
+    config = {
+        "source_type": "sql",
+        "inline_sql": "SELECT id FROM orders",
+    }
+    reader = SourceReader(session, config, dialect)
+    q = reader._build_query()
+    assert q == "SELECT id FROM orders"
+
+
+def test_build_query_sql_inline_sql_with_where(dialect, session):
+    config = {
+        "source_type": "sql",
+        "inline_sql": "SELECT id FROM orders",
+        "where_clause": "id > 100",
+    }
+    reader = SourceReader(session, config, dialect)
+    q = reader._build_query()
+    assert q == "SELECT * FROM (SELECT id FROM orders) AS ffengine_inline_sql WHERE id > 100"
+
+
 # ------------------------------------------------------------------
 # batch_size default
 # ------------------------------------------------------------------

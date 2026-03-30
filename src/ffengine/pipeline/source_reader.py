@@ -57,12 +57,22 @@ class SourceReader:
     # ------------------------------------------------------------------
 
     def _build_query(self) -> str:
-        schema = self.config.get("source_schema", "")
-        table = self.config.get("source_table", "")
-        columns = self.config.get("source_columns")
+        source_type = str(self.config.get("source_type") or "table").strip().lower()
         where = self.config.get("where_clause") or self.config.get(
             "_resolved_where"
         )
+        if source_type == "sql":
+            inline_sql = str(self.config.get("inline_sql") or "").strip()
+            if not inline_sql:
+                raise ValueError("source_type='sql' icin inline_sql zorunludur.")
+            base_sql = inline_sql.rstrip().rstrip(";")
+            if where:
+                return f"SELECT * FROM ({base_sql}) AS ffengine_inline_sql WHERE {where}"
+            return base_sql
+
+        schema = self.config.get("source_schema", "")
+        table = self.config.get("source_table", "")
+        columns = self.config.get("source_columns")
 
         if schema:
             qualified = f"{self.dialect.quote_identifier(schema)}.{self.dialect.quote_identifier(table)}"

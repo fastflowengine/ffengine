@@ -1,4 +1,4 @@
-:root {
+﻿:root {
       --bg: var(--color-bg-main, var(--bs-body-bg, #f5f7fb));
       --card: var(--color-bg-1, var(--bs-secondary-bg, #ffffff));
       --line: var(--color-border, var(--bs-border-color, #dbe2ea));
@@ -65,7 +65,7 @@
     }
 
     .panel-title {
-      background: color-mix(in srgb, var(--card) 92%, var(--line) 8%);
+      background: color-mix(in srgb, var(--card) 90%, #0ea5e9 10%);
       padding: 10px 14px;
       font-size: 13px;
       font-weight: 700;
@@ -109,6 +109,19 @@
       padding: 14px;
     }
 
+    .task-toolbar {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      margin-bottom: 10px;
+    }
+
+    #tasks_container {
+      display: grid;
+      gap: 14px;
+      margin-top: 14px;
+    }
+
     .grid-3 {
       display: grid;
       grid-template-columns: 1fr 1fr 1fr;
@@ -120,55 +133,85 @@
       justify-content: space-between;
       align-items: center;
       gap: 12px;
-      margin-bottom: 10px;
-      padding: 10px 12px;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      background: color-mix(in srgb, var(--card) 94%, var(--line) 6%);
+      margin-bottom: 8px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid color-mix(in srgb, var(--line) 75%, var(--card) 25%);
+      background: color-mix(in srgb, var(--card) 98%, var(--line) 2%);
+      cursor: pointer;
+      position: relative;
+      user-select: none;
     }
 
     .task-head h3 {
       margin: 0;
-      font-size: 18px;
-      font-weight: 700;
+      font-size: 17px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .task-head::before {
+      content: ">";
+      font-size: 13px;
+      color: var(--muted);
+      transform: rotate(90deg);
+      transition: transform 0.15s ease;
+    }
+
+    .task-card.collapsed .task-head::before {
+      transform: rotate(0deg);
+    }
+
+    .task-head:focus {
+      outline: 2px solid color-mix(in srgb, var(--focus) 50%, transparent);
+      outline-offset: 2px;
+    }
+
+    .task-card.collapsed .task-content {
+      display: none;
     }
 
     .task-layout {
       display: grid;
-      grid-template-columns: 1.05fr 1fr;
-      gap: 18px;
+      grid-template-columns: 1fr 1fr;
+      grid-template-areas:
+        "source target"
+        "advanced advanced";
+      gap: 14px;
     }
 
     .task-card {
       border: 1px solid var(--line);
-      border-radius: 10px;
-      background: var(--card);
-      padding: 12px;
-      margin-top: 12px;
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--card) 94%, #0ea5e9 6%);
+      box-shadow: 0 1px 0 color-mix(in srgb, var(--line) 45%, transparent),
+                  0 0 0 1px color-mix(in srgb, var(--line) 55%, transparent);
+      padding: 10px;
+      margin-top: 0;
+      border-left: 4px solid color-mix(in srgb, #0ea5e9 55%, var(--line) 45%);
     }
 
-    .task-card:nth-child(even) .task-head {
-      background: transparent;
-    }
-
-    .stack {
-      display: grid;
-      gap: 12px;
+    .task-card .task-head {
+      background: color-mix(in srgb, var(--card) 90%, #0ea5e9 10%);
+      border-color: color-mix(in srgb, #0ea5e9 35%, var(--line) 65%);
     }
 
     .sub-card {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: color-mix(in srgb, var(--card) 96%, var(--line) 4%);
-      padding: 12px;
+      border: none;
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--card) 98%, var(--line) 2%);
+      padding: 10px;
     }
 
     .sub-card h4 {
       margin: 0 0 8px;
       font-size: 13px;
-      text-transform: uppercase;
-      letter-spacing: .3px;
+      text-transform: none !important;
+      letter-spacing: .2px;
       color: var(--text);
+      font-weight: 700;
     }
 
     .row-2 {
@@ -189,7 +232,7 @@
       width: 100%;
       margin-top: 4px;
       padding: 9px 10px;
-      border: 1px solid var(--line);
+      border: 1px solid color-mix(in srgb, var(--line) 80%, var(--card) 20%);
       border-radius: 6px;
       box-sizing: border-box;
       font-size: 13px;
@@ -207,25 +250,26 @@
       border-bottom: 1px solid var(--line);
       display: flex;
       gap: 6px;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
       flex-wrap: wrap;
     }
 
     .tab-btn {
-      border: 1px solid transparent;
-      background: color-mix(in srgb, var(--card) 96%, var(--line) 4%);
+      border: none;
+      border-bottom: 2px solid transparent;
+      background: transparent;
       color: var(--text);
       cursor: pointer;
-      padding: 8px 12px;
+      padding: 7px 10px;
       font-size: 13px;
-      border-radius: 8px 8px 0 0;
+      border-radius: 0;
       margin: 0;
+      font-weight: 500;
     }
 
     .tab-btn.active {
-      background: var(--card);
-      border-color: var(--line);
-      border-bottom-color: transparent;
+      background: transparent;
+      border-bottom-color: var(--focus);
       font-weight: 700;
     }
 
@@ -237,6 +281,71 @@
       display: block;
     }
 
+    .bindings-block {
+      margin-top: 8px;
+    }
+
+    .bindings-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 5px;
+    }
+
+    .bindings-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .btn-binding-add {
+      padding: 4px 10px;
+      font-size: 12px;
+      min-height: 28px;
+    }
+
+    .bindings-list {
+      margin-top: 8px;
+      border: none;
+      border-radius: 0;
+      padding: 0;
+      display: grid;
+      gap: 0;
+    }
+
+    .binding-item {
+      border: none;
+      border-top: 1px solid color-mix(in srgb, var(--line) 85%, var(--card) 15%);
+      border-radius: 0;
+      padding: 10px 0;
+      background: transparent;
+    }
+
+    .binding-item:first-child {
+      border-top: none;
+    }
+
+    .binding-row {
+      display: grid;
+      grid-template-columns: 1fr 120px 1fr auto;
+      gap: 8px;
+      align-items: end;
+    }
+
+    .binding-remove {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      min-width: 34px;
+    }
+
+    .binding-item label {
+      margin-top: 8px;
+      margin-bottom: 0;
+    }
+
     .actions {
       margin-top: 14px;
       display: flex;
@@ -246,10 +355,16 @@
     }
 
     .source-card {
-      background: color-mix(in srgb, var(--card) 96%, #dbeafe 4%);
+      grid-area: source;
+      background: color-mix(in srgb, var(--card) 99%, #dbeafe 1%);
     }
     .target-card {
-      background: color-mix(in srgb, var(--card) 96%, #dcfce7 4%);
+      grid-area: target;
+      background: color-mix(in srgb, var(--card) 99%, #dcfce7 1%);
+    }
+    .advanced-card {
+      grid-area: advanced;
+      border-top: 1px solid color-mix(in srgb, var(--line) 75%, var(--card) 25%);
     }
 
     .muted-note {
@@ -373,7 +488,7 @@
     .picker-col-title {
       font-size: 12px;
       font-weight: 700;
-      color: #334155;
+      color: var(--muted);
       margin-bottom: 8px;
       text-transform: uppercase;
     }
@@ -390,7 +505,7 @@
       width: 100%;
       text-align: left;
       border: 0;
-      border-bottom: 1px solid #eef2f7;
+      border-bottom: 1px solid var(--line);
       background: transparent;
       padding: 8px 10px;
       font-size: 13px;
@@ -435,10 +550,103 @@
       background: transparent;
     }
 
+    /* Current design: divider + readability focus (scoped). */
+    body[data-ui-variant="current"] .panel-title {
+      background: color-mix(in srgb, var(--card) 93%, var(--focus) 7%);
+      border-bottom-color: color-mix(in srgb, var(--line) 78%, var(--focus) 22%);
+      color: color-mix(in srgb, var(--text) 90%, #ffffff 10%);
+    }
+
+    body[data-ui-variant="current"] .task-card {
+      background: color-mix(in srgb, var(--card) 96%, var(--bg) 4%);
+      border-color: color-mix(in srgb, var(--line) 82%, var(--card) 18%);
+      border-left: 3px solid color-mix(in srgb, var(--focus) 38%, var(--line) 62%);
+      box-shadow: 0 1px 0 color-mix(in srgb, var(--line) 24%, transparent);
+    }
+
+    body[data-ui-variant="current"] .task-card .task-head {
+      background: color-mix(in srgb, var(--card) 92%, var(--focus) 8%);
+      border-color: color-mix(in srgb, var(--line) 76%, var(--focus) 24%);
+    }
+
+    body[data-ui-variant="current"] .task-layout {
+      column-gap: 20px;
+    }
+
+    body[data-ui-variant="current"] .source-card {
+      position: relative;
+      background: color-mix(in srgb, var(--card) 99%, var(--focus) 1%);
+    }
+
+    body[data-ui-variant="current"] .source-card::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      bottom: 4px;
+      right: -10px;
+      width: 1px;
+      background: color-mix(in srgb, var(--line) 68%, var(--focus) 32%);
+      pointer-events: none;
+    }
+
+    body[data-ui-variant="current"] .target-card {
+      background: color-mix(in srgb, var(--card) 99%, var(--focus) 1%);
+    }
+
+    body[data-ui-variant="current"] .sub-card h4 {
+      color: color-mix(in srgb, var(--text) 92%, #ffffff 8%);
+      letter-spacing: .15px;
+    }
+
+    body[data-ui-variant="current"] label {
+      color: color-mix(in srgb, var(--text) 78%, var(--muted) 22%);
+    }
+
+    body[data-ui-variant="current"] input,
+    body[data-ui-variant="current"] select,
+    body[data-ui-variant="current"] textarea {
+      border-color: color-mix(in srgb, var(--line) 62%, var(--card) 38%);
+    }
+
+    body[data-ui-variant="current"] input::placeholder,
+    body[data-ui-variant="current"] textarea::placeholder {
+      color: color-mix(in srgb, var(--text) 56%, var(--muted) 44%);
+      opacity: 1;
+    }
+
+    body[data-ui-variant="current"] .tab-btn.active {
+      border-bottom-color: color-mix(in srgb, var(--focus) 62%, var(--line) 38%);
+    }
+
+    body[data-ui-variant="current"] .bindings-head {
+      border-bottom-color: color-mix(in srgb, var(--line) 66%, var(--focus) 34%);
+    }
+
+    body[data-ui-variant="current"] .binding-item {
+      border-top-color: color-mix(in srgb, var(--line) 64%, var(--card) 36%);
+    }
+
     @media (max-width: 1100px) {
-      .task-layout { grid-template-columns: 1fr; }
+      .task-layout {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "source"
+          "target"
+          "advanced";
+      }
       .grid-3 { grid-template-columns: 1fr; }
       .picker-grid { grid-template-columns: 1fr; }
       .picker-col { border-right: none; border-bottom: 1px solid var(--line); }
       .picker-col:last-child { border-bottom: none; }
+      .binding-row { grid-template-columns: 1fr; }
+      .binding-remove { width: 100%; }
+
+      body[data-ui-variant="current"] .source-card::after {
+        display: none;
+      }
+
+      body[data-ui-variant="current"] .target-card {
+        border-top: 1px solid color-mix(in srgb, var(--line) 66%, var(--focus) 34%);
+        padding-top: 12px;
+      }
     }

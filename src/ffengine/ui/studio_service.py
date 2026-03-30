@@ -45,6 +45,24 @@ def _auto_task_group_id(
     )
 
 
+def _normalize_bindings(raw_bindings: Any) -> list[dict[str, Any]]:
+    items = raw_bindings if isinstance(raw_bindings, list) else []
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        binding_source = str(item.get("binding_source") or "").strip()
+        normalized_item = {
+            "variable_name": str(item.get("variable_name") or "").strip(),
+            "binding_source": binding_source,
+            "default_value": str(item.get("default_value") or "").strip() or None,
+            "sql": str(item.get("sql") or "").strip() or None,
+            "airflow_variable_key": str(item.get("airflow_variable_key") or "").strip() or None,
+        }
+        normalized.append(normalized_item)
+    return normalized
+
+
 def _derive_tags(project: str, domain: str, level: str, flow: str) -> list[str]:
     return [
         _slugify(project, "default_project"),
@@ -487,6 +505,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                 "source_schema": str(task.get("source_schema") or "").strip(),
                 "source_table": str(task.get("source_table") or "").strip(),
                 "source_type": str(task.get("source_type") or "table").strip() or "table",
+                "inline_sql": str(task.get("inline_sql") or "").strip() or None,
                 "target_schema": str(task.get("target_schema") or "").strip(),
                 "target_table": str(task.get("target_table") or "").strip(),
                 "load_method": (
@@ -504,6 +523,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                 "partitioning_column": str(partitioning.get("column") or "").strip() or None,
                 "partitioning_parts": int(partitioning.get("parts") or 2),
                 "partitioning_ranges": partitioning.get("ranges") or [],
+                "bindings": _normalize_bindings(task.get("bindings")),
             }
         )
 
@@ -521,6 +541,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "source_schema": first_task["source_schema"],
         "source_table": first_task["source_table"],
         "source_type": first_task["source_type"],
+        "inline_sql": first_task["inline_sql"],
         "target_schema": first_task["target_schema"],
         "target_table": first_task["target_table"],
         "load_method": first_task["load_method"],
@@ -533,6 +554,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "partitioning_column": first_task["partitioning_column"],
         "partitioning_parts": first_task["partitioning_parts"],
         "partitioning_ranges": first_task["partitioning_ranges"],
+        "bindings": first_task["bindings"],
         "etl_tasks": normalized_tasks,
     }
 
@@ -552,16 +574,18 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Pipeline formundan (T06) ConfigValidator ile uyumlu task dict uretir.
     """
-    source_schema = payload["source_schema"]
-    source_table = payload["source_table"]
+    source_type = payload.get("source_type", "table")
+    source_schema = payload.get("source_schema")
+    source_table = payload.get("source_table")
     target_schema = payload["target_schema"]
     target_table = payload["target_table"]
-    source_type = payload.get("source_type", "table")
     load_method = payload.get("load_method", "create_if_not_exists_or_truncate")
+    normalized_source_schema = str(source_schema or "").strip() or ("sql" if source_type == "sql" else "")
+    normalized_source_table = str(source_table or "").strip() or ("query" if source_type == "sql" else "")
 
     task_group_id = payload.get("task_group_id") or _auto_task_group_id(
-        src_schema=source_schema,
-        src_table=source_table or "sql_source",
+        src_schema=normalized_source_schema,
+        src_table=normalized_source_table,
         tgt_schema=target_schema,
         tgt_table=target_table,
         task_index=1,
@@ -569,9 +593,10 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
 
     task: dict[str, Any] = {
         "task_group_id": task_group_id,
-        "source_schema": source_schema,
-        "source_table": source_table,
+        "source_schema": normalized_source_schema,
+        "source_table": normalized_source_table,
         "source_type": source_type,
+        "inline_sql": payload.get("inline_sql"),
         "column_mapping_mode": payload.get("column_mapping_mode", "source"),
         "target_schema": target_schema,
         "target_table": target_table,
@@ -586,6 +611,9 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
             "ranges": payload.get("partitioning_ranges") or [],
         },
     }
+    bindings = _normalize_bindings(payload.get("bindings"))
+    if bindings:
+        task["bindings"] = bindings
     if payload.get("column_mapping_mode") == "mapping_file":
         mf = (payload.get("mapping_file") or "").strip()
         if mf:
@@ -603,13 +631,15 @@ def build_task_dict_for_validation_from_task(
     target_schema = str(task_payload.get("target_schema") or "").strip()
     target_table = str(task_payload.get("target_table") or "").strip()
     source_type = str(task_payload.get("source_type") or "table").strip() or "table"
+    normalized_source_schema = source_schema or ("sql" if source_type == "sql" else "")
+    normalized_source_table = source_table or ("query" if source_type == "sql" else "")
     load_method = (
         str(task_payload.get("load_method") or "create_if_not_exists_or_truncate").strip()
         or "create_if_not_exists_or_truncate"
     )
     task_group_id = str(task_payload.get("task_group_id") or "").strip() or _auto_task_group_id(
-        src_schema=source_schema,
-        src_table=source_table or "sql_source",
+        src_schema=normalized_source_schema,
+        src_table=normalized_source_table,
         tgt_schema=target_schema,
         tgt_table=target_table,
         task_index=task_index,
@@ -617,9 +647,10 @@ def build_task_dict_for_validation_from_task(
 
     task: dict[str, Any] = {
         "task_group_id": task_group_id,
-        "source_schema": source_schema,
-        "source_table": source_table,
+        "source_schema": normalized_source_schema,
+        "source_table": normalized_source_table,
         "source_type": source_type,
+        "inline_sql": task_payload.get("inline_sql"),
         "column_mapping_mode": str(task_payload.get("column_mapping_mode") or "source").strip() or "source",
         "target_schema": target_schema,
         "target_table": target_table,
@@ -634,6 +665,9 @@ def build_task_dict_for_validation_from_task(
             "ranges": task_payload.get("partitioning_ranges") or [],
         },
     }
+    bindings = _normalize_bindings(task_payload.get("bindings"))
+    if bindings:
+        task["bindings"] = bindings
     if task["column_mapping_mode"] == "mapping_file":
         mf = str(task_payload.get("mapping_file") or "").strip()
         if mf:
@@ -714,6 +748,27 @@ def discover_connections() -> list[dict[str, str]]:
     return items
 
 
+def discover_airflow_variables(
+    search: str | None = None,
+    limit: int = 200,
+) -> list[str]:
+    """Airflow metadata'dan Variable key listesini dondurur."""
+    from airflow.models import Variable
+    from airflow.utils.session import create_session
+
+    safe_limit = max(1, min(int(limit or 200), 1000))
+    search_val = (search or "").strip().lower()
+
+    with create_session() as session:
+        q = session.query(Variable.key).order_by(Variable.key.asc())
+        if search_val:
+            q = q.filter(Variable.key.ilike(f"%{search_val}%"))
+        rows = q.limit(safe_limit).all()
+
+    keys = [str(row[0] or "") for row in rows if str(row[0] or "").strip()]
+    return sorted(set(keys))
+
+
 def _list_child_dirs(path: Path) -> list[str]:
     if not path.is_dir():
         return []
@@ -780,11 +835,45 @@ def discover_hierarchy_options(
     }
 
 
-def discover_schemas(conn_id: str) -> list[str]:
+def discover_schemas(
+    conn_id: str,
+    search: str | None = None,
+    limit: int = 200,
+) -> list[str]:
     params = AirflowConnectionAdapter.get_connection_params(conn_id)
     dialect = resolve_dialect(params["conn_type"])
     with DBSession(params, dialect) as session:
-        return dialect.list_schemas(session.conn)
+        schemas = dialect.list_schemas(session.conn)
+
+    search_val = (search or "").strip().lower()
+    if search_val:
+        schemas = [name for name in schemas if search_val in str(name or "").lower()]
+
+    safe_limit = max(1, min(int(limit or 200), 1000))
+    return list(schemas[:safe_limit])
+
+
+def _resolve_schema_name(available_schemas: list[str], requested_schema: str) -> str:
+    requested = str(requested_schema or "").strip()
+    if not requested:
+        raise ValueError("Schema degeri bos olamaz.")
+    if requested in available_schemas:
+        return requested
+
+    requested_lower = requested.lower()
+    case_insensitive_exact = [s for s in available_schemas if str(s or "").lower() == requested_lower]
+    if len(case_insensitive_exact) == 1:
+        return case_insensitive_exact[0]
+
+    prefix_matches = [s for s in available_schemas if str(s or "").lower().startswith(requested_lower)]
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+    if len(prefix_matches) > 1:
+        raise ValueError(
+            f"Schema '{requested}' birden fazla eslesme verdi: {', '.join(prefix_matches[:5])}"
+        )
+
+    raise ValueError(f"Schema bulunamadi: {requested}")
 
 
 def discover_tables(
@@ -797,7 +886,9 @@ def discover_tables(
     params = AirflowConnectionAdapter.get_connection_params(conn_id)
     dialect = resolve_dialect(params["conn_type"])
     with DBSession(params, dialect) as session:
-        tables = dialect.list_tables(session.conn, schema)
+        available_schemas = dialect.list_schemas(session.conn)
+        resolved_schema = _resolve_schema_name(available_schemas, schema)
+        tables = dialect.list_tables(session.conn, resolved_schema)
 
     search_val = (search or "").strip().lower()
     if search_val:
@@ -809,7 +900,8 @@ def discover_tables(
     items = tables[safe_offset : safe_offset + safe_limit]
 
     return {
-        "schema": schema,
+        "schema": resolved_schema,
+        "schema_input": schema,
         "total": total,
         "limit": safe_limit,
         "offset": safe_offset,
@@ -917,22 +1009,25 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
         target_schema = str(item.get("target_schema") or "").strip()
         target_table = str(item.get("target_table") or "").strip()
         source_type = str(item.get("source_type") or "table").strip() or "table"
+        normalized_source_schema = source_schema or ("sql" if source_type == "sql" else "")
+        normalized_source_table = source_table or ("query" if source_type == "sql" else "")
         load_method = (
             str(item.get("load_method") or "create_if_not_exists_or_truncate").strip()
             or "create_if_not_exists_or_truncate"
         )
         task_group_id = str(item.get("task_group_id") or "").strip() or _auto_task_group_id(
-            src_schema=source_schema,
-            src_table=source_table or "sql_source",
+            src_schema=normalized_source_schema,
+            src_table=normalized_source_table,
             tgt_schema=target_schema,
             tgt_table=target_table,
             task_index=idx,
         )
         task_cfg: dict[str, Any] = {
             "task_group_id": task_group_id,
-            "source_schema": source_schema,
-            "source_table": source_table,
+            "source_schema": normalized_source_schema,
+            "source_table": normalized_source_table,
             "source_type": source_type,
+            "inline_sql": str(item.get("inline_sql") or "").strip() or None,
             "column_mapping_mode": str(item.get("column_mapping_mode") or "source").strip() or "source",
             "target_schema": target_schema,
             "target_table": target_table,
@@ -948,6 +1043,9 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
             },
             "tags": tags,
         }
+        bindings = _normalize_bindings(item.get("bindings"))
+        if bindings:
+            task_cfg["bindings"] = bindings
         mf = str(item.get("mapping_file") or "").strip()
         if mf:
             task_cfg["mapping_file"] = mf

@@ -317,6 +317,34 @@ class TestFFEngineOperatorExecute:
         assert effective["source_columns"] == ["id", "name"]
         assert effective["target_columns"] == ["id", "name"]
 
+    def test_sql_bindings_resolved_after_sessions_open(self):
+        self.task_config.update(
+            {
+                "where": "id > :min_id",
+                "bindings": [
+                    {
+                        "variable_name": "min_id",
+                        "binding_source": "default",
+                        "default_value": "100",
+                    }
+                ],
+            }
+        )
+        self.mock_loader.return_value.load.return_value = dict(self.task_config)
+        self.mock_binder.return_value.resolve.side_effect = lambda cfg, ctx: dict(cfg)
+        self.mock_binder.return_value.resolve_sql_bindings.side_effect = lambda cfg, **_: {
+            **cfg,
+            "_resolved_where": "id > 100",
+        }
+
+        op = _make_operator()
+        op.execute()
+
+        self.mock_binder.return_value.resolve_sql_bindings.assert_called_once()
+        call_kwargs = self.mock_etl.return_value.run_etl_task.call_args
+        effective = call_kwargs.kwargs["task_config"]
+        assert effective["_resolved_where"] == "id > 100"
+
     def test_xcom_push(self):
         """XCom push: rows_transferred, duration_seconds, rows_per_second."""
         ti = MagicMock()

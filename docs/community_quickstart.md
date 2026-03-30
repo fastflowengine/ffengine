@@ -140,6 +140,13 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 - New naming DAG'lerde form preload edilip update mode acilir.
 - Legacy DAG id'lerde (`ffengine_config_*`, `ffengine_*`) update mode kilitlenir ve migration yonlendirmesi gosterilir.
 
+## ETL Studio Form Notes
+
+- Schema/table autocomplete case-insensitive calisir.
+- MSSQL baglantilarinda schema genelde `dbo` olur.
+- `Target Table` alaninda listede olmayan adlar manuel yazilabilir.
+- `Airflow Variable` listesi sadece `Filter & Bindings` altindaki binding kaynagi icindir; DB connection listesiyle ayni sey degildir.
+
 ## Debug UAT (Opsiyonel)
 
 - Debugpy ile UI -> service -> scheduler asamali UAT icin:

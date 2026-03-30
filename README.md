@@ -74,6 +74,13 @@ ETL Studio now uses a hard-switched hierarchical model for YAML and DAG generati
   `/etl-studio/?dag_id=<dag_id>` opens ETL Studio with DAG config preload.
 - Legacy DAG IDs (`ffengine_config_*`, `ffengine_*`) are read-only for update mode; ETL Studio shows a migration guard instead of silent fallback.
 
+## ETL Studio Form Notes
+
+- Schema/table autocomplete is case-insensitive.
+- Connection dropdowns are loaded from Airflow connections; `Bindings -> Airflow Variable` is a separate optional source.
+- Target table input is not restricted to datalist options; manual entry is supported.
+- For MSSQL connections, schema is typically `dbo` (not `public`).
+
 Environment defaults (if not overridden):
 
 - `FFENGINE_STUDIO_PROJECTS_ROOT=/opt/airflow/projects`

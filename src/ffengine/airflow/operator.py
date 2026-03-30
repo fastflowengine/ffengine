@@ -290,11 +290,19 @@ class FFEngineOperator(BaseOperator):
 
             # 4. Binding çöz
             airflow_ctx = self._airflow_context or build_airflow_variable_context()
-            task_config = BindingResolver().resolve(task_config, airflow_ctx)
+            resolver = BindingResolver()
+            task_config = resolver.resolve(task_config, airflow_ctx)
 
             # 5. Session'lar aç, mapping çöz, partition planla, çalıştır
             with DBSession(src_params, src_dialect) as src_session:
                 with DBSession(tgt_params, tgt_dialect) as tgt_session:
+                    if task_config.get("bindings"):
+                        task_config = resolver.resolve_sql_bindings(
+                            task_config,
+                            context=airflow_ctx,
+                            source_session=src_session,
+                            target_session=tgt_session,
+                        )
                     # 6. Mapping çöz (C09 entegrasyonu)
                     mapping = MappingResolver().resolve(
                         task_config,

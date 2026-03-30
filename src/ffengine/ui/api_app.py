@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from ffengine.ui.studio_service import (
     discover_connections,
     discover_columns,
     discover_hierarchy_options,
+    discover_airflow_variables,
     discover_schemas,
     discover_tables,
     fetch_timeline_runs,
@@ -57,13 +59,86 @@ def _optional_api_key_dep(
         )
 
 
+_BINDING_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_WHERE_PARAM_RE = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _extract_where_params(where_clause: str | None) -> set[str]:
+    return set(_WHERE_PARAM_RE.findall(str(where_clause or "")))
+
+
+def _validate_bindings_where_contract(
+    where_clause: str | None,
+    bindings: list["BindingPayload"] | None,
+) -> None:
+    where_params = _extract_where_params(where_clause)
+    items = list(bindings or [])
+    if where_params and not items:
+        raise ValueError(
+            "Where Clause icinde binding tanimi olmayan parametre(ler) var: "
+            + ", ".join(sorted(where_params))
+        )
+    if not items:
+        return
+    binding_names = {item.variable_name for item in items}
+    missing = sorted(where_params - binding_names)
+    unused = sorted(binding_names - where_params)
+    if missing:
+        raise ValueError(
+            "Where Clause icinde binding tanimi olmayan parametre(ler) var: "
+            + ", ".join(missing)
+        )
+    if unused:
+        raise ValueError(
+            "Binding tanimi var ama Where Clause icinde kullanilmayan parametre(ler) var: "
+            + ", ".join(unused)
+        )
+
+
+class BindingPayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    variable_name: str = Field(..., min_length=1)
+    binding_source: str
+    default_value: str | None = None
+    sql: str | None = None
+    airflow_variable_key: str | None = None
+
+    @field_validator("variable_name")
+    @classmethod
+    def _v_variable_name(cls, v: str) -> str:
+        name = str(v or "").strip()
+        if not _BINDING_VAR_RE.fullmatch(name):
+            raise ValueError("variable_name formati gecersiz.")
+        return name
+
+    @field_validator("binding_source")
+    @classmethod
+    def _v_binding_source(cls, v: str) -> str:
+        allowed = {"source", "target", "default", "airflow_variable"}
+        if v not in allowed:
+            raise ValueError(f"binding_source gecersiz: {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def _v_source_specific_fields(self) -> "BindingPayload":
+        if self.binding_source == "default" and not (self.default_value or "").strip():
+            raise ValueError("binding_source='default' icin default_value zorunludur.")
+        if self.binding_source in {"source", "target"} and not (self.sql or "").strip():
+            raise ValueError("binding_source='source|target' icin sql zorunludur.")
+        if self.binding_source == "airflow_variable" and not (self.airflow_variable_key or "").strip():
+            raise ValueError("binding_source='airflow_variable' icin airflow_variable_key zorunludur.")
+        return self
+
+
 class EtlTaskPayload(BaseModel):
     model_config = {"extra": "forbid"}
 
     task_group_id: str | None = Field(default=None, min_length=1)
-    source_schema: str = Field(..., min_length=1)
-    source_table: str = Field(..., min_length=1)
+    source_schema: str | None = Field(default=None, min_length=1)
+    source_table: str | None = Field(default=None, min_length=1)
     source_type: str = "table"
+    inline_sql: str | None = None
     target_schema: str = Field(..., min_length=1)
     target_table: str = Field(..., min_length=1)
     load_method: str = "create_if_not_exists_or_truncate"
@@ -76,12 +151,13 @@ class EtlTaskPayload(BaseModel):
     partitioning_column: str | None = None
     partitioning_parts: int = Field(2, ge=1, le=10_000)
     partitioning_ranges: list[Any] | None = None
+    bindings: list[BindingPayload] | None = None
 
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
-        if v not in {"table", "view"}:
-            raise ValueError("source_type yalnizca 'table' veya 'view' olabilir.")
+        if v not in {"table", "view", "sql"}:
+            raise ValueError("source_type yalnizca 'table', 'view' veya 'sql' olabilir.")
         if v not in VALID_SOURCE_TYPES:
             raise ValueError(f"source_type gecersiz: {v!r}")
         return v
@@ -111,6 +187,16 @@ class EtlTaskPayload(BaseModel):
     def _v_mapping(self) -> EtlTaskPayload:
         if self.column_mapping_mode == "mapping_file" and not (self.mapping_file or "").strip():
             raise ValueError("column_mapping_mode='mapping_file' icin mapping_file yolu gerekir.")
+        if self.source_type in {"table", "view"}:
+            if not (self.source_schema or "").strip() or not (self.source_table or "").strip():
+                raise ValueError("source_type=table|view icin source_schema ve source_table zorunludur.")
+        if self.source_type == "sql" and not (self.inline_sql or "").strip():
+            raise ValueError("source_type='sql' icin inline_sql zorunludur.")
+        items = list(self.bindings or [])
+        names = [item.variable_name for item in items]
+        if len(names) != len(set(names)):
+            raise ValueError("bindings.variable_name task icinde unique olmalidir.")
+        _validate_bindings_where_contract(self.where, items)
         return self
 
 
@@ -126,6 +212,7 @@ class DagUpsertPayload(BaseModel):
     source_schema: str | None = Field(default=None, min_length=1)
     source_table: str | None = Field(default=None, min_length=1)
     source_type: str = "table"
+    inline_sql: str | None = None
     target_schema: str | None = Field(default=None, min_length=1)
     target_table: str | None = Field(default=None, min_length=1)
     load_method: str = "create_if_not_exists_or_truncate"
@@ -138,14 +225,15 @@ class DagUpsertPayload(BaseModel):
     partitioning_column: str | None = None
     partitioning_parts: int = Field(2, ge=1, le=10_000)
     partitioning_ranges: list[Any] | None = None
+    bindings: list[BindingPayload] | None = None
     task_group_id: str | None = Field(default=None, min_length=1)
     etl_tasks: list[EtlTaskPayload] | None = None
 
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
-        if v not in {"table", "view"}:
-            raise ValueError("source_type yalnizca 'table' veya 'view' olabilir.")
+        if v not in {"table", "view", "sql"}:
+            raise ValueError("source_type yalnizca 'table', 'view' veya 'sql' olabilir.")
         if v not in VALID_SOURCE_TYPES:
             raise ValueError(f"source_type gecersiz: {v!r}")
         return v
@@ -175,20 +263,34 @@ class DagUpsertPayload(BaseModel):
     def _v_mapping(self) -> DagUpsertPayload:
         has_task_list = isinstance(self.etl_tasks, list) and len(self.etl_tasks) > 0
         if has_task_list:
+            if self.source_type == "sql" and not (self.inline_sql or "").strip():
+                raise ValueError("source_type='sql' icin inline_sql zorunludur.")
+            items = list(self.bindings or [])
+            names = [item.variable_name for item in items]
+            if len(names) != len(set(names)):
+                raise ValueError("bindings.variable_name task icinde unique olmalidir.")
+            _validate_bindings_where_contract(self.where, items)
             return self
-        if not all(
-            [
-                (self.source_schema or "").strip(),
-                (self.source_table or "").strip(),
-                (self.target_schema or "").strip(),
-                (self.target_table or "").strip(),
-            ]
-        ):
+        target_required_ok = all([(self.target_schema or "").strip(), (self.target_table or "").strip()])
+        if self.source_type in {"table", "view"}:
+            source_required_ok = all([(self.source_schema or "").strip(), (self.source_table or "").strip()])
+            if not (source_required_ok and target_required_ok):
+                raise ValueError(
+                    "etl_tasks verilmediyse source_type=table|view icin source_schema/source_table/target_schema/target_table zorunludur."
+                )
+        elif not target_required_ok:
             raise ValueError(
-                "etl_tasks verilmediyse source_schema/source_table/target_schema/target_table zorunludur."
+                "etl_tasks verilmediyse target_schema/target_table zorunludur."
             )
         if self.column_mapping_mode == "mapping_file" and not (self.mapping_file or "").strip():
             raise ValueError("column_mapping_mode='mapping_file' icin mapping_file yolu gerekir.")
+        if self.source_type == "sql" and not (self.inline_sql or "").strip():
+            raise ValueError("source_type='sql' icin inline_sql zorunludur.")
+        items = list(self.bindings or [])
+        names = [item.variable_name for item in items]
+        if len(names) != len(set(names)):
+            raise ValueError("bindings.variable_name task icinde unique olmalidir.")
+        _validate_bindings_where_contract(self.where, items)
         return self
 
 
@@ -218,9 +320,13 @@ def health() -> dict[str, Any]:
 
 
 @etl_studio_app.get("/api/schemas")
-def api_schemas(conn_id: str = Query(..., min_length=1)) -> dict[str, Any]:
+def api_schemas(
+    conn_id: str = Query(..., min_length=1),
+    q: str | None = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict[str, Any]:
     try:
-        items = discover_schemas(conn_id)
+        items = discover_schemas(conn_id, search=(q or "").strip() or None, limit=limit)
         return {"ok": True, "items": items, "count": len(items)}
     except Exception as exc:
         _raise_http_from_exception(exc)
@@ -230,6 +336,18 @@ def api_schemas(conn_id: str = Query(..., min_length=1)) -> dict[str, Any]:
 def api_connections() -> dict[str, Any]:
     try:
         items = discover_connections()
+        return {"ok": True, "items": items, "count": len(items)}
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@etl_studio_app.get("/api/airflow-variables")
+def api_airflow_variables(
+    q: str | None = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict[str, Any]:
+    try:
+        items = discover_airflow_variables(search=(q or "").strip() or None, limit=limit)
         return {"ok": True, "items": items, "count": len(items)}
     except Exception as exc:
         _raise_http_from_exception(exc)

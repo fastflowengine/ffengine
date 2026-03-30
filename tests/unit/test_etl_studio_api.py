@@ -71,24 +71,20 @@ def test_index_html_ok(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "ETL Configuration Studio" in r.text
-    assert 'const base = "/etl-studio"' in r.text
-    assert "tryAttachAirflowCss" in r.text
-    assert "applyAirflowThemeAssets" in r.text
-    assert "loadThemeFromPluginEntryScript" in r.text
+    assert "/etl-studio/static/etl_studio/css/style.css" in r.text
+    assert "/etl-studio/static/etl_studio/js/app.js" in r.text
     assert "theme_notice" in r.text
     assert "theme_source_debug" in r.text
-    assert "data-theme-source" in r.text
-    assert "loadConnections" in r.text
-    assert "loadFolderOptions" in r.text
+    assert 'class="etl-studio-root"' in r.text
     assert "preload_dag_id" not in r.text
     assert "Load DAG Context" not in r.text
-    assert "resolveInitialDagId" in r.text
-    assert "/api/dag-config" in r.text
     assert "folder_path_display" in r.text
     assert "Select / Create Folder" in r.text
     assert "folder_picker_modal" in r.text
     assert "Group No" not in r.text
     assert "Filter & Bindings" in r.text
+    assert "Tumunu Ac" in r.text
+    assert "Tumunu Kapat" in r.text
     assert "Save Configuration" in r.text
     assert "+ Add New Task" in r.text
     assert "Update DAG + YAML" not in r.text
@@ -108,6 +104,18 @@ def test_schemas_mocked(client):
     assert body["ok"] is True
     assert body["count"] == 2
     assert "public" in body["items"]
+
+
+def test_schemas_mocked_forwards_q_and_limit(client):
+    with patch.object(
+        api_app_module, "discover_schemas", return_value=["public"]
+    ) as mocked:
+        r = client.get("/api/schemas?conn_id=test_pg&q=pub&limit=25")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["items"] == ["public"]
+    mocked.assert_called_once_with("test_pg", search="pub", limit=25)
 
 
 def test_schemas_maps_connection_error_to_502(client):
@@ -169,6 +177,17 @@ def test_connections_mocked(client):
     assert body["ok"] is True
     assert body["count"] == 2
     assert body["items"][0]["conn_id"] == "ffengine_source"
+
+
+def test_airflow_variables_mocked(client):
+    with patch.object(api_app_module, "discover_airflow_variables", return_value=["k1", "k2"]) as mocked:
+        r = client.get("/api/airflow-variables?q=k&limit=50")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["count"] == 2
+    assert body["items"] == ["k1", "k2"]
+    mocked.assert_called_once_with(search="k", limit=50)
 
 
 def test_folder_options_mocked(client):
@@ -267,6 +286,104 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
     assert task["partitioning"]["column"] == "id"
     assert task["partitioning"]["parts"] == 4
     assert task["partitioning"]["ranges"] == [{"min": 1, "max": 100}]
+
+
+def test_create_dag_sql_source_persists_inline_sql(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "sql",
+            "inline_sql": "SELECT id, amount FROM public.orders WHERE amount > 0",
+            "source_schema": None,
+            "source_table": None,
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+
+    flow = Path(r.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+    )
+    task = cfg["etl_tasks"][0]
+
+    assert task["source_type"] == "sql"
+    assert task["inline_sql"] == "SELECT id, amount FROM public.orders WHERE amount > 0"
+
+
+def test_create_dag_sql_source_requires_inline_sql(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "sql",
+            "inline_sql": "   ",
+            "source_schema": None,
+            "source_table": None,
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "inline_sql" in r.text
+
+
+def test_create_dag_with_bindings_persists_yaml(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "where": "updated_at >= :last_sync",
+            "bindings": [
+                {
+                    "variable_name": "last_sync",
+                    "binding_source": "airflow_variable",
+                    "airflow_variable_key": "etl.last_sync",
+                }
+            ],
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+
+    flow = Path(r.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+    )
+    task = cfg["etl_tasks"][0]
+    assert task["where"] == "updated_at >= :last_sync"
+    assert task["bindings"][0]["variable_name"] == "last_sync"
+    assert task["bindings"][0]["binding_source"] == "airflow_variable"
+    assert task["bindings"][0]["airflow_variable_key"] == "etl.last_sync"
+
+
+def test_create_dag_rejects_missing_binding_for_where_param(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "where": "updated_at >= :last_sync",
+            "bindings": [],
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "binding tanimi olmayan" in r.text
+
+
+def test_create_dag_rejects_unused_binding(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "where": "id > 10",
+            "bindings": [
+                {
+                    "variable_name": "unused_param",
+                    "binding_source": "default",
+                    "default_value": "1",
+                }
+            ],
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "kullanilmayan" in r.text
 
 
 def test_create_dag_rejects_removed_fields(client, studio_paths):
@@ -504,6 +621,52 @@ def test_resolve_dag_config_for_update_roundtrip(client, studio_paths):
     assert resolved["payload"]["target_conn_id"] == "tgt_c"
     assert resolved["payload"]["source_table"] == "orders"
     assert resolved["payload"]["target_table"] == "orders_stg"
+
+
+def test_resolve_dag_config_for_update_roundtrip_sql_inline_sql(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "sql",
+            "inline_sql": "SELECT 1 AS id",
+            "source_schema": None,
+            "source_table": None,
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    dag_id = Path(r.json()["dag_path"]).stem
+
+    resolved = ss.resolve_dag_config_for_update(dag_id)
+    assert resolved["supported_for_update"] is True
+    task = resolved["payload"]["etl_tasks"][0]
+    assert task["source_type"] == "sql"
+    assert task["inline_sql"] == "SELECT 1 AS id"
+
+
+def test_resolve_dag_config_for_update_roundtrip_bindings(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "where": "id > :min_id",
+            "bindings": [
+                {
+                    "variable_name": "min_id",
+                    "binding_source": "default",
+                    "default_value": "100",
+                }
+            ],
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    dag_id = Path(r.json()["dag_path"]).stem
+
+    resolved = ss.resolve_dag_config_for_update(dag_id)
+    task = resolved["payload"]["etl_tasks"][0]
+    assert task["bindings"][0]["variable_name"] == "min_id"
+    assert task["bindings"][0]["binding_source"] == "default"
+    assert task["bindings"][0]["default_value"] == "100"
 
 
 def test_resolve_dag_config_for_update_legacy_guard():

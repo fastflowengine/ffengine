@@ -1,11 +1,50 @@
-const base = "/etl-studio";
+const STUDIO_BASE_CANDIDATES = (() => {
+  const pathname = (window.location.pathname || "").toLowerCase();
+  const candidates = [];
+  if (pathname.startsWith("/plugin/etl-studio")) {
+    candidates.push("/plugin/etl-studio");
+  }
+  if (pathname.startsWith("/etl-studio")) {
+    candidates.push("/etl-studio");
+  }
+  candidates.push("/etl-studio", "/plugin/etl-studio");
+  return Array.from(new Set(candidates));
+})();
+let studioBase = STUDIO_BASE_CANDIDATES[0] || "/etl-studio";
+
+function studioUrl(path) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${studioBase}${normalizedPath}`;
+}
+
+async function studioFetch(path, options) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const tried = new Set();
+  const candidates = [studioBase, ...STUDIO_BASE_CANDIDATES];
+  let lastResponse = null;
+  const expectsJson = normalizedPath.startsWith("/api/");
+  for (const candidate of candidates) {
+    if (!candidate || tried.has(candidate)) continue;
+    tried.add(candidate);
+    const response = await fetch(`${candidate}${normalizedPath}`, options);
+    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+    const isJson = contentType.includes("application/json");
+    const validApiPayload = !expectsJson || isJson || response.status >= 400;
+    if (response.status !== 404 && validApiPayload) {
+      studioBase = candidate;
+      return response;
+    }
+    lastResponse = response;
+  }
+  return lastResponse || fetch(studioUrl(normalizedPath), options);
+}
     const THEME_CACHE_KEY = "etl_studio_airflow_theme_css_v1";
 
     function setThemeSource(source) {
       document.documentElement.setAttribute("data-theme-source", source);
       const debug = el("theme_source_debug");
       if (debug) {
-        debug.textContent = `Theme source: ${source}`;
+        debug.textContent = "";
       }
     }
 
@@ -13,60 +52,75 @@ const base = "/etl-studio";
       try {
         const root = (doc && doc.documentElement) ? doc.documentElement : document.documentElement;
         const body = (doc && doc.body) ? doc.body : document.body;
-        let isExplicitlyDark = false;
-        if (root.hasAttribute("data-theme")) {
-            document.documentElement.setAttribute("data-theme", root.getAttribute("data-theme"));
-            if (root.getAttribute("data-theme") === "dark") isExplicitlyDark = true;
-        }
-        if (root.hasAttribute("data-color-mode")) {
-            document.documentElement.setAttribute("data-color-mode", root.getAttribute("data-color-mode"));
-            if (root.getAttribute("data-color-mode") === "dark") isExplicitlyDark = true;
-        }
-        
-        const isClassDark = root.classList.contains("chakra-ui-dark") || (body && body.classList.contains("chakra-ui-dark")) || root.classList.contains("dark") || (body && body.classList.contains("dark"));
-        if (isClassDark) {
-            document.documentElement.classList.add("chakra-ui-dark");
-            isExplicitlyDark = true;
-        } else if (root.classList.contains("chakra-ui-light") || (body && body.classList.contains("chakra-ui-light")) || root.classList.contains("light")) {
-            document.documentElement.classList.add("chakra-ui-light");
-        }
-
-        if (root.style && root.style.colorScheme === "dark") {
-            isExplicitlyDark = true;
-        }
-        
-        if (isExplicitlyDark) {
-            document.documentElement.classList.add("force-dark-mode");
-        }
         const rootStyle = window.getComputedStyle(root);
         const st = window.getComputedStyle(body);
+        const bodyVars = window.getComputedStyle(body);
+        const targetRoot = document.documentElement;
+
+        let isExplicitlyDark = false;
+        const themeAttr = (root.getAttribute("data-theme") || "").trim();
+        const colorModeAttr = (root.getAttribute("data-color-mode") || "").trim();
+        if (themeAttr) {
+          targetRoot.setAttribute("data-theme", themeAttr);
+          if (themeAttr === "dark") isExplicitlyDark = true;
+        } else {
+          targetRoot.removeAttribute("data-theme");
+        }
+        if (colorModeAttr) {
+          targetRoot.setAttribute("data-color-mode", colorModeAttr);
+          if (colorModeAttr === "dark") isExplicitlyDark = true;
+        } else {
+          targetRoot.removeAttribute("data-color-mode");
+        }
+
+        const hasDarkClass = root.classList.contains("chakra-ui-dark")
+          || body.classList.contains("chakra-ui-dark")
+          || root.classList.contains("dark")
+          || body.classList.contains("dark");
+        const hasLightClass = root.classList.contains("chakra-ui-light")
+          || body.classList.contains("chakra-ui-light")
+          || root.classList.contains("light")
+          || body.classList.contains("light");
+
+        targetRoot.classList.toggle("chakra-ui-dark", hasDarkClass);
+        targetRoot.classList.toggle("chakra-ui-light", hasLightClass);
+        if (hasDarkClass) {
+          isExplicitlyDark = true;
+        }
+
+        if ((root.style && root.style.colorScheme === "dark") || st.colorScheme === "dark") {
+          isExplicitlyDark = true;
+        }
 
         const isVeryLightRgb = (value) => {
           const m = value && value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
           if (!m) return false;
-          const r = Number(m[1]), g = Number(m[2]), b = Number(m[3]);
+          const r = Number(m[1]);
+          const g = Number(m[2]);
+          const b = Number(m[3]);
           const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-          return luma > 128;
+          return luma > 180;
         };
 
-        const isTextLight = isVeryLightRgb(st.color);
-        
-        if (isTextLight) {
-            document.documentElement.classList.add("force-dark-mode");
-            isExplicitlyDark = true;
-        }
+        const isDarkRgb = (value) => {
+          const m = value && value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+          if (!m) return false;
+          const r = Number(m[1]);
+          const g = Number(m[2]);
+          const b = Number(m[3]);
+          const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          return luma < 128;
+        };
 
-        const debugRoot = root ? root.outerHTML.substring(0, 150) : "";
-        const debugBody = body ? body.outerHTML.substring(0, 150) : "";
-        
-        const tryDump = document.getElementById("out");
-        if (tryDump) {
-            tryDump.textContent = "HTML: " + debugRoot + "\n\nBODY: " + debugBody + "\n\nTextLuma: " + (isTextLight ? "LIGHT" : "DARK") + "\n\nIs Explicitly Dark: " + isExplicitlyDark;
-        }
+        const isTransparent = (value) => {
+          if (!value) return true;
+          const v = value.toLowerCase();
+          return v === "transparent" || (v.includes("rgba(") && v.includes(", 0)"));
+        };
+
         const font = st.fontFamily;
         const textColor = st.color;
         const backgroundColor = st.backgroundColor;
-        const bodyVars = window.getComputedStyle(body);
 
         const getToken = (...names) => {
           for (const name of names) {
@@ -78,22 +132,8 @@ const base = "/etl-studio";
           return "";
         };
 
-        const isTransparent = (value) => {
-          if (!value) return true;
-          const v = value.toLowerCase();
-          return v === "transparent" || v.includes("rgba(") && v.includes(", 0)");
-        };
-
-        const isDarkRgb = (value) => {
-          const m = value && value.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
-          if (!m) return false;
-          const r = Number(m[1]), g = Number(m[2]), b = Number(m[3]);
-          const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-          return luma < 128;
-        };
-
         if (font) {
-          document.documentElement.style.setProperty("--font-family-base", font);
+          targetRoot.style.setProperty("--font-family-base", font);
         }
         const airflowBg = getToken("--chakra-colors-chakra-body-bg", "--chakra-colors-bg-panel", "--chakra-colors-bg-base", "--color-bg-main", "--bs-body-bg");
         const airflowCard = getToken("--chakra-colors-chakra-subtle-bg", "--chakra-colors-bg-surface", "--color-bg-1", "--bs-secondary-bg");
@@ -102,33 +142,34 @@ const base = "/etl-studio";
         const airflowMuted = getToken("--chakra-colors-chakra-subtle-text", "--chakra-colors-text-muted", "--color-text-secondary", "--bs-secondary-color");
 
         const rootBg = window.getComputedStyle(root).backgroundColor;
-        const potentialDark = [backgroundColor, rootBg, airflowBg].find(c => c && !isTransparent(c));
+        const potentialDark = [backgroundColor, rootBg, airflowBg].find((c) => c && !isTransparent(c));
         if (potentialDark && isDarkRgb(potentialDark)) {
-            document.documentElement.classList.add("force-dark-mode");
+          isExplicitlyDark = true;
         }
+        targetRoot.classList.toggle("force-dark-mode", isExplicitlyDark);
 
         if (airflowBg) {
-          document.documentElement.style.setProperty("--bg", airflowBg);
+          targetRoot.style.setProperty("--bg", airflowBg);
         } else if (backgroundColor && !isTransparent(backgroundColor)) {
-          document.documentElement.style.setProperty("--bg", backgroundColor);
+          targetRoot.style.setProperty("--bg", backgroundColor);
         }
         if (airflowCard) {
-          document.documentElement.style.setProperty("--card", airflowCard);
+          targetRoot.style.setProperty("--card", airflowCard);
         }
         if (airflowLine) {
-          document.documentElement.style.setProperty("--line", airflowLine);
+          targetRoot.style.setProperty("--line", airflowLine);
         }
         if (airflowText) {
-          document.documentElement.style.setProperty("--text", airflowText);
+          targetRoot.style.setProperty("--text", airflowText);
         } else if (textColor && !isVeryLightRgb(textColor)) {
-          document.documentElement.style.setProperty("--text", textColor);
+          targetRoot.style.setProperty("--text", textColor);
         } else {
-          document.documentElement.style.setProperty("--text", "#0f172a");
+          targetRoot.style.setProperty("--text", isExplicitlyDark ? "#f8fafc" : "#0f172a");
         }
         if (airflowMuted) {
-          document.documentElement.style.setProperty("--muted", airflowMuted);
+          targetRoot.style.setProperty("--muted", airflowMuted);
         } else {
-          document.documentElement.style.setProperty("--muted", "#64748b");
+          targetRoot.style.setProperty("--muted", isExplicitlyDark ? "#94a3b8" : "#64748b");
         }
         // Copy critical Airflow/Chakra/Bootstrap CSS variables so controls inherit runtime theme.
         for (let i = 0; i < rootStyle.length; i += 1) {
@@ -136,7 +177,7 @@ const base = "/etl-studio";
           if (!key) continue;
           if (key.startsWith("--bs-") || key.startsWith("--chakra-") || key.startsWith("--color-")) {
             const value = rootStyle.getPropertyValue(key);
-            if (value) document.documentElement.style.setProperty(key, value.trim());
+            if (value) targetRoot.style.setProperty(key, value.trim());
           }
         }
       } catch (_err) {
@@ -450,29 +491,85 @@ const base = "/etl-studio";
       }
     }
 
+    function getSelectedConnectionType(selectId) {
+      const select = el(selectId);
+      if (!select || !select.selectedOptions || !select.selectedOptions.length) return "";
+      const text = String(select.selectedOptions[0].textContent || "");
+      const m = text.match(/\(([^)]+)\)\s*$/);
+      return m ? String(m[1] || "").trim().toLowerCase() : "";
+    }
+
+    async function parseJsonSafe(resp) {
+      try {
+        return await resp.json();
+      } catch (_err) {
+        return {};
+      }
+    }
+
+    let airflowVariableKeys = [];
+
+    function setAirflowVariableOptions(items) {
+      airflowVariableKeys = Array.from(new Set((items || []).map((x) => String(x || "").trim()).filter(Boolean))).sort();
+      fillOptions("airflow_variable_options", airflowVariableKeys);
+    }
+
+    async function loadAirflowVariables(search = "") {
+      try {
+        const query = (search || "").trim();
+        const path = query
+          ? `/api/airflow-variables?q=${encodeURIComponent(query)}&limit=500`
+          : "/api/airflow-variables?limit=500";
+        const r = await studioFetch(path);
+        const data = await parseJsonSafe(r);
+        if (!r.ok || !data.ok) {
+          // Airflow Variable listesi sadece Bindings icindeki opsiyonel alan icin kullanilir.
+          // Bu nedenle burada ana UI hata kutusunu kirletmiyoruz.
+          console.warn("Airflow variables could not be loaded.", r.status, data);
+          setAirflowVariableOptions([]);
+          return;
+        }
+        setAirflowVariableOptions(data.items || []);
+      } catch (err) {
+        console.warn("Airflow variables could not be loaded.", err);
+        setAirflowVariableOptions([]);
+      }
+    }
+
     let sourceSchemaTimer = null;
     let sourceTableTimer = null;
     let targetSchemaTimer = null;
     let targetTableTimer = null;
 
-    async function autocompleteSchemas(connId, q, listId) {
+    async function autocompleteSchemas(connId, q, listId, connSelectId) {
       if (!connId || !q || q.length < 3) return;
-      const r = await fetch(`${base}/api/schemas?conn_id=${encodeURIComponent(connId)}`);
-      const data = await r.json();
+      const path = `/api/schemas?conn_id=${encodeURIComponent(connId)}&q=${encodeURIComponent(q)}&limit=50`;
+      const r = await studioFetch(path);
+      const data = await parseJsonSafe(r);
       if (!r.ok || !data.ok) {
         show({ status_code: r.status, ...data });
         return;
       }
-      const needle = q.toLowerCase();
-      const items = (data.items || []).filter((x) => String(x || "").toLowerCase().includes(needle));
-      fillOptions(listId, items);
+      const rawItems = Array.isArray(data.items) ? data.items : [];
+      const query = String(q || "").trim().toLowerCase();
+      const filtered = rawItems.filter((x) => String(x || "").toLowerCase().includes(query));
+      fillOptions(listId, filtered);
+      if (!filtered.length) {
+        const connType = getSelectedConnectionType(connSelectId || "");
+        const extra = connType === "mssql" ? " MSSQL icin schema genelde 'dbo' olur." : "";
+        show({ ok: true, detail: `'${q}' icin schema eslesmesi bulunamadi.${extra}` });
+      }
     }
 
     async function autocompleteTables(connId, schema, q, listId) {
-      if (!connId || !schema || !q || q.length < 3) return;
-      const url = `${base}/api/tables?conn_id=${encodeURIComponent(connId)}&schema=${encodeURIComponent(schema)}&q=${encodeURIComponent(q)}&limit=50&offset=0`;
-      const r = await fetch(url);
-      const data = await r.json();
+      if (!connId || !q || q.length < 3) return;
+      if (!schema || !schema.trim()) {
+        show({ ok: false, detail: "Once schema alani icin en az 1 karakter girin." });
+        return;
+      }
+      const path = `/api/tables?conn_id=${encodeURIComponent(connId)}&schema=${encodeURIComponent(schema)}&q=${encodeURIComponent(q)}&limit=50&offset=0`;
+      const r = await studioFetch(path);
+      const data = await parseJsonSafe(r);
       if (!r.ok || !data.ok) {
         show({ status_code: r.status, ...data });
         return;
@@ -562,7 +659,7 @@ const base = "/etl-studio";
       if (project) params.set("project", project);
       if (domain) params.set("domain", domain);
       if (level) params.set("level", level);
-      const r = await fetch(`${base}/api/folder-options?${params.toString()}`);
+      const r = await studioFetch(`/api/folder-options?${params.toString()}`);
       const data = await r.json();
       if (!r.ok || !data.ok) {
         show({ status_code: r.status, ...data });
@@ -693,34 +790,75 @@ const base = "/etl-studio";
     }
 
     async function loadConnections() {
-      let items = [];
-      const studioResp = await fetch(`${base}/api/connections`);
-      if (studioResp.ok) {
-        const studioData = await studioResp.json();
-        items = Array.isArray(studioData.items) ? studioData.items : [];
-      } else {
-        // Backward compatibility for running containers that do not yet expose /etl-studio/api/connections.
-        const airflowResp = await fetch("/api/v2/connections?limit=1000&offset=0&order_by=connection_id");
-        const airflowData = await airflowResp.json();
-        if (!airflowResp.ok) {
-          show({ status_code: airflowResp.status, ...airflowData });
-          fillConnectionSelect("source_conn_id", [], "");
-          fillConnectionSelect("target_conn_id", [], "");
-          return;
+      try {
+        let items = [];
+        const studioResp = await studioFetch("/api/connections");
+        if (studioResp.ok) {
+          const studioData = await parseJsonSafe(studioResp);
+          items = Array.isArray(studioData.items) ? studioData.items : [];
+        } else {
+          // Backward compatibility for running containers that do not yet expose /etl-studio/api/connections.
+          const airflowResp = await fetch("/api/v2/connections?limit=1000&offset=0&order_by=connection_id");
+          const airflowData = await parseJsonSafe(airflowResp);
+          if (!airflowResp.ok) {
+            const detail = airflowData.detail || "Connection listesi yuklenemedi.";
+            show({ status_code: airflowResp.status, detail });
+            fillConnectionSelect("source_conn_id", [], "");
+            fillConnectionSelect("target_conn_id", [], "");
+            return;
+          }
+          const rows = Array.isArray(airflowData.connections) ? airflowData.connections : [];
+          items = rows.map((row) => ({
+            conn_id: row.connection_id || "",
+            conn_type: row.connection_type || "",
+          }));
         }
-        const rows = Array.isArray(airflowData.connections) ? airflowData.connections : [];
-        items = rows.map((row) => ({
-          conn_id: row.connection_id || "",
-          conn_type: row.connection_type || "",
-        }));
-      }
 
-      fillConnectionSelect("source_conn_id", items, "ffengine_source");
-      fillConnectionSelect("target_conn_id", items, "ffengine_target");
+        fillConnectionSelect("source_conn_id", items, "ffengine_source");
+        fillConnectionSelect("target_conn_id", items, "ffengine_target");
+      } catch (err) {
+        show({ ok: false, detail: `Connection listesi yuklenemedi: ${String(err && err.message ? err.message : err)}` });
+        fillConnectionSelect("source_conn_id", [], "");
+        fillConnectionSelect("target_conn_id", [], "");
+      }
     }
 
     function getTaskCards() {
       return Array.from(document.querySelectorAll("#tasks_container .task-card"));
+    }
+
+    function setTaskCardCollapsed(card, collapsed) {
+      const head = card.querySelector(".task-head");
+      card.classList.toggle("collapsed", !!collapsed);
+      if (head) {
+        head.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      }
+    }
+
+    function toggleTaskCardCollapsed(card) {
+      const isCollapsed = card.classList.contains("collapsed");
+      setTaskCardCollapsed(card, !isCollapsed);
+    }
+
+    function setAllTaskCardsCollapsed(collapsed) {
+      const cards = getTaskCards();
+      for (const card of cards) {
+        setTaskCardCollapsed(card, collapsed);
+      }
+    }
+
+    function bindTaskCollapse(card) {
+      const head = card.querySelector(".task-head");
+      if (!head) return;
+      head.addEventListener("click", () => {
+        toggleTaskCardCollapsed(card);
+      });
+      head.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" || ev.key === " ") {
+          ev.preventDefault();
+          toggleTaskCardCollapsed(card);
+        }
+      });
     }
 
     function refreshTaskCardHeaders() {
@@ -731,11 +869,113 @@ const base = "/etl-studio";
       }
     }
 
+    function getBindingRows(card) {
+      return Array.from(card.querySelectorAll(".binding-item"));
+    }
+
+    function updateBindingsVisibility(card) {
+      const list = card.querySelector(".bindings-list");
+      const hasRows = getBindingRows(card).length > 0;
+      list.classList.toggle("hidden", !hasRows);
+    }
+
+    function syncBindingRowState(row) {
+      const sourceSelect = row.querySelector(".binding-source");
+      const defaultInput = row.querySelector(".binding-default-value");
+      const sqlWrap = row.querySelector(".binding-sql-wrap");
+      const sqlInput = row.querySelector(".binding-sql");
+      const airflowWrap = row.querySelector(".binding-airflow-wrap");
+      const airflowInput = row.querySelector(".binding-airflow-variable-key");
+      const source = sourceSelect.value;
+
+      const isDefault = source === "default";
+      const isSqlSource = source === "source" || source === "target";
+      const isAirflowVariable = source === "airflow_variable";
+
+      defaultInput.disabled = !isDefault;
+      sqlInput.disabled = !isSqlSource;
+      airflowInput.disabled = !isAirflowVariable;
+      sqlWrap.classList.toggle("hidden", !isSqlSource);
+      airflowWrap.classList.toggle("hidden", !isAirflowVariable);
+
+      if (!isDefault) defaultInput.value = "";
+      if (!isSqlSource) sqlInput.value = "";
+      if (!isAirflowVariable) airflowInput.value = "";
+    }
+
+    function createBindingRow(card, values = {}) {
+      const list = card.querySelector(".bindings-list");
+      const row = document.createElement("div");
+      row.className = "binding-item";
+      row.innerHTML = `
+        <div class="binding-row">
+          <input class="binding-variable-name" placeholder="variable_name">
+          <select class="binding-source">
+            <option value="target">Target</option>
+            <option value="source">Source</option>
+            <option value="default">Default</option>
+            <option value="airflow_variable">Airflow Variable</option>
+          </select>
+          <input class="binding-default-value" placeholder="Default">
+          <button class="btn btn-danger binding-remove" type="button">x</button>
+        </div>
+        <label class="binding-sql-wrap hidden">
+          SQL
+          <textarea class="binding-sql" rows="3" placeholder="SELECT ..."></textarea>
+        </label>
+        <label class="binding-airflow-wrap hidden">
+          Airflow Variable
+          <input class="binding-airflow-variable-key" list="airflow_variable_options" placeholder="Select variable key">
+        </label>
+      `;
+      row.querySelector(".binding-variable-name").value = values.variable_name || "";
+      row.querySelector(".binding-source").value = values.binding_source || "target";
+      row.querySelector(".binding-default-value").value = values.default_value || "";
+      row.querySelector(".binding-sql").value = values.sql || "";
+      row.querySelector(".binding-airflow-variable-key").value = values.airflow_variable_key || "";
+
+      row.querySelector(".binding-source").addEventListener("change", () => {
+        syncBindingRowState(row);
+      });
+      row.querySelector(".binding-remove").addEventListener("click", () => {
+        row.remove();
+        updateBindingsVisibility(card);
+      });
+      row.querySelector(".binding-airflow-variable-key").addEventListener("input", (ev) => {
+        const q = (ev.target.value || "").trim();
+        if (q.length >= 2) {
+          loadAirflowVariables(q);
+        }
+      });
+
+      syncBindingRowState(row);
+      list.appendChild(row);
+      updateBindingsVisibility(card);
+    }
+
+    function setBindingsFromValues(card, bindings) {
+      const list = card.querySelector(".bindings-list");
+      list.innerHTML = "";
+      const items = Array.isArray(bindings) ? bindings : [];
+      for (const binding of items) {
+        createBindingRow(card, binding || {});
+      }
+      updateBindingsVisibility(card);
+    }
+
+    function bindBindingsSection(card) {
+      const addButton = card.querySelector(".btn-binding-add");
+      addButton.addEventListener("click", () => createBindingRow(card, {}));
+      updateBindingsVisibility(card);
+    }
+
     function setTaskCardValues(card, values) {
+      const sourceType = values.source_type || "table";
       card.querySelector(".task-group-id").value = values.task_group_id || "";
       card.querySelector(".source-schema").value = values.source_schema || "";
       card.querySelector(".source-table").value = values.source_table || "";
-      card.querySelector(".source-type").value = values.source_type || "table";
+      card.querySelector(".source-type").value = sourceType === "view" ? "table" : sourceType;
+      card.querySelector(".source-inline-sql").value = values.inline_sql || "";
       card.querySelector(".target-schema").value = values.target_schema || "";
       card.querySelector(".target-table").value = values.target_table || "";
       card.querySelector(".load-method").value = values.load_method || "create_if_not_exists_or_truncate";
@@ -748,6 +988,27 @@ const base = "/etl-studio";
       card.querySelector(".partitioning-column").value = values.partitioning_column || "";
       card.querySelector(".partitioning-parts").value = String(values.partitioning_parts || 2);
       card.querySelector(".partitioning-ranges").value = JSON.stringify(values.partitioning_ranges || []);
+      setBindingsFromValues(card, values.bindings || []);
+      toggleSourceMode(card);
+    }
+
+    function toggleSourceMode(card) {
+      const sourceType = card.querySelector(".source-type").value;
+      const sqlWrap = card.querySelector(".source-sql-wrap");
+      const sqlText = card.querySelector(".source-inline-sql");
+      const sourceTableWrap = card.querySelector(".source-table-wrap");
+      const sourceSchemaInput = card.querySelector(".source-schema");
+      const sourceTableInput = card.querySelector(".source-table");
+      const isSqlMode = sourceType === "sql";
+      sqlWrap.classList.toggle("hidden", !isSqlMode);
+      sourceTableWrap.classList.toggle("hidden", isSqlMode);
+      if (!isSqlMode) {
+        sqlText.value = "";
+      } else {
+        sourceSchemaInput.value = "";
+        sourceTableInput.value = "";
+      }
+      sourceTableInput.placeholder = "Type 3+ chars";
     }
 
     function bindTaskTabs(card) {
@@ -770,19 +1031,25 @@ const base = "/etl-studio";
       const sourceTableInput = card.querySelector(".source-table");
       const targetSchemaInput = card.querySelector(".target-schema");
       const targetTableInput = card.querySelector(".target-table");
+      const sourceTypeSelect = card.querySelector(".source-type");
+
+      sourceTypeSelect.addEventListener("change", () => toggleSourceMode(card));
 
       sourceSchemaInput.addEventListener("input", () => {
+        if (sourceTypeSelect.value === "sql") return;
         clearTimeout(sourceSchemaInput._ffTimer);
         sourceSchemaInput._ffTimer = setTimeout(() => {
           autocompleteSchemas(
             el("source_conn_id").value.trim(),
             sourceSchemaInput.value.trim(),
-            "source_schema_options"
+            "source_schema_options",
+            "source_conn_id"
           );
         }, 220);
       });
 
       sourceTableInput.addEventListener("input", () => {
+        if (sourceTypeSelect.value === "sql") return;
         clearTimeout(sourceTableInput._ffTimer);
         sourceTableInput._ffTimer = setTimeout(() => {
           autocompleteTables(
@@ -800,7 +1067,8 @@ const base = "/etl-studio";
           autocompleteSchemas(
             el("target_conn_id").value.trim(),
             targetSchemaInput.value.trim(),
-            "target_schema_options"
+            "target_schema_options",
+            "target_conn_id"
           );
         }, 220);
       });
@@ -821,13 +1089,17 @@ const base = "/etl-studio";
     function addTaskCard(values = {}) {
       const template = el("task_card_template");
       const node = template.content.firstElementChild.cloneNode(true);
+      bindBindingsSection(node);
+      bindTaskCollapse(node);
       setTaskCardValues(node, values);
       bindTaskTabs(node);
       bindTaskAutocomplete(node);
-      node.querySelector(".btn-delete-task").addEventListener("click", () => {
+      node.querySelector(".btn-delete-task").addEventListener("click", (ev) => {
+        ev.stopPropagation();
         node.remove();
         refreshTaskCardHeaders();
       });
+      setTaskCardCollapsed(node, false);
       el("tasks_container").appendChild(node);
       refreshTaskCardHeaders();
     }
@@ -858,7 +1130,7 @@ const base = "/etl-studio";
         setUpdateMode(false);
         return;
       }
-      const r = await fetch(`${base}/api/dag-config?dag_id=${encodeURIComponent(dagId)}`);
+      const r = await studioFetch(`/api/dag-config?dag_id=${encodeURIComponent(dagId)}`);
       const data = await r.json();
       show({ status_code: r.status, ...data });
       if (!r.ok || !data.ok) {
@@ -914,24 +1186,48 @@ const base = "/etl-studio";
     }
 
     function collectTaskPayload(card, index) {
+      const sourceType = card.querySelector(".source-type").value;
       const sourceSchemaVal = card.querySelector(".source-schema").value.trim();
       const sourceTableVal = card.querySelector(".source-table").value.trim();
       const targetSchemaVal = card.querySelector(".target-schema").value.trim();
       const targetTableVal = card.querySelector(".target-table").value.trim();
+      const inlineSqlVal = card.querySelector(".source-inline-sql").value.trim();
       const manualTaskGroupId = card.querySelector(".task-group-id").value.trim();
+      const normalizedSourceSchema = sourceType === "sql" ? undefined : sourceSchemaVal;
+      const normalizedSourceTable = sourceType === "sql" ? undefined : sourceTableVal;
+      const taskGroupSourceSchema = sourceType === "sql" ? "sql" : sourceSchemaVal;
+      const taskGroupSourceTable = sourceType === "sql" ? "query" : sourceTableVal;
       const generatedTaskGroupId = [
-        slugify(sourceSchemaVal, "src"),
-        slugify(sourceTableVal, "table"),
+        slugify(taskGroupSourceSchema, "src"),
+        slugify(taskGroupSourceTable, "table"),
         "to",
         slugify(targetSchemaVal, "tgt"),
         slugify(targetTableVal, "table"),
         `task_${index}`,
       ].join("_");
+      const bindings = getBindingRows(card)
+        .map((row) => {
+          const bindingSource = row.querySelector(".binding-source").value;
+          const item = {
+            variable_name: row.querySelector(".binding-variable-name").value.trim(),
+            binding_source: bindingSource,
+          };
+          if (bindingSource === "default") {
+            item.default_value = row.querySelector(".binding-default-value").value.trim() || undefined;
+          } else if (bindingSource === "source" || bindingSource === "target") {
+            item.sql = row.querySelector(".binding-sql").value.trim() || undefined;
+          } else if (bindingSource === "airflow_variable") {
+            item.airflow_variable_key = row.querySelector(".binding-airflow-variable-key").value.trim() || undefined;
+          }
+          return item;
+        })
+        .filter((item) => item.variable_name);
       return {
         task_group_id: manualTaskGroupId || generatedTaskGroupId,
-        source_schema: sourceSchemaVal,
-        source_table: sourceTableVal,
-        source_type: card.querySelector(".source-type").value,
+        source_schema: normalizedSourceSchema,
+        source_table: normalizedSourceTable,
+        source_type: sourceType,
+        inline_sql: sourceType === "sql" ? (inlineSqlVal || undefined) : undefined,
         target_schema: targetSchemaVal,
         target_table: targetTableVal,
         load_method: card.querySelector(".load-method").value,
@@ -944,6 +1240,7 @@ const base = "/etl-studio";
         partitioning_column: card.querySelector(".partitioning-column").value.trim() || undefined,
         partitioning_parts: Number(card.querySelector(".partitioning-parts").value || 2),
         partitioning_ranges: parseJsonArray(card.querySelector(".partitioning-ranges").value),
+        bindings: bindings.length ? bindings : undefined,
       };
     }
 
@@ -966,6 +1263,7 @@ const base = "/etl-studio";
         source_schema: firstTask.source_schema,
         source_table: firstTask.source_table,
         source_type: firstTask.source_type,
+        inline_sql: firstTask.inline_sql,
         target_schema: firstTask.target_schema,
         target_table: firstTask.target_table,
         load_method: firstTask.load_method,
@@ -984,10 +1282,12 @@ const base = "/etl-studio";
     }
 
     for (const btn of document.querySelectorAll(".btn-create-dag")) {
-      btn.onclick = () => postJson(`${base}/api/create-dag`, collectPayload());
+      btn.onclick = () => postJson(studioUrl("/api/create-dag"), collectPayload());
     }
+    el("btn_expand_all_tasks").onclick = () => setAllTaskCardsCollapsed(false);
+    el("btn_collapse_all_tasks").onclick = () => setAllTaskCardsCollapsed(true);
     el("btn_add_task").onclick = () => addTaskCard({});
-    el("btn_update_top").onclick = () => postJson(`${base}/api/update-dag`, collectPayload());
+    el("btn_update_top").onclick = () => postJson(studioUrl("/api/update-dag"), collectPayload());
 
     el("btn_open_folder_picker").onclick = openFolderPicker;
     el("btn_close_folder_picker").onclick = closeFolderPicker;
@@ -1004,8 +1304,22 @@ const base = "/etl-studio";
       setUpdateMode(false);
       syncFolderPathDisplay();
       clearAndLoadTasks([{}]);
-      await loadFolderOptions();
-      await loadConnections();
+      // Ana form kullanimi icin once connection listesi yuklenmeli.
+      try {
+        await loadConnections();
+      } catch (_err) {
+        // no-op: UI message already shown
+      }
+      try {
+        await loadAirflowVariables();
+      } catch (_err) {
+        // no-op: UI message already shown
+      }
+      try {
+        await loadFolderOptions();
+      } catch (_err) {
+        // no-op: UI message already shown
+      }
       const initialDagId = resolveInitialDagId();
       if (initialDagId) {
         await preloadByDagId(initialDagId);
