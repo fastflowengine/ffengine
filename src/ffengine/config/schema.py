@@ -68,6 +68,7 @@ TASK_DEFAULTS: dict = {
         "enabled": False,
         "mode": "auto",
         "parts": 4,
+        "distinct_limit": 16,
         "column": None,
         "ranges": [],
     },

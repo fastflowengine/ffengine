@@ -128,6 +128,7 @@ class TestConfigLoaderValid:
         assert part["enabled"] is False
         assert part["mode"] == "auto"
         assert part["parts"] == 4
+        assert part["distinct_limit"] == 16
         assert part["column"] is None   # C06 eklendi
         assert part["ranges"] == []     # C06 eklendi
 
@@ -154,6 +155,7 @@ class TestConfigLoaderValid:
         assert part["enabled"] is True
         assert part["column"] == "id"
         assert part["parts"] == 4   # default korundu
+        assert part["distinct_limit"] == 16
         assert part["ranges"] == [] # default korundu
 
     def test_second_task_loaded_by_id(self, tmp_path):

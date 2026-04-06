@@ -150,6 +150,7 @@ class EtlTaskPayload(BaseModel):
     partitioning_mode: str = "auto"
     partitioning_column: str | None = None
     partitioning_parts: int = Field(2, ge=1, le=10_000)
+    partitioning_distinct_limit: int | None = Field(default=None, ge=1, le=1_000_000)
     partitioning_ranges: list[Any] | None = None
     bindings: list[BindingPayload] | None = None
 
@@ -224,6 +225,7 @@ class DagUpsertPayload(BaseModel):
     partitioning_mode: str = "auto"
     partitioning_column: str | None = None
     partitioning_parts: int = Field(2, ge=1, le=10_000)
+    partitioning_distinct_limit: int | None = Field(default=None, ge=1, le=1_000_000)
     partitioning_ranges: list[Any] | None = None
     bindings: list[BindingPayload] | None = None
     task_group_id: str | None = Field(default=None, min_length=1)

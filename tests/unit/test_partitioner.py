@@ -20,6 +20,9 @@ from ffengine.errors.exceptions import PartitionError
 def _dialect():
     d = MagicMock()
     d.quote_identifier.side_effect = lambda n: f'"{n}"'
+    d.get_pagination_query.side_effect = (
+        lambda query, limit, offset: f"{query} LIMIT {limit} OFFSET {offset}"
+    )
     return d
 
 
@@ -43,6 +46,7 @@ def _task(part_override=None) -> dict:
             "enabled": True,
             "mode": "auto_numeric",
             "parts": 4,
+            "distinct_limit": 16,
             "column": "id",
             "ranges": [],
         },
@@ -123,6 +127,11 @@ class TestPartitionerExplicit:
         task = _task({"mode": "explicit", "ranges": ["id < 10"], "column": None})
         Partitioner().plan(task, conn, _dialect())
         conn.cursor.assert_not_called()
+
+    def test_explicit_non_string_clause_raises_partition_error(self):
+        task = _task({"mode": "explicit", "ranges": [{"min": 1, "max": 10}], "column": None})
+        with pytest.raises(PartitionError, match="string"):
+            Partitioner().plan(task, MagicMock(), _dialect())
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +265,22 @@ class TestPartitionerDistinct:
         task = _task({"mode": "distinct", "parts": 2})
         result = Partitioner().plan(task, conn, _dialect())
         assert [s["part_id"] for s in result] == [0, 1]
+
+    def test_distinct_limit_applies_pagination_limit(self):
+        conn = _conn(fetchall=[(1,), (2,), (3,), (4,)])
+        dialect = _dialect()
+        task = _task({"mode": "distinct", "parts": 2, "distinct_limit": 2})
+        Partitioner().plan(task, conn, dialect)
+        dialect.get_pagination_query.assert_called_once()
+        args = dialect.get_pagination_query.call_args.args
+        assert args[1] == 2
+        assert args[2] == 0
+
+    def test_distinct_invalid_distinct_limit_raises_partition_error(self):
+        conn = _conn(fetchall=[(1,), (2,)])
+        task = _task({"mode": "distinct", "parts": 2, "distinct_limit": 0})
+        with pytest.raises(PartitionError, match="distinct_limit"):
+            Partitioner().plan(task, conn, _dialect())
 
 
 # ---------------------------------------------------------------------------

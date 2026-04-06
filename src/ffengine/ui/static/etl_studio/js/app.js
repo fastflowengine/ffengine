@@ -437,6 +437,34 @@ async function studioFetch(path, options) {
       }
     }
 
+    function rangesToMultilineText(raw) {
+      if (!Array.isArray(raw)) return "";
+      return raw
+        .map((item) => {
+          if (typeof item === "string") return item.trim();
+          try {
+            return JSON.stringify(item);
+          } catch (_err) {
+            return String(item || "").trim();
+          }
+        })
+        .filter((item) => !!item)
+        .join("\n");
+    }
+
+    function parseExplicitWhereList(raw) {
+      return String(raw || "")
+        .split(/\r?\n/g)
+        .map((line) => line.trim())
+        .filter((line) => !!line);
+    }
+
+    function asPositiveInt(value, fallback) {
+      const n = Number(value);
+      if (Number.isInteger(n) && n > 0) return n;
+      return fallback;
+    }
+
     function slugify(raw, fallback) {
       const out = String(raw || "")
         .trim()
@@ -602,6 +630,7 @@ async function studioFetch(path, options) {
       } else if (levelName === "level") {
         pickerDraft.flow = "";
       }
+      syncFolderApplyState();
     }
 
     function getFolderPathText(values) {
@@ -651,6 +680,22 @@ async function studioFetch(path, options) {
 
     function updatePickerSummary() {
       el("folder_picker_summary").textContent = getFolderPathText(pickerDraft);
+    }
+
+    function isFolderSelectionComplete() {
+      return Boolean(
+        (pickerDraft.project || "").trim()
+        && (pickerDraft.domain || "").trim()
+        && (pickerDraft.level || "").trim()
+        && (pickerDraft.flow || "").trim()
+      );
+    }
+
+    function syncFolderApplyState() {
+      const applyBtn = el("btn_apply_folder_picker");
+      const enabled = isFolderSelectionComplete();
+      applyBtn.disabled = !enabled;
+      applyBtn.setAttribute("aria-disabled", enabled ? "false" : "true");
     }
 
     async function fetchFolderOptions(project, domain, level) {
@@ -719,6 +764,15 @@ async function studioFetch(path, options) {
       });
 
       updatePickerSummary();
+      syncFolderApplyState();
+    }
+
+    function setFolderPickerOpen(isOpen) {
+      const modal = el("folder_picker_modal");
+      modal.classList.toggle("open", isOpen);
+      modal.setAttribute("aria-hidden", isOpen ? "false" : "true");
+      document.body.classList.toggle("folder-picker-open", isOpen);
+      syncFolderApplyState();
     }
 
     function openFolderPicker() {
@@ -726,12 +780,12 @@ async function studioFetch(path, options) {
       pickerDraft.domain = el("domain").value.trim();
       pickerDraft.level = el("level").value.trim();
       pickerDraft.flow = el("flow").value.trim();
-      el("folder_picker_modal").classList.add("open");
+      setFolderPickerOpen(true);
       refreshPickerColumns();
     }
 
     function closeFolderPicker() {
-      el("folder_picker_modal").classList.remove("open");
+      setFolderPickerOpen(false);
     }
 
     function addDraftFolder(levelName) {
@@ -772,6 +826,7 @@ async function studioFetch(path, options) {
     }
 
     function applyFolderPickerSelection() {
+      if (!isFolderSelectionComplete()) return;
       el("project").value = pickerDraft.project || "";
       el("domain").value = pickerDraft.domain || "";
       el("level").value = pickerDraft.level || "";
@@ -987,9 +1042,13 @@ async function studioFetch(path, options) {
       card.querySelector(".partitioning-mode").value = values.partitioning_mode || "auto";
       card.querySelector(".partitioning-column").value = values.partitioning_column || "";
       card.querySelector(".partitioning-parts").value = String(values.partitioning_parts || 2);
-      card.querySelector(".partitioning-ranges").value = JSON.stringify(values.partitioning_ranges || []);
+      card.querySelector(".partitioning-distinct-limit").value = String(
+        asPositiveInt(values.partitioning_distinct_limit, 16)
+      );
+      card.querySelector(".partitioning-ranges").value = rangesToMultilineText(values.partitioning_ranges || []);
       setBindingsFromValues(card, values.bindings || []);
       toggleSourceMode(card);
+      syncPartitionState(card);
     }
 
     function toggleSourceMode(card) {
@@ -1009,6 +1068,44 @@ async function studioFetch(path, options) {
         sourceTableInput.value = "";
       }
       sourceTableInput.placeholder = "Type 3+ chars";
+    }
+
+    function syncPartitionState(card) {
+      const enabledInput = card.querySelector(".partitioning-enabled");
+      const modeSelect = card.querySelector(".partitioning-mode");
+      const columnInput = card.querySelector(".partitioning-column");
+      const partsInput = card.querySelector(".partitioning-parts");
+      const distinctLimitInput = card.querySelector(".partitioning-distinct-limit");
+      const explicitWrap = card.querySelector(".partitioning-explicit-wrap");
+      const explicitInput = card.querySelector(".partitioning-ranges");
+
+      const enabled = !!enabledInput.checked;
+      const mode = String(modeSelect.value || "auto").trim() || "auto";
+      const isFullScan = mode === "full_scan";
+      const isExplicit = mode === "explicit";
+      const isDistinct = mode === "distinct";
+
+      const setDisabled = (node, disabled) => {
+        if (!node) return;
+        node.disabled = !!disabled;
+        node.setAttribute("aria-disabled", disabled ? "true" : "false");
+      };
+
+      if (explicitWrap) explicitWrap.classList.toggle("hidden", !isExplicit);
+
+      setDisabled(modeSelect, false);
+      setDisabled(columnInput, !enabled || isFullScan || isExplicit);
+      setDisabled(partsInput, !enabled || isFullScan || isExplicit);
+      setDisabled(distinctLimitInput, !enabled || !isDistinct);
+      setDisabled(explicitInput, !enabled || !isExplicit);
+    }
+
+    function bindPartitionState(card) {
+      const enabledInput = card.querySelector(".partitioning-enabled");
+      const modeSelect = card.querySelector(".partitioning-mode");
+      enabledInput.addEventListener("change", () => syncPartitionState(card));
+      modeSelect.addEventListener("change", () => syncPartitionState(card));
+      syncPartitionState(card);
     }
 
     function bindTaskTabs(card) {
@@ -1094,6 +1191,7 @@ async function studioFetch(path, options) {
       setTaskCardValues(node, values);
       bindTaskTabs(node);
       bindTaskAutocomplete(node);
+      bindPartitionState(node);
       node.querySelector(".btn-delete-task").addEventListener("click", (ev) => {
         ev.stopPropagation();
         node.remove();
@@ -1193,6 +1291,14 @@ async function studioFetch(path, options) {
       const targetTableVal = card.querySelector(".target-table").value.trim();
       const inlineSqlVal = card.querySelector(".source-inline-sql").value.trim();
       const manualTaskGroupId = card.querySelector(".task-group-id").value.trim();
+      const partitioningMode = card.querySelector(".partitioning-mode").value;
+      const partitioningDistinctLimit = asPositiveInt(
+        card.querySelector(".partitioning-distinct-limit").value,
+        16
+      );
+      const partitioningRanges = partitioningMode === "explicit"
+        ? parseExplicitWhereList(card.querySelector(".partitioning-ranges").value)
+        : [];
       const normalizedSourceSchema = sourceType === "sql" ? undefined : sourceSchemaVal;
       const normalizedSourceTable = sourceType === "sql" ? undefined : sourceTableVal;
       const taskGroupSourceSchema = sourceType === "sql" ? "sql" : sourceSchemaVal;
@@ -1236,10 +1342,11 @@ async function studioFetch(path, options) {
         where: card.querySelector(".where").value.trim() || undefined,
         batch_size: Number(card.querySelector(".batch-size").value || 10000),
         partitioning_enabled: !!card.querySelector(".partitioning-enabled").checked,
-        partitioning_mode: card.querySelector(".partitioning-mode").value,
+        partitioning_mode: partitioningMode,
         partitioning_column: card.querySelector(".partitioning-column").value.trim() || undefined,
         partitioning_parts: Number(card.querySelector(".partitioning-parts").value || 2),
-        partitioning_ranges: parseJsonArray(card.querySelector(".partitioning-ranges").value),
+        partitioning_distinct_limit: partitioningDistinctLimit,
+        partitioning_ranges: partitioningRanges,
         bindings: bindings.length ? bindings : undefined,
       };
     }
@@ -1275,6 +1382,7 @@ async function studioFetch(path, options) {
         partitioning_mode: firstTask.partitioning_mode,
         partitioning_column: firstTask.partitioning_column,
         partitioning_parts: firstTask.partitioning_parts,
+        partitioning_distinct_limit: firstTask.partitioning_distinct_limit,
         partitioning_ranges: firstTask.partitioning_ranges,
         etl_tasks: etlTasks,
       };
@@ -1298,6 +1406,12 @@ async function studioFetch(path, options) {
     el("btn_add_domain").onclick = () => addDraftFolder("domain");
     el("btn_add_level").onclick = () => addDraftFolder("level");
     el("btn_add_flow").onclick = () => addDraftFolder("flow");
+    document.addEventListener("keydown", (evt) => {
+      if (evt.key !== "Escape") return;
+      if (el("folder_picker_modal").classList.contains("open")) {
+        closeFolderPicker();
+      }
+    });
 
     async function initPage() {
       await applyAirflowThemeAssets();

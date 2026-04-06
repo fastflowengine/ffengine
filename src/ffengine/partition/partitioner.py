@@ -90,6 +90,14 @@ class Partitioner:
             )
         return n
 
+    def _distinct_limit(self, part: dict) -> int:
+        n = part.get("distinct_limit", 16)
+        if not isinstance(n, int) or n < 1:
+            raise PartitionError(
+                f"partitioning.distinct_limit >= 1 olmalıdır, şu an: {n!r}"
+            )
+        return n
+
     # ------------------------------------------------------------------
     # Stratejiler
     # ------------------------------------------------------------------
@@ -98,11 +106,18 @@ class Partitioner:
         return [{"part_id": 0, "where": None}]
 
     def _plan_explicit(self, part: dict) -> list[dict]:
-        ranges = part.get("ranges") or []
-        if not ranges:
+        raw_ranges = part.get("ranges")
+        if not isinstance(raw_ranges, list) or not raw_ranges:
             raise PartitionError(
                 "partitioning.mode='explicit' için 'partitioning.ranges' listesi boş olamaz."
             )
+        ranges: list[str] = []
+        for clause in raw_ranges:
+            if not isinstance(clause, str) or not clause.strip():
+                raise PartitionError(
+                    "partitioning.mode='explicit' için 'partitioning.ranges' yalnızca dolu string ifadeler içermelidir."
+                )
+            ranges.append(clause.strip())
         return [{"part_id": i, "where": clause} for i, clause in enumerate(ranges)]
 
     def _plan_auto_numeric(self, task_config: dict, src_conn, src_dialect) -> list[dict]:
@@ -258,6 +273,7 @@ class Partitioner:
         part = task_config["partitioning"]
         col = self._col(part)
         n = self._parts(part)
+        distinct_limit = self._distinct_limit(part)
         schema = task_config.get("source_schema", "")
         table = task_config.get("source_table", "")
 
@@ -265,11 +281,12 @@ class Partitioner:
         q_schema = src_dialect.quote_identifier(schema)
         q_table = src_dialect.quote_identifier(table)
 
+        base_query = f"SELECT DISTINCT {q_col} FROM {q_schema}.{q_table} ORDER BY {q_col}"
+        query = src_dialect.get_pagination_query(base_query, distinct_limit, 0)
+
         cursor = src_conn.cursor()
         try:
-            cursor.execute(
-                f"SELECT DISTINCT {q_col} FROM {q_schema}.{q_table} ORDER BY {q_col}"
-            )
+            cursor.execute(query)
             rows = cursor.fetchall()
         finally:
             cursor.close()

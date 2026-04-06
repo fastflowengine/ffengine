@@ -177,6 +177,7 @@ def _part_task(**part_overrides) -> dict:
         "enabled": True,
         "mode": "auto_numeric",
         "parts": 4,
+        "distinct_limit": 16,
         "column": "id",
         "ranges": [],
     }
@@ -228,6 +229,16 @@ class TestPartitioningValidation:
         with pytest.raises(ValidationError, match="parts"):
             ConfigValidator().validate(_part_task(parts=-1))
 
+    def test_distinct_limit_zero_raises(self):
+        with pytest.raises(ValidationError, match="distinct_limit"):
+            ConfigValidator().validate(_part_task(mode="distinct", distinct_limit=0))
+
+    def test_explicit_non_string_clause_raises(self):
+        with pytest.raises(ValidationError, match="string"):
+            ConfigValidator().validate(
+                _part_task(mode="explicit", ranges=[{"min": 1, "max": 10}], column=None)
+            )
+
     def test_disabled_skips_column_check(self):
         # enabled=False → kolon kontrolü atlanır
         t = dict(_BASE)
@@ -267,3 +278,4 @@ class TestPassthroughConfig:
                 source_columns=None,
             )
         )
+

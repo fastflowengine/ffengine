@@ -145,10 +145,27 @@ class ConfigValidator:
                 f"partitioning.mode='{mode}' icin 'partitioning.column' zorunludur."
             )
 
-        if mode == "explicit" and not part.get("ranges"):
+        distinct_limit = part.get("distinct_limit", 16)
+        if not isinstance(distinct_limit, int) or distinct_limit < 1:
             raise ValidationError(
-                "partitioning.mode='explicit' icin 'partitioning.ranges' listesi bos olamaz."
+                f"partitioning.distinct_limit >= 1 olmali, su an: {distinct_limit!r}"
             )
+        part["distinct_limit"] = distinct_limit
+
+        if mode == "explicit":
+            ranges = part.get("ranges")
+            if not isinstance(ranges, list) or not ranges:
+                raise ValidationError(
+                    "partitioning.mode='explicit' icin 'partitioning.ranges' listesi bos olamaz."
+                )
+            cleaned_ranges: list[str] = []
+            for clause in ranges:
+                if not isinstance(clause, str) or not clause.strip():
+                    raise ValidationError(
+                        "partitioning.mode='explicit' icin 'partitioning.ranges' yalnizca dolu string ifadeler icermelidir."
+                    )
+                cleaned_ranges.append(clause.strip())
+            part["ranges"] = cleaned_ranges
 
     def _check_passthrough_config(self, task: dict) -> None:
         if task.get("column_mapping_mode", "source") != "source":

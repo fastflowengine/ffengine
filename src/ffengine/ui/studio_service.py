@@ -522,6 +522,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                 "partitioning_mode": str(partitioning.get("mode") or "auto").strip() or "auto",
                 "partitioning_column": str(partitioning.get("column") or "").strip() or None,
                 "partitioning_parts": int(partitioning.get("parts") or 2),
+                "partitioning_distinct_limit": int(partitioning.get("distinct_limit") or 16),
                 "partitioning_ranges": partitioning.get("ranges") or [],
                 "bindings": _normalize_bindings(task.get("bindings")),
             }
@@ -553,6 +554,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "partitioning_mode": first_task["partitioning_mode"],
         "partitioning_column": first_task["partitioning_column"],
         "partitioning_parts": first_task["partitioning_parts"],
+        "partitioning_distinct_limit": first_task["partitioning_distinct_limit"],
         "partitioning_ranges": first_task["partitioning_ranges"],
         "bindings": first_task["bindings"],
         "etl_tasks": normalized_tasks,
@@ -608,6 +610,7 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
             "mode": payload.get("partitioning_mode", "auto"),
             "column": payload.get("partitioning_column"),
             "parts": int(payload.get("partitioning_parts", 2)),
+            "distinct_limit": int(payload.get("partitioning_distinct_limit") or 16),
             "ranges": payload.get("partitioning_ranges") or [],
         },
     }
@@ -662,6 +665,7 @@ def build_task_dict_for_validation_from_task(
             "mode": task_payload.get("partitioning_mode", "auto"),
             "column": task_payload.get("partitioning_column"),
             "parts": int(task_payload.get("partitioning_parts", 2)),
+            "distinct_limit": int(task_payload.get("partitioning_distinct_limit") or 16),
             "ranges": task_payload.get("partitioning_ranges") or [],
         },
     }
@@ -780,7 +784,7 @@ def _list_child_dirs(path: Path) -> list[str]:
                 continue
             if name.startswith(".") or name.startswith("__"):
                 continue
-                items.append(entry.name)
+            items.append(entry.name)
     except OSError:
         return []
     return sorted(set(items))
@@ -1039,6 +1043,7 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
                 "mode": item.get("partitioning_mode", "auto"),
                 "column": item.get("partitioning_column") or None,
                 "parts": int(item.get("partitioning_parts", 2)),
+                "distinct_limit": int(item.get("partitioning_distinct_limit") or 16),
                 "ranges": item.get("partitioning_ranges") or [],
             },
             "tags": tags,

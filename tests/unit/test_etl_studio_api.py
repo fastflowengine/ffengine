@@ -224,6 +224,33 @@ def test_folder_options_source_param_passed(client):
     )
 
 
+def test_folder_options_reads_real_dag_hierarchy(client, studio_paths):
+    _proj, dag_root = studio_paths
+    (dag_root / "webhook" / "whk" / "level1" / "src_to_stg").mkdir(parents=True, exist_ok=True)
+    (dag_root / "test" / "public_level1" / "src_to_odc").mkdir(parents=True, exist_ok=True)
+
+    root_resp = client.get("/api/folder-options?source=dag")
+    assert root_resp.status_code == 200
+    root_body = root_resp.json()
+    assert root_body["ok"] is True
+    assert "webhook" in root_body["projects"]
+    assert "test" in root_body["projects"]
+
+    domain_resp = client.get("/api/folder-options?source=dag&project=webhook")
+    assert domain_resp.status_code == 200
+    assert domain_resp.json()["domains"] == ["whk"]
+
+    level_resp = client.get("/api/folder-options?source=dag&project=webhook&domain=whk")
+    assert level_resp.status_code == 200
+    assert level_resp.json()["levels"] == ["level1"]
+
+    flow_resp = client.get(
+        "/api/folder-options?source=dag&project=webhook&domain=whk&level=level1"
+    )
+    assert flow_resp.status_code == 200
+    assert flow_resp.json()["flows"] == ["src_to_stg"]
+
+
 def test_create_dag_writes_files(client, studio_paths):
     payload = _minimal_table_payload()
     r = client.post("/api/create-dag", json=payload)
@@ -262,10 +289,11 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
             "where": "id > 10",
             "batch_size": 20000,
             "partitioning_enabled": True,
-            "partitioning_mode": "percentile",
-            "partitioning_column": "id",
+            "partitioning_mode": "explicit",
+            "partitioning_column": None,
             "partitioning_parts": 4,
-            "partitioning_ranges": [{"min": 1, "max": 100}],
+            "partitioning_distinct_limit": 24,
+            "partitioning_ranges": ["id < 100", "id >= 100"],
         }
     )
     r = client.post("/api/create-dag", json=payload)
@@ -282,10 +310,35 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
     assert task["mapping_file"] == "mappings/orders_map.yaml"
     assert task["batch_size"] == 20000
     assert task["partitioning"]["enabled"] is True
-    assert task["partitioning"]["mode"] == "percentile"
-    assert task["partitioning"]["column"] == "id"
+    assert task["partitioning"]["mode"] == "explicit"
+    assert task["partitioning"]["column"] is None
     assert task["partitioning"]["parts"] == 4
-    assert task["partitioning"]["ranges"] == [{"min": 1, "max": 100}]
+    assert task["partitioning"]["distinct_limit"] == 24
+    assert task["partitioning"]["ranges"] == ["id < 100", "id >= 100"]
+
+
+def test_create_dag_distinct_mode_persists_distinct_limit(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "partitioning_enabled": True,
+            "partitioning_mode": "distinct",
+            "partitioning_column": "country_code",
+            "partitioning_parts": 3,
+            "partitioning_distinct_limit": 9,
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+
+    flow = Path(r.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+    )
+    task = cfg["etl_tasks"][0]
+    assert task["partitioning"]["mode"] == "distinct"
+    assert task["partitioning"]["column"] == "country_code"
+    assert task["partitioning"]["distinct_limit"] == 9
 
 
 def test_create_dag_sql_source_persists_inline_sql(client, studio_paths):

@@ -1,4 +1,4 @@
-﻿:root {
+:root {
       --bg: var(--color-bg-main, var(--bs-body-bg, #f5f7fb));
       --card: var(--color-bg-1, var(--bs-secondary-bg, #ffffff));
       --line: var(--color-border, var(--bs-border-color, #dbe2ea));
@@ -373,6 +373,15 @@
       margin-top: 6px;
     }
 
+    .partitioning-explicit-wrap {
+      margin-top: 4px;
+    }
+
+    .partitioning-explicit-ranges {
+      min-height: 110px;
+      resize: vertical;
+    }
+
     .status-note {
       margin-top: 8px;
       padding: 8px 10px;
@@ -423,6 +432,7 @@
       inset: 0;
       z-index: 9999;
       display: none;
+      isolation: isolate;
     }
 
     .folder-picker-modal.open {
@@ -432,17 +442,21 @@
     .picker-backdrop {
       position: absolute;
       inset: 0;
-      background: rgba(15, 23, 42, 0.45);
+      z-index: 0;
+      background: rgba(15, 23, 42, 0.75);
+      backdrop-filter: blur(6px);
     }
 
     .picker-dialog {
       position: relative;
       margin: 4vh auto 0;
       width: min(1200px, 96vw);
-      background: transparent;
+      z-index: 1;
+      background: var(--card);
+      background: color-mix(in srgb, var(--card) 96%, var(--bg) 4%);
       border: 1px solid var(--line);
       border-radius: 10px;
-      box-shadow: 0 20px 40px rgba(2, 6, 23, 0.25);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
       overflow: hidden;
     }
 
@@ -453,7 +467,8 @@
       gap: 10px;
       padding: 12px 14px;
       border-bottom: 1px solid var(--line);
-      background: transparent;
+      background: var(--card);
+      background: color-mix(in srgb, var(--card) 90%, var(--focus) 10%);
     }
 
     .picker-head h3 {
@@ -466,7 +481,8 @@
       color: inherit;
       padding: 8px 14px;
       border-bottom: 1px solid var(--line);
-      background: transparent;
+      background: var(--card);
+      background: color-mix(in srgb, var(--card) 92%, var(--bg) 8%);
     }
 
     .picker-grid {
@@ -477,6 +493,8 @@
     }
 
     .picker-col {
+      display: flex;
+      flex-direction: column;
       border-right: 1px solid var(--line);
       padding: 10px;
     }
@@ -494,11 +512,13 @@
     }
 
     .picker-list {
+      order: 3;
       border: 1px solid var(--line);
       border-radius: 8px;
       max-height: 260px;
       overflow: auto;
-      background: transparent;
+      background: var(--card);
+      background: color-mix(in srgb, var(--card) 94%, var(--bg) 6%);
     }
 
     .picker-item {
@@ -506,7 +526,8 @@
       text-align: left;
       border: 0;
       border-bottom: 1px solid var(--line);
-      background: transparent;
+      background: var(--card);
+      background: color-mix(in srgb, var(--card) 96%, var(--bg) 4%);
       padding: 8px 10px;
       font-size: 13px;
       color: inherit;
@@ -519,7 +540,8 @@
 
     .picker-item.active {
       font-weight: 700;
-      background: transparent;
+      background: var(--card);
+      background: color-mix(in srgb, var(--focus) 22%, var(--card) 78%);
       color: inherit;
     }
 
@@ -530,7 +552,9 @@
     }
 
     .picker-add {
+      order: 2;
       margin-top: 8px;
+      margin-bottom: 8px;
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 6px;
@@ -547,7 +571,12 @@
       gap: 8px;
       padding: 10px 14px;
       border-top: 1px solid var(--line);
-      background: transparent;
+      background: var(--card);
+      background: color-mix(in srgb, var(--card) 92%, var(--bg) 8%);
+    }
+
+    body.folder-picker-open {
+      overflow: hidden;
     }
 
     /* Current design: divider + readability focus (scoped). */
