@@ -40,9 +40,9 @@ def pg_conn_params():
     return {
         "host": os.getenv("PG_TEST_HOST", "localhost"),
         "port": int(os.getenv("PG_TEST_PORT", "5435")),
-        "user": os.getenv("PG_TEST_USER", "ffengine_test"),
-        "password": os.getenv("PG_TEST_PASSWORD", "ffengine_pg_pass"),
-        "database": os.getenv("PG_TEST_DB", "ffengine_test_db"),
+        "user": os.getenv("POSTGRES_TEST_USER", "ffengine_test"),
+        "password": os.getenv("POSTGRES_TEST_PASS", "ffengine_pg_pass"),
+        "database": os.getenv("POSTGRES_TEST_DB", "ffengine_test_db"),
     }
 
 
@@ -157,9 +157,9 @@ def test_pg_to_pg_data_integrity(src_session, tgt_session, pg_dialect):
     rows = cursor.fetchall()
     cursor.close()
 
-    assert rows[0] == (1, "Record_001")
-    assert rows[1] == (2, "Record_002")
-    assert rows[4] == (5, "Record_005")
+    assert rows[0] == (1, "test_record_001")
+    assert rows[1] == (2, "test_record_002")
+    assert rows[4] == (5, "test_record_005")
 
 
 def test_pg_to_pg_etl_result_fields(src_session, tgt_session, pg_dialect):

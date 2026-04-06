@@ -21,23 +21,7 @@ Kombinasyon matrisi:
 import os
 import pytest
 
-_REQUIRED_ENV = [
-    "PG_TEST_HOST",
-    "PG_TEST_PORT",
-    "PG_TEST_USER",
-    "PG_TEST_PASSWORD",
-    "PG_TEST_DB",
-    "MSSQL_TEST_HOST",
-    "MSSQL_TEST_PORT",
-    "MSSQL_TEST_USER",
-    "MSSQL_TEST_PASSWORD",
-    "MSSQL_TEST_DB",
-    "ORACLE_TEST_HOST",
-    "ORACLE_TEST_PORT",
-    "ORACLE_TEST_USER",
-    "ORACLE_TEST_PASSWORD",
-    "ORACLE_TEST_SERVICE",
-]
+_REQUIRED_ENV: list[str] = []  # Tüm bağlantı değerlerinin container-uyumlu default'u var; enable flag yeterli.
 
 
 def _cross_db_enable_state() -> tuple[bool, str]:
@@ -63,9 +47,9 @@ def _pg_params():
     return {
         "host": os.getenv("PG_TEST_HOST", "localhost"),
         "port": int(os.getenv("PG_TEST_PORT", "5435")),
-        "user": os.getenv("PG_TEST_USER", "ffengine_test"),
-        "password": os.getenv("PG_TEST_PASSWORD", "ffengine_pg_pass"),
-        "database": os.getenv("PG_TEST_DB", "ffengine_test_db"),
+        "user": os.getenv("POSTGRES_TEST_USER", "ffengine_test"),
+        "password": os.getenv("POSTGRES_TEST_PASS", "ffengine_pg_pass"),
+        "database": os.getenv("POSTGRES_TEST_DB", "ffengine_test_db"),
     }
 
 
@@ -74,7 +58,7 @@ def _mssql_params():
         "host": os.getenv("MSSQL_TEST_HOST", "localhost"),
         "port": int(os.getenv("MSSQL_TEST_PORT", "1433")),
         "user": os.getenv("MSSQL_TEST_USER", "sa"),
-        "password": os.getenv("MSSQL_TEST_PASSWORD", "Mssql_password123!"),
+        "password": os.getenv("MSSQL_SA_PASS", "Mssql_password123!"),
         "database": os.getenv("MSSQL_TEST_DB", "ffengine_test"),
         "driver": os.getenv("MSSQL_TEST_DRIVER", "{ODBC Driver 17 for SQL Server}"),
     }
@@ -85,7 +69,7 @@ def _oracle_params():
         "host": os.getenv("ORACLE_TEST_HOST", "localhost"),
         "port": int(os.getenv("ORACLE_TEST_PORT", "1521")),
         "user": os.getenv("ORACLE_TEST_USER", "ffengine"),
-        "password": os.getenv("ORACLE_TEST_PASSWORD", "Oracle_password123!"),
+        "password": os.getenv("ORACLE_PASS", "Oracle_password123!"),
         "database": os.getenv("ORACLE_TEST_SERVICE", "FREEPDB1"),
     }
 

@@ -1024,8 +1024,28 @@ async function studioFetch(path, options) {
       updateBindingsVisibility(card);
     }
 
+    const LEGACY_PARTITION_MODE = "full_scan";
+
+    function syncLegacyPartitionModeOption(modeSelect, rawMode) {
+      if (!modeSelect) return;
+      const mode = String(rawMode || "").trim();
+      const legacyOptions = modeSelect.querySelectorAll('option[data-legacy-partition-mode="true"]');
+      for (const opt of legacyOptions) {
+        opt.remove();
+      }
+      if (mode !== LEGACY_PARTITION_MODE) return;
+
+      const opt = document.createElement("option");
+      opt.value = LEGACY_PARTITION_MODE;
+      opt.textContent = "full_scan (legacy, deprecated)";
+      opt.disabled = true;
+      opt.setAttribute("data-legacy-partition-mode", "true");
+      modeSelect.insertBefore(opt, modeSelect.firstChild);
+    }
+
     function setTaskCardValues(card, values) {
       const sourceType = values.source_type || "table";
+      const partitioningMode = values.partitioning_mode || "auto";
       card.querySelector(".task-group-id").value = values.task_group_id || "";
       card.querySelector(".source-schema").value = values.source_schema || "";
       card.querySelector(".source-table").value = values.source_table || "";
@@ -1039,7 +1059,12 @@ async function studioFetch(path, options) {
       card.querySelector(".where").value = values.where || "";
       card.querySelector(".batch-size").value = String(values.batch_size || 10000);
       card.querySelector(".partitioning-enabled").checked = !!values.partitioning_enabled;
-      card.querySelector(".partitioning-mode").value = values.partitioning_mode || "auto";
+      const partitioningModeSelect = card.querySelector(".partitioning-mode");
+      syncLegacyPartitionModeOption(partitioningModeSelect, partitioningMode);
+      partitioningModeSelect.value = partitioningMode;
+      if (partitioningModeSelect.value !== partitioningMode) {
+        partitioningModeSelect.value = "auto";
+      }
       card.querySelector(".partitioning-column").value = values.partitioning_column || "";
       card.querySelector(".partitioning-parts").value = String(values.partitioning_parts || 2);
       card.querySelector(".partitioning-distinct-limit").value = String(
@@ -1073,38 +1098,64 @@ async function studioFetch(path, options) {
     function syncPartitionState(card) {
       const enabledInput = card.querySelector(".partitioning-enabled");
       const modeSelect = card.querySelector(".partitioning-mode");
+      const modeRowWrap = card.querySelector(".partitioning-mode-wrap");
+      const columnWrap = card.querySelector(".partitioning-column-wrap");
+      const modeWrap = card.querySelector(".partitioning-mode-field-wrap");
+      const secondaryWrap = card.querySelector(".partitioning-secondary-wrap");
+      const partsWrap = card.querySelector(".partitioning-parts-wrap");
+      const distinctLimitWrap = card.querySelector(".partitioning-distinct-limit-wrap");
+      const explicitWrap = card.querySelector(".partitioning-explicit-wrap");
       const columnInput = card.querySelector(".partitioning-column");
       const partsInput = card.querySelector(".partitioning-parts");
       const distinctLimitInput = card.querySelector(".partitioning-distinct-limit");
-      const explicitWrap = card.querySelector(".partitioning-explicit-wrap");
       const explicitInput = card.querySelector(".partitioning-ranges");
 
       const enabled = !!enabledInput.checked;
       const mode = String(modeSelect.value || "auto").trim() || "auto";
-      const isFullScan = mode === "full_scan";
+      const isLegacyMode = mode === LEGACY_PARTITION_MODE;
       const isExplicit = mode === "explicit";
       const isDistinct = mode === "distinct";
+      const isHashMod = mode === "hash_mod";
 
       const setDisabled = (node, disabled) => {
         if (!node) return;
         node.disabled = !!disabled;
         node.setAttribute("aria-disabled", disabled ? "true" : "false");
       };
+      const setHidden = (node, hidden) => {
+        if (!node) return;
+        node.classList.toggle("hidden", !!hidden);
+      };
 
-      if (explicitWrap) explicitWrap.classList.toggle("hidden", !isExplicit);
+      const showMode = enabled;
+      const showColumn = enabled && !isExplicit && !isLegacyMode;
+      const showParts = enabled && (isDistinct || isHashMod);
+      const showDistinctLimit = enabled && isDistinct;
+      const showExplicit = enabled && isExplicit;
 
-      setDisabled(modeSelect, false);
-      setDisabled(columnInput, !enabled || isFullScan || isExplicit);
-      setDisabled(partsInput, !enabled || isFullScan || isExplicit);
-      setDisabled(distinctLimitInput, !enabled || !isDistinct);
-      setDisabled(explicitInput, !enabled || !isExplicit);
+      setHidden(modeWrap, !showMode);
+      setHidden(columnWrap, !showColumn);
+      setHidden(partsWrap, !showParts);
+      setHidden(distinctLimitWrap, !showDistinctLimit);
+      setHidden(explicitWrap, !showExplicit);
+      setHidden(modeRowWrap, !enabled || (!showMode && !showColumn));
+      setHidden(secondaryWrap, !enabled || (!showParts && !showDistinctLimit));
+
+      setDisabled(modeSelect, !showMode);
+      setDisabled(columnInput, !showColumn);
+      setDisabled(partsInput, !showParts);
+      setDisabled(distinctLimitInput, !showDistinctLimit);
+      setDisabled(explicitInput, !showExplicit);
     }
 
     function bindPartitionState(card) {
       const enabledInput = card.querySelector(".partitioning-enabled");
       const modeSelect = card.querySelector(".partitioning-mode");
       enabledInput.addEventListener("change", () => syncPartitionState(card));
-      modeSelect.addEventListener("change", () => syncPartitionState(card));
+      modeSelect.addEventListener("change", () => {
+        syncLegacyPartitionModeOption(modeSelect, modeSelect.value);
+        syncPartitionState(card);
+      });
       syncPartitionState(card);
     }
 

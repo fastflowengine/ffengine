@@ -4,7 +4,6 @@ C06 — Partition planlayıcı.
 Partitioner.plan(task_config, src_conn, src_dialect) → list[{"part_id": int, "where": str | None}]
 
 Stratejiler:
-  full_scan    : Tek partisyon, WHERE yok. (disabled veya mod=full_scan)
   explicit     : Kullanıcı tarafından sağlanan WHERE listesi.
   auto_numeric : MIN/MAX sorgusuna dayalı eşit genişlikli aralıklar.
   percentile   : PERCENTILE_CONT sorgusu; desteklenmiyorsa auto_numeric'e düşer.
@@ -49,14 +48,12 @@ class Partitioner:
         """
         part = task_config.get("partitioning", {})
         if not part.get("enabled", False):
-            return [{"part_id": 0, "where": None}]
+            return self._plan_single_partition()
 
         mode = part.get("mode", "auto")
         if mode == "auto":
             mode = "auto_numeric"
 
-        if mode == "full_scan":
-            return self._plan_full_scan()
         if mode == "explicit":
             return self._plan_explicit(part)
         if mode == "auto_numeric":
@@ -102,7 +99,7 @@ class Partitioner:
     # Stratejiler
     # ------------------------------------------------------------------
 
-    def _plan_full_scan(self) -> list[dict]:
+    def _plan_single_partition(self) -> list[dict]:
         return [{"part_id": 0, "where": None}]
 
     def _plan_explicit(self, part: dict) -> list[dict]:
@@ -141,7 +138,7 @@ class Partitioner:
             cursor.close()
 
         if row is None or row[0] is None or row[0] == row[1]:
-            return self._plan_full_scan()
+            return self._plan_single_partition()
 
         min_val, max_val = row[0], row[1]
         chunk = (max_val - min_val) / n
@@ -185,7 +182,7 @@ class Partitioner:
             return self._plan_auto_numeric(task_config, src_conn, src_dialect)
 
         if not boundaries:
-            return self._plan_full_scan()
+            return self._plan_single_partition()
 
         # MIN ve MAX'ı ekle
         cursor = src_conn.cursor()
@@ -198,7 +195,7 @@ class Partitioner:
             cursor.close()
 
         if row is None or row[0] is None:
-            return self._plan_full_scan()
+            return self._plan_single_partition()
 
         all_bounds = [row[0]] + list(boundaries) + [row[1]]
         specs = []
@@ -293,7 +290,7 @@ class Partitioner:
 
         values = [row[0] for row in rows]
         if not values:
-            return self._plan_full_scan()
+            return self._plan_single_partition()
 
         # Değerleri n gruba böl
         chunk_size = math.ceil(len(values) / n)

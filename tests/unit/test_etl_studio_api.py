@@ -341,6 +341,19 @@ def test_create_dag_distinct_mode_persists_distinct_limit(client, studio_paths):
     assert task["partitioning"]["distinct_limit"] == 9
 
 
+def test_create_dag_rejects_full_scan_partitioning_mode(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "partitioning_enabled": True,
+            "partitioning_mode": "full_scan",
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "partitioning.mode gecersiz" in r.text
+
+
 def test_create_dag_sql_source_persists_inline_sql(client, studio_paths):
     payload = _minimal_table_payload()
     payload.update(
@@ -527,6 +540,17 @@ def test_update_dag_ok(client, studio_paths):
     assert r2.status_code == 200
     assert r2.json()["dag_path"] == dag_path
     assert r2.json()["config_path"] == cfg_path
+
+
+def test_update_dag_rejects_full_scan_partitioning_mode(client, studio_paths):
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201
+    payload["partitioning_enabled"] = True
+    payload["partitioning_mode"] = "full_scan"
+    r2 = client.post("/api/update-dag", json=payload)
+    assert r2.status_code == 422
+    assert "partitioning.mode gecersiz" in r2.text
 
 
 def test_create_dag_migrates_legacy_generated_dag(client, studio_paths):
@@ -804,6 +828,24 @@ def test_dag_payload_invalid_source_type():
             target_schema="t",
             target_table="x",
             source_type="not_a_type",
+        )
+
+
+def test_dag_payload_rejects_full_scan_partitioning_mode():
+    with pytest.raises(ValidationError):
+        DagUpsertPayload(
+            project="p",
+            domain="d",
+            level="level1",
+            flow="src_to_stg",
+            source_conn_id="a",
+            target_conn_id="b",
+            source_schema="s",
+            source_table="tbl",
+            target_schema="t",
+            target_table="x",
+            source_type="table",
+            partitioning_mode="full_scan",
         )
 
 

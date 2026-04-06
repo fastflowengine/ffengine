@@ -62,7 +62,7 @@ def _task(part_override=None) -> dict:
 
 
 class TestPartitionerDisabled:
-    def test_disabled_returns_single_full_scan_spec(self):
+    def test_disabled_returns_single_partition_spec(self):
         task = _task({"enabled": False})
         result = Partitioner().plan(task, MagicMock(), _dialect())
         assert result == [{"part_id": 0, "where": None}]
@@ -80,26 +80,15 @@ class TestPartitionerDisabled:
 
 
 # ---------------------------------------------------------------------------
-# full_scan
+# unsupported mode
 # ---------------------------------------------------------------------------
 
 
-class TestPartitionerFullScan:
-    def test_full_scan_returns_single_spec(self):
+class TestPartitionerUnsupportedMode:
+    def test_full_scan_mode_is_rejected(self):
         task = _task({"mode": "full_scan", "column": None})
-        result = Partitioner().plan(task, MagicMock(), _dialect())
-        assert result == [{"part_id": 0, "where": None}]
-
-    def test_full_scan_ignores_parts(self):
-        task = _task({"mode": "full_scan", "parts": 8, "column": None})
-        result = Partitioner().plan(task, MagicMock(), _dialect())
-        assert len(result) == 1
-
-    def test_full_scan_no_db_call(self):
-        conn = MagicMock()
-        task = _task({"mode": "full_scan", "column": None})
-        Partitioner().plan(task, conn, _dialect())
-        conn.cursor.assert_not_called()
+        with pytest.raises(PartitionError, match="Bilinmeyen partition modu"):
+            Partitioner().plan(task, MagicMock(), _dialect())
 
 
 # ---------------------------------------------------------------------------
@@ -162,12 +151,12 @@ class TestPartitionerAutoNumeric:
             assert " < " in spec["where"]
             assert "<=" not in spec["where"]
 
-    def test_auto_numeric_empty_table_falls_back_to_full_scan(self):
+    def test_auto_numeric_empty_table_falls_back_to_single_partition(self):
         conn = _conn(fetchone=(None, None))
         result = Partitioner().plan(_task(), conn, _dialect())
         assert result == [{"part_id": 0, "where": None}]
 
-    def test_auto_numeric_single_value_falls_back_to_full_scan(self):
+    def test_auto_numeric_single_value_falls_back_to_single_partition(self):
         conn = _conn(fetchone=(42, 42))
         result = Partitioner().plan(_task(), conn, _dialect())
         assert result == [{"part_id": 0, "where": None}]
@@ -247,7 +236,7 @@ class TestPartitionerDistinct:
         # Her iki değer de tek tırnak içinde olmalı
         assert "'US'" in result[0]["where"] or "'EU'" in result[0]["where"]
 
-    def test_distinct_empty_table_falls_back_to_full_scan(self):
+    def test_distinct_empty_table_falls_back_to_single_partition(self):
         conn = _conn(fetchall=[])
         task = _task({"mode": "distinct", "parts": 4})
         result = Partitioner().plan(task, conn, _dialect())

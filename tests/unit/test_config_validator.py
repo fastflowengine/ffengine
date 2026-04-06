@@ -200,8 +200,9 @@ class TestPartitioningValidation:
     def test_valid_distinct_with_column_passes(self):
         ConfigValidator().validate(_part_task(mode="distinct"))
 
-    def test_valid_full_scan_passes(self):
-        ConfigValidator().validate(_part_task(mode="full_scan", column=None))
+    def test_full_scan_mode_rejected(self):
+        with pytest.raises(ValidationError, match="mode"):
+            ConfigValidator().validate(_part_task(mode="full_scan", column=None))
 
     def test_auto_mode_alias_accepted(self):
         # "auto" → "auto_numeric" normalize edilir, ValidationError fırlatılmaz

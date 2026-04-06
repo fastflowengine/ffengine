@@ -215,11 +215,11 @@
                 Partitioning Enabled
               </label>
               <div class="row-2 partitioning-mode-wrap">
-                <label>
+                <label class="partitioning-column-wrap">
                   Column
                   <input class="partitioning-column" placeholder="id">
                 </label>
-                <label>
+                <label class="partitioning-mode-field-wrap">
                   Mode
                   <select class="partitioning-mode">
                     <option value="auto">auto</option>
@@ -228,16 +228,15 @@
                     <option value="hash_mod">hash_mod</option>
                     <option value="distinct">distinct</option>
                     <option value="explicit">explicit</option>
-                    <option value="full_scan">full_scan</option>
                   </select>
                 </label>
               </div>
-              <div class="row-2 partitioning-distinct-wrap">
-                <label>
+              <div class="row-2 partitioning-secondary-wrap">
+                <label class="partitioning-parts-wrap">
                   Parts
                   <input class="partitioning-parts" type="number" min="1" value="2">
                 </label>
-                <label>
+                <label class="partitioning-distinct-limit-wrap">
                   Distinct Limit
                   <input class="partitioning-distinct-limit" type="number" min="1" value="16">
                 </label>
@@ -278,7 +277,7 @@
     <pre class="response" id="out">{}</pre>
   </div>
 
-  <script src="/etl-studio/static/etl_studio/js/app.js?v=17"></script>
+  <script src="/etl-studio/static/etl_studio/js/app.js?v=19"></script>
 </body>
 </html>
 

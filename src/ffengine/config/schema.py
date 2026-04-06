@@ -30,7 +30,6 @@ VALID_PARTITION_MODES: frozenset[str] = frozenset({
     "hash_mod",
     "distinct",
     "explicit",
-    "full_scan",
 })
 
 # Root seviyesinde zorunlu alanlar

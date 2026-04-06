@@ -25,13 +25,7 @@ from ffengine.dialects import PostgresDialect
 from ffengine.mapping.generator import MappingGenerator
 
 
-_REQUIRED_ENV = [
-    "PG_TEST_HOST",
-    "PG_TEST_PORT",
-    "PG_TEST_USER",
-    "PG_TEST_PASSWORD",
-    "PG_TEST_DB",
-]
+_REQUIRED_ENV: list[str] = []  # Tüm bağlantı değerlerinin container-uyumlu default'u var; enable flag yeterli.
 
 
 def _integration_enable_state() -> tuple[bool, str]:
@@ -53,9 +47,9 @@ def _pg_params() -> dict:
     return {
         "host": os.getenv("PG_TEST_HOST", "localhost"),
         "port": int(os.getenv("PG_TEST_PORT", "5435")),
-        "user": os.getenv("PG_TEST_USER", "ffengine_test"),
-        "password": os.getenv("PG_TEST_PASSWORD", "ffengine_pg_pass"),
-        "database": os.getenv("PG_TEST_DB", "ffengine_test_db"),
+        "user": os.getenv("POSTGRES_TEST_USER", "ffengine_test"),
+        "password": os.getenv("POSTGRES_TEST_PASS", "ffengine_pg_pass"),
+        "database": os.getenv("POSTGRES_TEST_DB", "ffengine_test_db"),
         "conn_type": "postgres",
     }
 
@@ -156,7 +150,7 @@ def test_mapping_to_dag_to_run_chain(pg_session, tmp_path):
         )
         first = cur.fetchone()
         assert first[0] == 1
-        assert first[1] == "Record_001"
+        assert first[1] == "test_record_001"
     finally:
         cur.execute(f"DROP TABLE IF EXISTS {q_schema}.{q_tgt}")
         session.conn.commit()

@@ -65,3 +65,35 @@ def test_discover_tables_schema_single_partial_match(_mock_dialect, _mock_conn):
 def test_discover_tables_schema_partial_ambiguous_raises(_mock_dialect, _mock_conn):
     with pytest.raises(ValueError, match="birden fazla eslesme"):
         ss.discover_tables("src", schema="pub", search=None, limit=50, offset=0)
+
+
+def test_discover_hierarchy_options_from_dag_root(monkeypatch, tmp_path):
+    dag_root = tmp_path / "dags"
+    projects_root = tmp_path / "projects"
+    dag_root.mkdir(parents=True, exist_ok=True)
+    projects_root.mkdir(parents=True, exist_ok=True)
+
+    (dag_root / "webhook" / "whk" / "level1" / "src_to_stg").mkdir(parents=True, exist_ok=True)
+    (dag_root / "test" / "public_level1" / "src_to_odc").mkdir(parents=True, exist_ok=True)
+    (dag_root / "__pycache__").mkdir(parents=True, exist_ok=True)
+    (dag_root / ".hidden").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("FFENGINE_STUDIO_DAG_ROOT", str(dag_root))
+    monkeypatch.setenv("FFENGINE_STUDIO_PROJECTS_ROOT", str(projects_root))
+
+    root_data = ss.discover_hierarchy_options(source="dag")
+    assert set(root_data["projects"]) == {"webhook", "test"}
+
+    domain_data = ss.discover_hierarchy_options(project="webhook", source="dag")
+    assert domain_data["domains"] == ["whk"]
+
+    level_data = ss.discover_hierarchy_options(project="webhook", domain="whk", source="dag")
+    assert level_data["levels"] == ["level1"]
+
+    flow_data = ss.discover_hierarchy_options(
+        project="webhook",
+        domain="whk",
+        level="level1",
+        source="dag",
+    )
+    assert flow_data["flows"] == ["src_to_stg"]

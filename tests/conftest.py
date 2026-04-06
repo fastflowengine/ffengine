@@ -4,6 +4,21 @@ import shutil
 import uuid
 from pathlib import Path
 
+
+def _load_dotenv():
+    env_path = Path(__file__).parent.parent / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_dotenv()
+
 @pytest.fixture(scope="session")
 def postgres_credentials():
     return {
