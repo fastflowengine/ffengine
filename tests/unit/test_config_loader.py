@@ -172,6 +172,27 @@ class TestConfigLoaderValid:
         ConfigLoader().load(str(p), "t1")
         assert TASK_DEFAULTS["batch_size"] == 10_000
 
+    def test_mapping_file_relative_path_resolved_against_config_dir(self, tmp_path):
+        yaml_m = textwrap.dedent("""\
+            source_db_var: src_conn
+            target_db_var: tgt_conn
+            etl_tasks:
+              - task_group_id: t1
+                source_schema: public
+                source_table: t
+                source_type: table
+                target_schema: dwh
+                target_table: t
+                load_method: append
+                column_mapping_mode: mapping_file
+                mapping_file: mapping/1_t1.yaml
+        """)
+        cfg = tmp_path / "nested" / "cfg.yaml"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(yaml_m)
+        loaded = ConfigLoader().load(str(cfg), "t1")
+        assert loaded["mapping_file"] == str((cfg.parent / "mapping" / "1_t1.yaml").resolve())
+
 
 # ---------------------------------------------------------------------------
 # Hata senaryoları

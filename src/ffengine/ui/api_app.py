@@ -30,6 +30,7 @@ from ffengine.ui.studio_service import (
     discover_schemas,
     discover_tables,
     fetch_timeline_runs,
+    generate_mapping_preview,
 )
 
 
@@ -144,6 +145,7 @@ class EtlTaskPayload(BaseModel):
     load_method: str = "create_if_not_exists_or_truncate"
     column_mapping_mode: str = "source"
     mapping_file: str | None = None
+    mapping_content: str | None = None
     where: str | None = None
     batch_size: int = Field(10000, ge=1, le=1_000_000)
     partitioning_enabled: bool = False
@@ -186,8 +188,8 @@ class EtlTaskPayload(BaseModel):
 
     @model_validator(mode="after")
     def _v_mapping(self) -> EtlTaskPayload:
-        if self.column_mapping_mode == "mapping_file" and not (self.mapping_file or "").strip():
-            raise ValueError("column_mapping_mode='mapping_file' icin mapping_file yolu gerekir.")
+        if self.source_type == "sql" and self.column_mapping_mode != "mapping_file":
+            raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
         if self.source_type in {"table", "view"}:
             if not (self.source_schema or "").strip() or not (self.source_table or "").strip():
                 raise ValueError("source_type=table|view icin source_schema ve source_table zorunludur.")
@@ -219,6 +221,7 @@ class DagUpsertPayload(BaseModel):
     load_method: str = "create_if_not_exists_or_truncate"
     column_mapping_mode: str = "source"
     mapping_file: str | None = None
+    mapping_content: str | None = None
     where: str | None = None
     batch_size: int = Field(10000, ge=1, le=1_000_000)
     partitioning_enabled: bool = False
@@ -265,13 +268,6 @@ class DagUpsertPayload(BaseModel):
     def _v_mapping(self) -> DagUpsertPayload:
         has_task_list = isinstance(self.etl_tasks, list) and len(self.etl_tasks) > 0
         if has_task_list:
-            if self.source_type == "sql" and not (self.inline_sql or "").strip():
-                raise ValueError("source_type='sql' icin inline_sql zorunludur.")
-            items = list(self.bindings or [])
-            names = [item.variable_name for item in items]
-            if len(names) != len(set(names)):
-                raise ValueError("bindings.variable_name task icinde unique olmalidir.")
-            _validate_bindings_where_contract(self.where, items)
             return self
         target_required_ok = all([(self.target_schema or "").strip(), (self.target_table or "").strip()])
         if self.source_type in {"table", "view"}:
@@ -284,8 +280,8 @@ class DagUpsertPayload(BaseModel):
             raise ValueError(
                 "etl_tasks verilmediyse target_schema/target_table zorunludur."
             )
-        if self.column_mapping_mode == "mapping_file" and not (self.mapping_file or "").strip():
-            raise ValueError("column_mapping_mode='mapping_file' icin mapping_file yolu gerekir.")
+        if self.source_type == "sql" and self.column_mapping_mode != "mapping_file":
+            raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
         if self.source_type == "sql" and not (self.inline_sql or "").strip():
             raise ValueError("source_type='sql' icin inline_sql zorunludur.")
         items = list(self.bindings or [])
@@ -293,6 +289,42 @@ class DagUpsertPayload(BaseModel):
         if len(names) != len(set(names)):
             raise ValueError("bindings.variable_name task icinde unique olmalidir.")
         _validate_bindings_where_contract(self.where, items)
+        return self
+
+
+class MappingGeneratePayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    project: str = Field(..., min_length=1)
+    domain: str = Field(..., min_length=1)
+    level: str = Field(..., min_length=1)
+    flow: str = Field(..., min_length=1)
+    source_conn_id: str = Field(..., min_length=1)
+    target_conn_id: str = Field(..., min_length=1)
+    source_type: str = "table"
+    source_schema: str | None = Field(default=None, min_length=1)
+    source_table: str | None = Field(default=None, min_length=1)
+    inline_sql: str | None = None
+    task_group_id: str | None = Field(default=None, min_length=1)
+    task_no: int = Field(1, ge=1)
+    version: str = "v1"
+
+    @field_validator("source_type")
+    @classmethod
+    def _v_source_type(cls, v: str) -> str:
+        if v not in {"table", "view", "sql"}:
+            raise ValueError("source_type yalnizca 'table', 'view' veya 'sql' olabilir.")
+        if v not in VALID_SOURCE_TYPES:
+            raise ValueError(f"source_type gecersiz: {v!r}")
+        return v
+
+    @model_validator(mode="after")
+    def _v_required_fields(self) -> "MappingGeneratePayload":
+        if self.source_type in {"table", "view"}:
+            if not (self.source_schema or "").strip() or not (self.source_table or "").strip():
+                raise ValueError("source_type=table|view icin source_schema ve source_table zorunludur.")
+        if self.source_type == "sql" and not (self.inline_sql or "").strip():
+            raise ValueError("source_type='sql' icin inline_sql zorunludur.")
         return self
 
 
@@ -426,6 +458,8 @@ def api_create_dag(
     try:
         result = create_or_update_dag(_payload_to_service_dict(payload), update=False)
         return {"ok": True, **result}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         _raise_http_from_exception(exc)
 
@@ -438,6 +472,19 @@ def api_update_dag(
     try:
         result = create_or_update_dag(_payload_to_service_dict(payload), update=True)
         return {"ok": True, **result}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@etl_studio_app.post("/api/mapping/generate")
+def api_mapping_generate(payload: MappingGeneratePayload) -> dict[str, Any]:
+    try:
+        result = generate_mapping_preview(payload.model_dump(exclude_none=True))
+        return {"ok": True, **result}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         _raise_http_from_exception(exc)
 

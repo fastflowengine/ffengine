@@ -152,6 +152,26 @@
       gap: 8px;
     }
 
+    .task-head-main {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .task-group-id-readonly {
+      font-size: 11px;
+      line-height: 1.2;
+      word-break: break-all;
+    }
+
+    .task-group-id-readonly::before {
+      content: "-";
+      margin-right: 6px;
+      color: var(--muted);
+    }
+
     .task-head::before {
       content: ">";
       font-size: 13px;
@@ -279,6 +299,18 @@
 
     .tab-panel.active {
       display: block;
+    }
+
+    .mapping-actions {
+      margin-top: 8px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .mapping-status {
+      margin-top: 8px;
+      font-size: 12px;
     }
 
     .bindings-block {

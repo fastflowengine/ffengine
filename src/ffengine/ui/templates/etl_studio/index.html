@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ETL Studio</title>
-  <link rel="stylesheet" href="/etl-studio/static/etl_studio/css/style.css?v=11">
+  <link rel="stylesheet" href="/etl-studio/static/etl_studio/css/style.css?v=13">
 </head>
 <body class="etl-studio-root" data-ui-variant="current">
   <div class="page etl-studio">
@@ -34,13 +34,13 @@
         <label>
           Source DB Connection
           <select id="source_conn_id">
-            <option value="">Yukleniyor...</option>
+            <option value="">Select Source DB Connection</option>
           </select>
         </label>
         <label>
           Target DB Connection
           <select id="target_conn_id">
-            <option value="">Yukleniyor...</option>
+            <option value="">Select Target DB Connection</option>
           </select>
         </label>
       </div>
@@ -114,9 +114,6 @@
         <datalist id="target_table_options"></datalist>
         <datalist id="airflow_variable_options"></datalist>
 
-        <div class="muted-note">
-          Not: Bir DAG icinde birden fazla task tanimlanabilir.
-        </div>
         <div class="actions" id="create_actions_bottom">
           <button class="btn btn-success" id="btn_add_task" type="button">+ Add New Task</button>
           <button class="btn btn-primary btn-create-dag" type="button">Save Configuration</button>
@@ -127,14 +124,13 @@
     <template id="task_card_template">
       <div class="task-card">
         <div class="task-head" role="button" tabindex="0" aria-expanded="true">
-          <h3 class="task-title">Task #1</h3>
+          <div class="task-head-main">
+            <h3 class="task-title">Task #1</h3>
+            <div class="task-group-id-readonly muted-note">task_group_id</div>
+          </div>
           <button class="btn btn-danger btn-delete-task" type="button">Delete</button>
         </div>
         <div class="task-content">
-          <label>
-            Task Group ID (Opsiyonel)
-            <input class="task-group-id" placeholder="ornek: src_orders_to_dwh_orders_v1">
-          </label>
           <div class="task-layout">
             <div class="sub-card source-card">
             <h4>Source Configuration</h4>
@@ -263,10 +259,18 @@
                   <option value="mapping_file">mapping_file</option>
                 </select>
               </label>
-              <label>
-                Mapping File (mode=mapping_file)
-                <input class="mapping-file" placeholder="mappings/orders_map.yaml">
+              <label class="mapping-content-wrap">
+                Content
+                <textarea class="mapping-content" rows="8" placeholder="version: v1&#10;columns: []"></textarea>
               </label>
+              <div class="mapping-actions">
+                <button class="btn btn-secondary btn-generate-mapping" type="button">Generate Mapping</button>
+              </div>
+              <label class="mapping-generated-path-wrap">
+                Generated Mapping Path
+                <input class="mapping-generated-path" readonly>
+              </label>
+              <div class="mapping-status muted-note"></div>
             </div>
             </div>
           </div>
@@ -277,7 +281,7 @@
     <pre class="response" id="out">{}</pre>
   </div>
 
-  <script src="/etl-studio/static/etl_studio/js/app.js?v=19"></script>
+  <script src="/etl-studio/static/etl_studio/js/app.js?v=22"></script>
 </body>
 </html>
 

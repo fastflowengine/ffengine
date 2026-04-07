@@ -10,6 +10,8 @@ import json
 import os
 import re
 import shutil
+import stat
+import time
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,9 @@ from ffengine.airflow.operator import resolve_dialect
 from ffengine.config.validator import ConfigValidator
 from ffengine.db.airflow_adapter import AirflowConnectionAdapter
 from ffengine.db.session import DBSession
+from ffengine.dialects.type_mapper import TypeMapper, UnsupportedTypeError
+from ffengine.mapping.generator import MappingGenerator
+from ffengine.mapping.resolver import VALID_MAPPING_VERSIONS, _dialect_name
 
 STUDIO_METADATA_NAME = ".etl_studio.json"
 STUDIO_DAG_MARKER = "# generated_by: etl_studio"
@@ -32,16 +37,19 @@ def _slugify(value: str, default: str) -> str:
 
 
 def _auto_task_group_id(
+    source_db: str,
     src_schema: str,
     src_table: str,
+    target_db: str,
+    load_method: str,
     tgt_schema: str,
     tgt_table: str,
     task_index: int = 1,
 ) -> str:
-    idx = max(1, int(task_index))
+    idx = max(1, int(task_index or 1))
     return (
-        f"{_slugify(src_schema, 'src')}_{_slugify(src_table, 'table')}"
-        f"_to_{_slugify(tgt_schema, 'tgt')}_{_slugify(tgt_table, 'table')}_task_{idx}"
+        f"{idx}_{_slugify(source_db, 'source')}_{_slugify(src_schema, 'src')}_{_slugify(src_table, 'table')}"
+        f"_to_{_slugify(target_db, 'target')}_{_slugify(load_method, 'method')}_{_slugify(tgt_schema, 'tgt')}_{_slugify(tgt_table, 'table')}"
     )
 
 
@@ -391,6 +399,246 @@ def _ensure_path_under_root(path: Path, root: Path) -> Path:
     return resolved
 
 
+def _best_effort_unlink(path: Path, *, retries: int = 80, wait_seconds: float = 0.1) -> bool:
+    for _ in range(max(1, retries)):
+        try:
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError:
+            try:
+                path.chmod(stat.S_IWRITE | stat.S_IREAD)
+            except OSError:
+                pass
+            time.sleep(max(0.0, wait_seconds))
+        except OSError:
+            time.sleep(max(0.0, wait_seconds))
+    for idx in range(1, max(2, retries + 1)):
+        tomb = path.with_name(f"{path.name}.stale_{idx}")
+        if tomb.exists():
+            continue
+        try:
+            path.replace(tomb)
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def _normalize_relative_mapping_file(value: str) -> str:
+    raw = str(value or "").strip().replace("\\", "/")
+    raw = re.sub(r"/{2,}", "/", raw).lstrip("/")
+    if not raw:
+        raise ValueError("mapping_file bos olamaz.")
+    path = Path(raw)
+    if path.is_absolute():
+        raise ValueError("mapping_file relative bir yol olmalidir.")
+    return Path(raw).as_posix()
+
+
+def _auto_mapping_relative_file(task_no: int, task_group_id: str) -> str:
+    safe_task_no = max(1, int(task_no))
+    tg = str(task_group_id or "").strip()
+    if not tg:
+        raise ValueError("task_group_id bos olamaz.")
+    if "/" in tg or "\\" in tg or ".." in tg:
+        raise ValueError(f"Gecersiz task_group_id (mapping path icin): {tg!r}")
+    return f"mapping/{safe_task_no}_{tg}.yaml"
+
+
+def _is_auto_mapping_relative_file(value: str) -> bool:
+    rel = str(value or "").strip().replace("\\", "/")
+    return bool(re.fullmatch(r"mapping/\d+_[^/\\]+\.ya?ml", rel))
+
+
+def _resolve_mapping_file_path(flow_dir: Path, mapping_file: str) -> Path:
+    rel = _normalize_relative_mapping_file(mapping_file)
+    target = flow_dir / rel
+    return _ensure_path_under_root(target, flow_dir)
+
+
+def _mapping_yaml_to_source_columns(mapping_obj: dict[str, Any]) -> list[str]:
+    if not isinstance(mapping_obj, dict):
+        raise ValueError("Mapping YAML root dict olmalidir.")
+    version = mapping_obj.get("version")
+    if version not in VALID_MAPPING_VERSIONS:
+        raise ValueError(
+            f"Desteklenmeyen mapping dosyasi versiyonu: {version!r}. "
+            f"Gecerli: {sorted(VALID_MAPPING_VERSIONS)}"
+        )
+    entries = mapping_obj.get("columns")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("Mapping YAML icinde columns listesi bos veya gecersiz.")
+    out: list[str] = []
+    for idx, item in enumerate(entries, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Mapping columns[{idx-1}] dict olmalidir.")
+        src = str(item.get("source_name") or "").strip()
+        if not src:
+            raise ValueError(f"Mapping columns[{idx-1}] source_name bos olamaz.")
+        out.append(src)
+    return out
+
+
+def _parse_yaml_mapping_text(mapping_content: str, *, label: str) -> dict[str, Any]:
+    try:
+        parsed = yaml.safe_load(mapping_content)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Gecersiz mapping YAML ({label}): {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Gecersiz mapping YAML ({label}): root dict olmalidir.")
+    _mapping_yaml_to_source_columns(parsed)
+    return parsed
+
+
+def _read_mapping_object(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise FileNotFoundError(f"Mapping dosyasi bulunamadi: {path.as_posix()}")
+    return _parse_yaml_mapping_text(path.read_text(encoding="utf-8"), label=path.as_posix())
+
+
+def _normalize_description_type(type_code: Any) -> str:
+    if type_code is None:
+        return "TEXT"
+    if isinstance(type_code, str):
+        raw = type_code
+    elif hasattr(type_code, "__name__"):
+        raw = str(getattr(type_code, "__name__", ""))
+    else:
+        raw = str(type_code)
+    cleaned = re.sub(r"[^A-Za-z0-9_ ]+", "_", raw).strip("_ ").upper()
+    return cleaned or "TEXT"
+
+
+def _wrap_zero_row_sql_for_dialect(inline_sql: str, dialect_name: str) -> str:
+    base = str(inline_sql or "").strip().rstrip(";")
+    if not base:
+        raise ValueError("source_type='sql' icin inline_sql zorunludur.")
+    if dialect_name == "mssql":
+        return f"SELECT TOP 0 * FROM ({base}) AS ffengine_inline_sql"
+    if dialect_name == "oracle":
+        return f"SELECT * FROM ({base}) ffengine_inline_sql WHERE 1=0"
+    return f"SELECT * FROM ({base}) AS ffengine_inline_sql LIMIT 0"
+
+
+def extract_sql_select_columns(src_session: DBSession, src_dialect, inline_sql: str) -> list[dict[str, str]]:
+    """SQL query metadata'sindan kolon adlarini ve normalize tip adini dondurur."""
+    dialect_name = _dialect_name(src_dialect)
+    query = _wrap_zero_row_sql_for_dialect(inline_sql, dialect_name)
+    cursor = src_session.cursor(server_side=False)
+    try:
+        cursor.execute(query)
+        desc = list(cursor.description or [])
+    except Exception as exc:
+        raise ValueError(f"SQL metadata cikarimi basarisiz: {exc}") from exc
+    finally:
+        cursor.close()
+    cols: list[dict[str, str]] = []
+    for col in desc:
+        name = str(col[0] if len(col) > 0 else "").strip()
+        if not name:
+            continue
+        type_code = col[1] if len(col) > 1 else None
+        cols.append({"name": name, "source_type": _normalize_description_type(type_code)})
+    if not cols:
+        raise ValueError("SQL metadata cikariminda kolon bulunamadi.")
+    return cols
+
+
+def extract_sql_select_columns_for_conn(source_conn_id: str, inline_sql: str) -> list[dict[str, str]]:
+    src_params = AirflowConnectionAdapter.get_connection_params(source_conn_id)
+    src_dialect = resolve_dialect(src_params["conn_type"])
+    with DBSession(src_params, src_dialect) as src_session:
+        return extract_sql_select_columns(src_session, src_dialect, inline_sql)
+
+
+def _collect_existing_auto_mapping_paths(config_path: Path, flow_dir: Path) -> set[Path]:
+    if not config_path.is_file():
+        return set()
+    try:
+        cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return set()
+    tasks = cfg.get("etl_tasks")
+    if not isinstance(tasks, list):
+        return set()
+    out: set[Path] = set()
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        rel = str(task.get("mapping_file") or "").strip()
+        if not _is_auto_mapping_relative_file(rel):
+            continue
+        try:
+            out.add(_resolve_mapping_file_path(flow_dir, rel))
+        except Exception:
+            continue
+    return out
+
+
+def _build_mapping_from_columns(
+    *,
+    columns: list[dict[str, str]],
+    src_dialect_name: str,
+    tgt_dialect_name: str,
+    version: str = "v1",
+) -> tuple[dict[str, Any], list[str]]:
+    if version not in VALID_MAPPING_VERSIONS:
+        raise ValueError(
+            f"Gecersiz mapping versiyonu: {version!r}. "
+            f"Gecerli: {sorted(VALID_MAPPING_VERSIONS)}"
+        )
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    fallback_target = TypeMapper.map_type("TEXT", src_dialect_name, tgt_dialect_name)
+    for col in columns:
+        src_name = str(col.get("name") or "").strip()
+        src_type = str(col.get("source_type") or "TEXT").strip().upper() or "TEXT"
+        if not src_name:
+            continue
+        try:
+            tgt_type = TypeMapper.map_type(src_type, src_dialect_name, tgt_dialect_name)
+        except UnsupportedTypeError:
+            tgt_type = fallback_target
+            warnings.append(
+                f"{src_name}: source_type={src_type!r} cozulemedi, target_type={tgt_type!r} fallback uygulandi."
+            )
+        rows.append(
+            {
+                "source_name": src_name,
+                "target_name": src_name,
+                "source_type": src_type,
+                "target_type": tgt_type,
+                "nullable": True,
+            }
+        )
+    if not rows:
+        raise ValueError("Mapping uretimi icin kullanilabilir kolon bulunamadi.")
+    return (
+        {
+            "version": version,
+            "source_dialect": src_dialect_name,
+            "target_dialect": tgt_dialect_name,
+            "columns": rows,
+        },
+        warnings,
+    )
+
+
+def _mapping_dump_text(mapping_obj: dict[str, Any]) -> str:
+    return yaml.safe_dump(mapping_obj, sort_keys=False, allow_unicode=True)
+
+
+def _semantic_yaml_equal(left_text: str, right_text: str) -> bool:
+    try:
+        left_obj = yaml.safe_load(left_text) if left_text.strip() else None
+        right_obj = yaml.safe_load(right_text) if right_text.strip() else None
+    except yaml.YAMLError:
+        return False
+    return left_obj == right_obj
+
+
 def _load_studio_metadata(flow_dir: Path) -> dict[str, Any] | None:
     meta_path = flow_dir / STUDIO_METADATA_NAME
     if not meta_path.is_file():
@@ -436,6 +684,17 @@ def _find_studio_dag_file_by_id(dag_id: str) -> Path | None:
         if path.is_file():
             return path
     return None
+
+
+def _load_mapping_content_for_task(flow_dir: Path, task: dict[str, Any]) -> str | None:
+    mode = str(task.get("column_mapping_mode") or "source").strip()
+    mapping_file = str(task.get("mapping_file") or "").strip()
+    if mode != "mapping_file" or not mapping_file:
+        return None
+    mapping_path = _resolve_mapping_file_path(flow_dir, mapping_file)
+    if not mapping_path.is_file():
+        return None
+    return mapping_path.read_text(encoding="utf-8")
 
 
 def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
@@ -516,6 +775,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                     str(task.get("column_mapping_mode") or "source").strip() or "source"
                 ),
                 "mapping_file": str(task.get("mapping_file") or "").strip() or None,
+                "mapping_content": _load_mapping_content_for_task(config_resolved.parent, task),
                 "where": str(task.get("where") or "").strip() or None,
                 "batch_size": int(task.get("batch_size") or 10000),
                 "partitioning_enabled": bool(partitioning.get("enabled", False)),
@@ -548,6 +808,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "load_method": first_task["load_method"],
         "column_mapping_mode": first_task["column_mapping_mode"],
         "mapping_file": first_task["mapping_file"],
+        "mapping_content": first_task["mapping_content"],
         "where": first_task["where"],
         "batch_size": first_task["batch_size"],
         "partitioning_enabled": first_task["partitioning_enabled"],
@@ -579,6 +840,8 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
     source_type = payload.get("source_type", "table")
     source_schema = payload.get("source_schema")
     source_table = payload.get("source_table")
+    source_conn_id = str(payload.get("source_conn_id") or "").strip()
+    target_conn_id = str(payload.get("target_conn_id") or "").strip()
     target_schema = payload["target_schema"]
     target_table = payload["target_table"]
     load_method = payload.get("load_method", "create_if_not_exists_or_truncate")
@@ -586,8 +849,11 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
     normalized_source_table = str(source_table or "").strip() or ("query" if source_type == "sql" else "")
 
     task_group_id = payload.get("task_group_id") or _auto_task_group_id(
+        source_db=source_conn_id,
         src_schema=normalized_source_schema,
         src_table=normalized_source_table,
+        target_db=target_conn_id,
+        load_method=str(load_method),
         tgt_schema=target_schema,
         tgt_table=target_table,
         task_index=1,
@@ -617,16 +883,18 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
     bindings = _normalize_bindings(payload.get("bindings"))
     if bindings:
         task["bindings"] = bindings
+    if source_type == "sql" and task["column_mapping_mode"] != "mapping_file":
+        raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
     if payload.get("column_mapping_mode") == "mapping_file":
-        mf = (payload.get("mapping_file") or "").strip()
-        if mf:
-            task["mapping_file"] = mf
+        task["mapping_file"] = _auto_mapping_relative_file(1, str(task_group_id))
     return task
 
 
 def build_task_dict_for_validation_from_task(
     task_payload: dict[str, Any],
     *,
+    source_conn_id: str,
+    target_conn_id: str,
     task_index: int,
 ) -> dict[str, Any]:
     source_schema = str(task_payload.get("source_schema") or "").strip()
@@ -641,8 +909,11 @@ def build_task_dict_for_validation_from_task(
         or "create_if_not_exists_or_truncate"
     )
     task_group_id = str(task_payload.get("task_group_id") or "").strip() or _auto_task_group_id(
+        source_db=source_conn_id,
         src_schema=normalized_source_schema,
         src_table=normalized_source_table,
+        target_db=target_conn_id,
+        load_method=load_method,
         tgt_schema=target_schema,
         tgt_table=target_table,
         task_index=task_index,
@@ -672,10 +943,10 @@ def build_task_dict_for_validation_from_task(
     bindings = _normalize_bindings(task_payload.get("bindings"))
     if bindings:
         task["bindings"] = bindings
+    if source_type == "sql" and task["column_mapping_mode"] != "mapping_file":
+        raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
     if task["column_mapping_mode"] == "mapping_file":
-        mf = str(task_payload.get("mapping_file") or "").strip()
-        if mf:
-            task["mapping_file"] = mf
+        task["mapping_file"] = _auto_mapping_relative_file(task_index, task_group_id)
     return task
 
 
@@ -685,9 +956,13 @@ def validate_pipeline_payload(payload: dict[str, Any]) -> None:
     task_items = payload.get("etl_tasks")
     if isinstance(task_items, list) and task_items:
         normalized_tasks: list[dict[str, Any]] = []
+        source_conn_id = str(payload.get("source_conn_id") or "").strip()
+        target_conn_id = str(payload.get("target_conn_id") or "").strip()
         for idx, task_payload in enumerate(task_items, start=1):
             task = build_task_dict_for_validation_from_task(
                 dict(task_payload or {}),
+                source_conn_id=source_conn_id,
+                target_conn_id=target_conn_id,
                 task_index=idx,
             )
             validator.validate(task)
@@ -931,6 +1206,65 @@ def discover_columns(conn_id: str, schema: str, table: str) -> list[dict[str, An
     ]
 
 
+def generate_mapping_preview(payload: dict[str, Any]) -> dict[str, Any]:
+    source_type = str(payload.get("source_type") or "table").strip() or "table"
+    source_conn_id = str(payload.get("source_conn_id") or "").strip()
+    target_conn_id = str(payload.get("target_conn_id") or "").strip()
+    if not source_conn_id or not target_conn_id:
+        raise ValueError("source_conn_id ve target_conn_id zorunludur.")
+
+    src_params = AirflowConnectionAdapter.get_connection_params(source_conn_id)
+    tgt_params = AirflowConnectionAdapter.get_connection_params(target_conn_id)
+    src_dialect = resolve_dialect(src_params["conn_type"])
+    tgt_dialect = resolve_dialect(tgt_params["conn_type"])
+
+    src_name = _dialect_name(src_dialect)
+    tgt_name = _dialect_name(tgt_dialect)
+    version = str(payload.get("version") or "v1").strip() or "v1"
+    task_no = max(1, int(payload.get("task_no") or 1))
+    task_group_id = str(payload.get("task_group_id") or "").strip()
+    if not task_group_id:
+        task_group_id = f"task_{task_no}"
+    generated_mapping_file = _auto_mapping_relative_file(task_no, task_group_id)
+    warnings: list[str] = []
+
+    if source_type in {"table", "view"}:
+        source_schema = str(payload.get("source_schema") or "").strip()
+        source_table = str(payload.get("source_table") or "").strip()
+        if not source_schema or not source_table:
+            raise ValueError("source_type=table|view icin source_schema ve source_table zorunludur.")
+        with DBSession(src_params, src_dialect) as src_session:
+            mapping_obj = MappingGenerator().generate(
+                src_session.conn,
+                src_dialect,
+                tgt_dialect,
+                source_schema,
+                source_table,
+                version=version,
+            )
+    elif source_type == "sql":
+        inline_sql = str(payload.get("inline_sql") or "").strip()
+        if not inline_sql:
+            raise ValueError("source_type='sql' icin inline_sql zorunludur.")
+        sql_cols = extract_sql_select_columns_for_conn(source_conn_id, inline_sql)
+        mapping_obj, warnings = _build_mapping_from_columns(
+            columns=sql_cols,
+            src_dialect_name=src_name,
+            tgt_dialect_name=tgt_name,
+            version=version,
+        )
+    else:
+        raise ValueError("source_type yalnizca table|view|sql olabilir.")
+
+    mapping_text = _mapping_dump_text(mapping_obj)
+    return {
+        "mapping_content": mapping_text,
+        "generated_mapping_file": generated_mapping_file,
+        "warnings": warnings,
+        "column_count": len(mapping_obj.get("columns") or []),
+    }
+
+
 def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> dict[str, str]:
     validate_pipeline_payload(payload)
 
@@ -949,7 +1283,7 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
     flow_dir = root / project / domain / level / flow
     flow_dir.mkdir(parents=True, exist_ok=True)
     _ensure_path_under_root(flow_dir, root)
-    (flow_dir / "mappings").mkdir(parents=True, exist_ok=True)
+    (flow_dir / "mapping").mkdir(parents=True, exist_ok=True)
 
     gen_root = _generated_dag_root()
     flow_dag_dir = gen_root / project / domain / level / flow
@@ -1003,10 +1337,13 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
         raise ValueError("Guncellenecek YAML dosyasi bulunamadi.")
     if update and STUDIO_DAG_MARKER not in dag_path.read_text(encoding="utf-8"):
         raise ValueError("Bu DAG ETL Studio tarafindan uretilmemis.")
+    existing_auto_mapping_paths = _collect_existing_auto_mapping_paths(config_path, flow_dir)
 
     tags = _derive_tags(project, domain, level, flow)
 
     task_cfgs: list[dict[str, Any]] = []
+    sql_mapping_checks: list[dict[str, Any]] = []
+    pending_mapping_writes: list[dict[str, Any]] = []
     for idx, item in enumerate(tasks_input, start=1):
         source_schema = str(item.get("source_schema") or "").strip()
         source_table = str(item.get("source_table") or "").strip()
@@ -1020,8 +1357,11 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
             or "create_if_not_exists_or_truncate"
         )
         task_group_id = str(item.get("task_group_id") or "").strip() or _auto_task_group_id(
+            source_db=str(payload.get("source_conn_id") or ""),
             src_schema=normalized_source_schema,
             src_table=normalized_source_table,
+            target_db=str(payload.get("target_conn_id") or ""),
+            load_method=load_method,
             tgt_schema=target_schema,
             tgt_table=target_table,
             task_index=idx,
@@ -1051,12 +1391,84 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
         bindings = _normalize_bindings(item.get("bindings"))
         if bindings:
             task_cfg["bindings"] = bindings
-        mf = str(item.get("mapping_file") or "").strip()
-        if mf:
-            task_cfg["mapping_file"] = mf
+        mode = task_cfg["column_mapping_mode"]
+        mapping_content = str(item.get("mapping_content") or "")
+        if source_type == "sql" and mode != "mapping_file":
+            raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
+        if mode == "mapping_file":
+            mapping_rel = _auto_mapping_relative_file(idx, task_group_id)
+            mapping_path = _resolve_mapping_file_path(flow_dir, mapping_rel)
+            task_cfg["mapping_file"] = mapping_rel
+            pending_mapping_writes.append(
+                {
+                    "task_group_id": task_group_id,
+                    "mapping_path": mapping_path,
+                    "mapping_content": mapping_content,
+                }
+            )
+            if source_type == "sql":
+                sql_mapping_checks.append(
+                    {
+                        "task_group_id": task_group_id,
+                        "inline_sql": task_cfg.get("inline_sql"),
+                        "mapping_path": mapping_path,
+                        "mapping_content": mapping_content,
+                    }
+                )
         task_cfgs.append(task_cfg)
 
     resolve_task_dependencies(task_cfgs)
+
+    if sql_mapping_checks:
+        for check in sql_mapping_checks:
+            inline_sql = str(check.get("inline_sql") or "").strip()
+            if not inline_sql:
+                raise ValueError(
+                    f"source_type='sql' icin inline_sql zorunludur. task_group_id={check['task_group_id']}"
+                )
+            sql_columns = [
+                col["name"] for col in extract_sql_select_columns_for_conn(payload["source_conn_id"], inline_sql)
+            ]
+            mapping_content = str(check.get("mapping_content") or "")
+            if mapping_content.strip():
+                mapping_obj = _parse_yaml_mapping_text(
+                    mapping_content,
+                    label=f"task_group_id={check['task_group_id']}",
+                )
+            else:
+                mapping_obj = _read_mapping_object(check["mapping_path"])
+            mapping_columns = _mapping_yaml_to_source_columns(mapping_obj)
+            if sql_columns != mapping_columns:
+                raise ValueError(
+                    "SQL select kolonlari mapping ile uyumsuz: "
+                    f"task_group_id={check['task_group_id']}; "
+                    f"expected={sql_columns}; actual={mapping_columns}"
+                )
+
+    for pending in pending_mapping_writes:
+        mapping_content = str(pending.get("mapping_content") or "")
+        if not mapping_content.strip():
+            continue
+        _parse_yaml_mapping_text(mapping_content, label=pending["mapping_path"].as_posix())
+        normalized_text = mapping_content if mapping_content.endswith("\n") else f"{mapping_content}\n"
+        mapping_path: Path = pending["mapping_path"]
+        mapping_path.parent.mkdir(parents=True, exist_ok=True)
+        if mapping_path.is_file():
+            existing = mapping_path.read_text(encoding="utf-8")
+            if _semantic_yaml_equal(existing, normalized_text):
+                continue
+        mapping_path.write_text(normalized_text, encoding="utf-8")
+
+    new_auto_mapping_paths: set[Path] = set()
+    for task_cfg in task_cfgs:
+        rel = str(task_cfg.get("mapping_file") or "").strip()
+        if not _is_auto_mapping_relative_file(rel):
+            continue
+        new_auto_mapping_paths.add(_resolve_mapping_file_path(flow_dir, rel))
+    stale_auto_paths = existing_auto_mapping_paths - new_auto_mapping_paths
+    for stale_path in sorted(stale_auto_paths):
+        if stale_path.is_file():
+            _best_effort_unlink(stale_path)
 
     config_obj = {
         "source_db_var": payload["source_conn_id"],

@@ -5,6 +5,7 @@ ConfigLoader.load(config_path, task_group_id) → normalize edilmiş task dict.
 """
 
 import copy
+from pathlib import Path
 
 import yaml
 
@@ -45,6 +46,7 @@ class ConfigLoader:
         self._validate_root(raw)
         task = self._find_task(raw["etl_tasks"], task_group_id)
         normalized = self._apply_defaults(task)
+        self._resolve_mapping_file_path(normalized, config_path)
         ConfigValidator().validate(normalized)
         return normalized
 
@@ -94,3 +96,15 @@ class ConfigLoader:
             merged.update(task["partitioning"])
             result["partitioning"] = merged
         return result
+
+    def _resolve_mapping_file_path(self, task: dict, config_path: str) -> None:
+        """mapping_file relatif ise config dosyasina gore absolute cozumler."""
+        if str(task.get("column_mapping_mode") or "source") != "mapping_file":
+            return
+        mapping_file = str(task.get("mapping_file") or "").strip()
+        if not mapping_file:
+            return
+        p = Path(mapping_file)
+        if p.is_absolute():
+            return
+        task["mapping_file"] = str((Path(config_path).resolve().parent / p).resolve())

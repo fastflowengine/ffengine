@@ -15,31 +15,31 @@ This repository is intended to become the public `ffengine/ffengine` repository.
 
 ## Version Compatibility
 
-| Component | Minimum | Tested |
-|---|---|---|
-| Python | 3.12 | 3.12.x |
-| Apache Airflow | 3.0.0 | 3.1.6+ |
-| psycopg2 (Postgres) | 2.9 | 2.9.x |
-| pyodbc (MSSQL) | 4.0 | 4.0.x |
-| oracledb (Oracle) | 2.0 | 2.x |
+| Component           | Minimum | Tested |
+| ------------------- | ------- | ------ |
+| Python              | 3.12    | 3.12.x |
+| Apache Airflow      | 3.0.0   | 3.1.6+ |
+| psycopg2 (Postgres) | 2.9     | 2.9.x  |
+| pyodbc (MSSQL)      | 4.0     | 4.0.x  |
+| oracledb (Oracle)   | 2.0     | 2.x    |
 
 > **Note:** Airflow is not officially supported on Windows. Use WSL2 or Docker for local development.
 
 ## Development Progress (Wave Plan)
 
-| Wave | Epic | Status | Description |
-|---|---|---|---|
-| 1 | C01 | ✅ Done | Project scaffold, Docker, CI skeleton |
-| 2 | C02 | ✅ Done | DBSession + AirflowConnectionAdapter |
-| 3 | C03 | ✅ Done | Dialect layer (Postgres / MSSQL / Oracle) |
-| 3 | C05 | ✅ Done | YAML Config |
-| 4 | C04 | ✅ Done | Core Engine |
-| 4 | C06 | ✅ Done | Partition |
-| 4 | C09 | ✅ Done | Mapping Tools |
-| 5 | C07 | ✅ Done | Airflow Operator & DAG |
-| 5 | C08 | ✅ Done | ETL Studio (Airflow 3 FastAPI plugin) |
-| 5 | C10 | ✅ Done | Error Handling (typed exceptions, handler normalization, structured logs) |
-| 6 | C11 | ✅ Done | Integration Tests & Release |
+| Wave | Epic | Status  | Description                                                               |
+| ---- | ---- | ------- | ------------------------------------------------------------------------- |
+| 1    | C01  | ✅ Done | Project scaffold, Docker, CI skeleton                                     |
+| 2    | C02  | ✅ Done | DBSession + AirflowConnectionAdapter                                      |
+| 3    | C03  | ✅ Done | Dialect layer (Postgres / MSSQL / Oracle)                                 |
+| 3    | C05  | ✅ Done | YAML Config                                                               |
+| 4    | C04  | ✅ Done | Core Engine                                                               |
+| 4    | C06  | ✅ Done | Partition                                                                 |
+| 4    | C09  | ✅ Done | Mapping Tools                                                             |
+| 5    | C07  | ✅ Done | Airflow Operator & DAG                                                    |
+| 5    | C08  | ✅ Done | ETL Studio (Airflow 3 FastAPI plugin)                                     |
+| 5    | C10  | ✅ Done | Error Handling (typed exceptions, handler normalization, structured logs) |
+| 6    | C11  | ✅ Done | Integration Tests & Release                                               |
 
 ## UI Architecture Standard
 
@@ -114,8 +114,7 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 
 ## Debugpy UAT
 
-- Docker icinde asamali breakpoint UAT playbook:
-  [`docs/debugpy-uat-playbook.md`](docs/debugpy-uat-playbook.md)
+- Docker icinde asamali breakpoint UAT adimlari local ekip notu olarak tutulur.
 
 ## Type Mapping Contract
 
@@ -138,6 +137,7 @@ for the organization bootstrap and migration steps.
 To avoid local port conflicts, the FFEngine development environment allocates isolated ports for the testing cluster. The `.env` file must be present at the root directory to store database credentials.
 
 **Active Port Mappings:**
+
 - **Airflow Web UI (`core-airflow-webserver`):** `http://localhost:8085`
 - **Airflow Postgres (`core-postgres`):** `localhost:5436`
 - **Test Postgres (`test-postgres`):** `localhost:5435`
@@ -145,12 +145,15 @@ To avoid local port conflicts, the FFEngine development environment allocates is
 - **Test Oracle (`test-oracle`):** `localhost:1521`
 
 **Start the Core Cluster (Airflow):**
+
 ```bash
 docker-compose -p ffengine-core -f docker/docker-compose.yml --env-file .env up -d --remove-orphans
 ```
-*(This launches the Webserver on port 8085, the internal background Scheduler, the Airflow 3 DAG Processor, and the Metadata Postgres database.)*
+
+_(This launches the Webserver on port 8085, the internal background Scheduler, the Airflow 3 DAG Processor, and the Metadata Postgres database.)_
 
 **Start the Test Databases (Isolated):**
+
 ```bash
 docker-compose -p ffengine-test -f docker/docker-compose.test.yml --env-file .env up -d --remove-orphans
 ```

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import textwrap
 import uuid
 from pathlib import Path
 from unittest.mock import patch
@@ -58,6 +59,21 @@ def _minimal_table_payload():
     }
 
 
+def _sql_mapping_yaml(columns: list[str]) -> str:
+    lines = ["version: v1", "source_dialect: postgres", "target_dialect: postgres", "columns:"]
+    for col in columns:
+        lines.extend(
+            [
+                f"  - source_name: {col}",
+                f"    target_name: {col}",
+                "    source_type: TEXT",
+                "    target_type: TEXT",
+                "    nullable: true",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
 def test_health_ok(client):
     r = client.get("/health")
     assert r.status_code == 200
@@ -80,9 +96,13 @@ def test_index_html_ok(client):
     assert "Load DAG Context" not in r.text
     assert "folder_path_display" in r.text
     assert "Select / Create Folder" in r.text
+    assert "Select Source DB Connection" in r.text
+    assert "Select Target DB Connection" in r.text
     assert "folder_picker_modal" in r.text
     assert "Group No" not in r.text
     assert "Filter & Bindings" in r.text
+    assert "Task Group ID (Opsiyonel)" not in r.text
+    assert "task-group-id-readonly" in r.text
     assert "Tumunu Ac" in r.text
     assert "Tumunu Kapat" in r.text
     assert "Save Configuration" in r.text
@@ -163,6 +183,35 @@ def test_columns_mocked(client):
         r = client.get("/api/columns?conn_id=x&schema=public&table=orders")
     assert r.status_code == 200
     assert r.json()["count"] == 1
+
+
+def test_mapping_generate_mocked(client):
+    mocked = {
+        "mapping_content": "version: v1\ncolumns: []\n",
+        "generated_mapping_file": "mapping/1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml",
+        "warnings": [],
+        "column_count": 0,
+    }
+    with patch.object(api_app_module, "generate_mapping_preview", return_value=mocked) as fn:
+        r = client.post(
+            "/api/mapping/generate",
+            json={
+                "project": "webhook",
+                "domain": "whk",
+                "level": "level1",
+                "flow": "src_to_stg",
+                "source_conn_id": "src_c",
+                "target_conn_id": "tgt_c",
+                "source_type": "table",
+                "source_schema": "public",
+                "source_table": "orders",
+            },
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["generated_mapping_file"] == "mapping/1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
+    fn.assert_called_once()
 
 
 def test_connections_mocked(client):
@@ -258,6 +307,7 @@ def test_create_dag_writes_files(client, studio_paths):
     body = r.json()
     assert body["ok"] is True
     assert "task_group_id" in body
+    assert body["task_group_id"] == "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"
     flow = Path(body["flow_dir"])
     assert flow.as_posix().endswith("/projects/webhook/whk/level1/src_to_stg")
     assert (flow / ss.STUDIO_METADATA_NAME).is_file()
@@ -285,7 +335,6 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
         {
             "source_type": "view",
             "column_mapping_mode": "mapping_file",
-            "mapping_file": "mappings/orders_map.yaml",
             "where": "id > 10",
             "batch_size": 20000,
             "partitioning_enabled": True,
@@ -307,7 +356,8 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
 
     assert task["source_type"] == "view"
     assert task["column_mapping_mode"] == "mapping_file"
-    assert task["mapping_file"] == "mappings/orders_map.yaml"
+    assert task["task_group_id"] == "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"
+    assert task["mapping_file"] == "mapping/1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
     assert task["batch_size"] == 20000
     assert task["partitioning"]["enabled"] is True
     assert task["partitioning"]["mode"] == "explicit"
@@ -362,9 +412,19 @@ def test_create_dag_sql_source_persists_inline_sql(client, studio_paths):
             "inline_sql": "SELECT id, amount FROM public.orders WHERE amount > 0",
             "source_schema": None,
             "source_table": None,
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": _sql_mapping_yaml(["id", "amount"]),
         }
     )
-    r = client.post("/api/create-dag", json=payload)
+    with patch.object(
+        ss,
+        "extract_sql_select_columns_for_conn",
+        return_value=[
+            {"name": "id", "source_type": "INTEGER"},
+            {"name": "amount", "source_type": "NUMERIC"},
+        ],
+    ):
+        r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 201, r.text
 
     flow = Path(r.json()["flow_dir"])
@@ -375,6 +435,9 @@ def test_create_dag_sql_source_persists_inline_sql(client, studio_paths):
 
     assert task["source_type"] == "sql"
     assert task["inline_sql"] == "SELECT id, amount FROM public.orders WHERE amount > 0"
+    assert task["task_group_id"] == "1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg"
+    assert task["mapping_file"] == "mapping/1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+    assert (flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml").is_file()
 
 
 def test_create_dag_sql_source_requires_inline_sql(client, studio_paths):
@@ -385,11 +448,79 @@ def test_create_dag_sql_source_requires_inline_sql(client, studio_paths):
             "inline_sql": "   ",
             "source_schema": None,
             "source_table": None,
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": _sql_mapping_yaml(["id"]),
         }
     )
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 422
     assert "inline_sql" in r.text
+
+
+def test_create_dag_sql_source_rejects_source_mapping_mode(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "sql",
+            "inline_sql": "SELECT id FROM public.orders",
+            "source_schema": None,
+            "source_table": None,
+            "column_mapping_mode": "source",
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "column_mapping_mode='mapping_file'" in r.text
+
+
+def test_create_dag_sql_source_rejects_column_count_mismatch(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "sql",
+            "inline_sql": "SELECT id, amount FROM public.orders",
+            "source_schema": None,
+            "source_table": None,
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": _sql_mapping_yaml(["id"]),
+        }
+    )
+    with patch.object(
+        ss,
+        "extract_sql_select_columns_for_conn",
+        return_value=[
+            {"name": "id", "source_type": "INTEGER"},
+            {"name": "amount", "source_type": "NUMERIC"},
+        ],
+    ):
+        r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "SQL select kolonlari mapping ile uyumsuz" in r.text
+
+
+def test_create_dag_sql_source_rejects_column_order_mismatch(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "sql",
+            "inline_sql": "SELECT id, amount FROM public.orders",
+            "source_schema": None,
+            "source_table": None,
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": _sql_mapping_yaml(["amount", "id"]),
+        }
+    )
+    with patch.object(
+        ss,
+        "extract_sql_select_columns_for_conn",
+        return_value=[
+            {"name": "id", "source_type": "INTEGER"},
+            {"name": "amount", "source_type": "NUMERIC"},
+        ],
+    ):
+        r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "SQL select kolonlari mapping ile uyumsuz" in r.text
 
 
 def test_create_dag_with_bindings_persists_yaml(client, studio_paths):
@@ -525,7 +656,7 @@ def test_update_dag_requires_studio_marker(client, studio_paths):
     dag_path = Path(r0.json()["dag_path"])
     dag_path.write_text("# manual dag\n", encoding="utf-8")
     r = client.post("/api/update-dag", json=payload)
-    assert r.status_code == 400
+    assert r.status_code == 422
     assert "ETL Studio" in r.json()["detail"]
 
 
@@ -708,9 +839,16 @@ def test_resolve_dag_config_for_update_roundtrip_sql_inline_sql(client, studio_p
             "inline_sql": "SELECT 1 AS id",
             "source_schema": None,
             "source_table": None,
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": _sql_mapping_yaml(["id"]),
         }
     )
-    r = client.post("/api/create-dag", json=payload)
+    with patch.object(
+        ss,
+        "extract_sql_select_columns_for_conn",
+        return_value=[{"name": "id", "source_type": "INTEGER"}],
+    ):
+        r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 201, r.text
     dag_id = Path(r.json()["dag_path"]).stem
 
@@ -719,6 +857,74 @@ def test_resolve_dag_config_for_update_roundtrip_sql_inline_sql(client, studio_p
     task = resolved["payload"]["etl_tasks"][0]
     assert task["source_type"] == "sql"
     assert task["inline_sql"] == "SELECT 1 AS id"
+
+
+def test_update_dag_sql_mapping_semantic_same_does_not_touch_file(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "sql",
+            "inline_sql": "SELECT id FROM public.orders",
+            "source_schema": None,
+            "source_table": None,
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": _sql_mapping_yaml(["id"]),
+        }
+    )
+    with patch.object(ss, "extract_sql_select_columns_for_conn", return_value=[{"name": "id", "source_type": "INTEGER"}]):
+        r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    flow = Path(r1.json()["flow_dir"])
+    mapping_path = flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+    before = mapping_path.stat().st_mtime_ns
+
+    payload["mapping_content"] = textwrap.dedent(
+        """\
+        version: v1
+        source_dialect: postgres
+        target_dialect: postgres
+        columns:
+          - source_name: id
+            target_name: id
+            source_type: TEXT
+            target_type: TEXT
+            nullable: true
+        """
+    )
+    with patch.object(ss, "extract_sql_select_columns_for_conn", return_value=[{"name": "id", "source_type": "INTEGER"}]):
+        r2 = client.post("/api/update-dag", json=payload)
+    assert r2.status_code == 200, r2.text
+    after = mapping_path.stat().st_mtime_ns
+    assert after == before
+
+
+def test_update_dag_sql_mapping_task_group_change_moves_active_path_to_new_file(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "sql",
+            "inline_sql": "SELECT id FROM public.orders",
+            "source_schema": None,
+            "source_table": None,
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": _sql_mapping_yaml(["id"]),
+        }
+    )
+    with patch.object(ss, "extract_sql_select_columns_for_conn", return_value=[{"name": "id", "source_type": "INTEGER"}]):
+        r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    flow = Path(r1.json()["flow_dir"])
+    old_path = flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+    assert old_path.is_file()
+
+    payload["task_group_id"] = "custom_sql_orders_task"
+    with patch.object(ss, "extract_sql_select_columns_for_conn", return_value=[{"name": "id", "source_type": "INTEGER"}]):
+        r2 = client.post("/api/update-dag", json=payload)
+    assert r2.status_code == 200, r2.text
+    new_path = flow / "mapping" / "1_custom_sql_orders_task.yaml"
+    assert new_path.is_file()
+    cfg = yaml.safe_load((flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8"))
+    assert cfg["etl_tasks"][0]["mapping_file"] == "mapping/1_custom_sql_orders_task.yaml"
 
 
 def test_resolve_dag_config_for_update_roundtrip_bindings(client, studio_paths):

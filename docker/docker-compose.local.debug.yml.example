@@ -11,7 +11,7 @@ services:
 
   airflow-scheduler:
     ports:
-      - "5678:5678"
+      - "5677:5678"
     environment:
       ENABLE_DEBUG: "1"
       DEBUGPY_PORT: "5678"

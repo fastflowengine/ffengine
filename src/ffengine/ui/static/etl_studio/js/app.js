@@ -497,6 +497,12 @@ async function studioFetch(path, options) {
         select.appendChild(opt);
         return;
       }
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = selectId === "source_conn_id"
+        ? "Select Source DB Connection"
+        : "Select Target DB Connection";
+      select.appendChild(placeholder);
       for (const item of items) {
         const opt = document.createElement("option");
         opt.value = item.conn_id;
@@ -505,7 +511,7 @@ async function studioFetch(path, options) {
         select.appendChild(opt);
       }
       const matched = items.some((x) => x.conn_id === preferredConnId);
-      select.value = matched ? preferredConnId : items[0].conn_id;
+      select.value = matched ? preferredConnId : "";
     }
 
     function fillOptions(listId, items) {
@@ -650,6 +656,9 @@ async function studioFetch(path, options) {
         level: el("level").value,
         flow: el("flow").value,
       });
+      for (const card of getTaskCards()) {
+        syncMappingState(card);
+      }
     }
 
     function renderPickerList(containerId, items, selected, onSelect) {
@@ -832,6 +841,7 @@ async function studioFetch(path, options) {
       el("level").value = pickerDraft.level || "";
       el("flow").value = pickerDraft.flow || "";
       syncFolderPathDisplay();
+      for (const card of getTaskCards()) syncMappingState(card);
       closeFolderPicker();
     }
 
@@ -871,10 +881,12 @@ async function studioFetch(path, options) {
 
         fillConnectionSelect("source_conn_id", items, "ffengine_source");
         fillConnectionSelect("target_conn_id", items, "ffengine_target");
+        refreshTaskCardHeaders();
       } catch (err) {
         show({ ok: false, detail: `Connection listesi yuklenemedi: ${String(err && err.message ? err.message : err)}` });
         fillConnectionSelect("source_conn_id", [], "");
         fillConnectionSelect("target_conn_id", [], "");
+        refreshTaskCardHeaders();
       }
     }
 
@@ -921,6 +933,8 @@ async function studioFetch(path, options) {
       for (let i = 0; i < cards.length; i += 1) {
         cards[i].querySelector(".task-title").textContent = `Task #${i + 1}`;
         cards[i].querySelector(".btn-delete-task").disabled = cards.length <= 1;
+        syncTaskGroupState(cards[i], i + 1);
+        syncMappingState(cards[i]);
       }
     }
 
@@ -1043,10 +1057,16 @@ async function studioFetch(path, options) {
       modeSelect.insertBefore(opt, modeSelect.firstChild);
     }
 
-    function setTaskCardValues(card, values) {
+    function setTaskCardValues(card, values, fallbackIndex = 1) {
       const sourceType = values.source_type || "table";
       const partitioningMode = values.partitioning_mode || "auto";
-      card.querySelector(".task-group-id").value = values.task_group_id || "";
+      const loadedTaskGroupId = String(values.task_group_id || "").trim();
+      if (loadedTaskGroupId) {
+        card.dataset.loadedTaskGroupId = loadedTaskGroupId;
+      } else {
+        delete card.dataset.loadedTaskGroupId;
+      }
+      card.dataset.loadedSignature = "";
       card.querySelector(".source-schema").value = values.source_schema || "";
       card.querySelector(".source-table").value = values.source_table || "";
       card.querySelector(".source-type").value = sourceType === "view" ? "table" : sourceType;
@@ -1055,7 +1075,7 @@ async function studioFetch(path, options) {
       card.querySelector(".target-table").value = values.target_table || "";
       card.querySelector(".load-method").value = values.load_method || "create_if_not_exists_or_truncate";
       card.querySelector(".column-mapping-mode").value = values.column_mapping_mode || "source";
-      card.querySelector(".mapping-file").value = values.mapping_file || "";
+      card.querySelector(".mapping-content").value = values.mapping_content || "";
       card.querySelector(".where").value = values.where || "";
       card.querySelector(".batch-size").value = String(values.batch_size || 10000);
       card.querySelector(".partitioning-enabled").checked = !!values.partitioning_enabled;
@@ -1073,7 +1093,12 @@ async function studioFetch(path, options) {
       card.querySelector(".partitioning-ranges").value = rangesToMultilineText(values.partitioning_ranges || []);
       setBindingsFromValues(card, values.bindings || []);
       toggleSourceMode(card);
+      if (loadedTaskGroupId) {
+        card.dataset.loadedSignature = buildTaskGroupFormula(card, fallbackIndex);
+      }
       syncPartitionState(card);
+      syncTaskGroupState(card, fallbackIndex);
+      syncMappingState(card);
     }
 
     function toggleSourceMode(card) {
@@ -1093,6 +1118,157 @@ async function studioFetch(path, options) {
         sourceTableInput.value = "";
       }
       sourceTableInput.placeholder = "Type 3+ chars";
+    }
+
+    function buildTaskGroupFormula(card, fallbackIndex) {
+      const sourceType = card.querySelector(".source-type").value;
+      const sourceDbVal = (el("source_conn_id").value || "").trim();
+      const targetDbVal = (el("target_conn_id").value || "").trim();
+      const sourceSchemaVal = card.querySelector(".source-schema").value.trim();
+      const sourceTableVal = card.querySelector(".source-table").value.trim();
+      const loadMethodVal = card.querySelector(".load-method").value.trim();
+      const targetSchemaVal = card.querySelector(".target-schema").value.trim();
+      const targetTableVal = card.querySelector(".target-table").value.trim();
+      const taskGroupSourceSchema = sourceType === "sql" ? "sql" : sourceSchemaVal;
+      const taskGroupSourceTable = sourceType === "sql" ? "query" : sourceTableVal;
+      return [
+        String(fallbackIndex),
+        slugify(sourceDbVal, "source"),
+        slugify(taskGroupSourceSchema, "src"),
+        slugify(taskGroupSourceTable, "table"),
+        "to",
+        slugify(targetDbVal, "target"),
+        slugify(loadMethodVal, "method"),
+        slugify(targetSchemaVal, "tgt"),
+        slugify(targetTableVal, "table"),
+      ].join("_");
+    }
+
+    function resolveTaskIdentity(card, fallbackIndex) {
+      const generatedTaskGroupId = buildTaskGroupFormula(card, fallbackIndex);
+      const loadedTaskGroupId = String(card.dataset.loadedTaskGroupId || "").trim();
+      const loadedSignature = String(card.dataset.loadedSignature || "").trim();
+      let taskGroupId = generatedTaskGroupId;
+      if (loadedTaskGroupId && loadedSignature && loadedSignature === generatedTaskGroupId) {
+        taskGroupId = loadedTaskGroupId;
+      }
+      return {
+        task_no: fallbackIndex,
+        task_group_id: taskGroupId,
+      };
+    }
+
+    function syncTaskGroupState(card, fallbackIndex) {
+      const identity = resolveTaskIdentity(card, fallbackIndex);
+      const out = card.querySelector(".task-group-id-readonly");
+      if (out) out.textContent = identity.task_group_id;
+      return identity;
+    }
+
+    function buildGeneratedMappingRelativePath(card) {
+      const cards = getTaskCards();
+      const index = Math.max(0, cards.indexOf(card));
+      const taskNo = index + 1;
+      const identity = resolveTaskIdentity(card, taskNo);
+      return `mapping/${identity.task_no}_${identity.task_group_id}.yaml`;
+    }
+
+    function buildGeneratedMappingDisplayPath(card) {
+      const mappingFile = buildGeneratedMappingRelativePath(card);
+      const project = (el("project").value || "").trim();
+      const domain = (el("domain").value || "").trim();
+      const level = (el("level").value || "").trim();
+      const flow = (el("flow").value || "").trim();
+      return [project, domain, level, flow, mappingFile].filter(Boolean).join("/");
+    }
+
+    function setMappingStatus(card, message, isError = false) {
+      const box = card.querySelector(".mapping-status");
+      if (!box) return;
+      box.textContent = message || "";
+      box.classList.toggle("warn", !!isError);
+      box.classList.toggle("ok", !isError && !!message);
+    }
+
+    function syncMappingState(card) {
+      const sourceType = card.querySelector(".source-type").value;
+      const modeSelect = card.querySelector(".column-mapping-mode");
+      const isSql = sourceType === "sql";
+      if (isSql && modeSelect.value !== "mapping_file") {
+        modeSelect.value = "mapping_file";
+      }
+      modeSelect.disabled = isSql;
+      modeSelect.setAttribute("aria-disabled", isSql ? "true" : "false");
+
+      const isMappingFileMode = modeSelect.value === "mapping_file";
+      const mappingGeneratedPathWrap = card.querySelector(".mapping-generated-path-wrap");
+      const mappingContentWrap = card.querySelector(".mapping-content-wrap");
+      const mappingActions = card.querySelector(".mapping-actions");
+      mappingGeneratedPathWrap.classList.toggle("hidden", !isMappingFileMode);
+      mappingContentWrap.classList.toggle("hidden", !isMappingFileMode);
+      mappingActions.classList.toggle("hidden", !isMappingFileMode);
+
+      const generatedPathInput = card.querySelector(".mapping-generated-path");
+      generatedPathInput.value = isMappingFileMode ? buildGeneratedMappingDisplayPath(card) : "";
+      if (isSql) {
+        setMappingStatus(card, "SQL source icin mapping_file modu zorunlu.", false);
+      } else if (!isMappingFileMode) {
+        setMappingStatus(card, "", false);
+      }
+    }
+
+    async function generateMappingForCard(card) {
+      const sourceType = card.querySelector(".source-type").value;
+      const taskNo = Math.max(1, getTaskCards().indexOf(card) + 1);
+      const taskIdentity = resolveTaskIdentity(card, taskNo);
+      const payload = {
+        project: (el("project").value || "").trim() || "webhook",
+        domain: (el("domain").value || "").trim() || "default_domain",
+        level: (el("level").value || "").trim() || "level1",
+        flow: (el("flow").value || "").trim() || "src_to_stg",
+        source_conn_id: (el("source_conn_id").value || "").trim(),
+        target_conn_id: (el("target_conn_id").value || "").trim(),
+        source_type: sourceType,
+        task_group_id: taskIdentity.task_group_id,
+        task_no: taskNo,
+      };
+      if (sourceType === "sql") {
+        payload.inline_sql = (card.querySelector(".source-inline-sql").value || "").trim();
+      } else {
+        payload.source_schema = (card.querySelector(".source-schema").value || "").trim();
+        payload.source_table = (card.querySelector(".source-table").value || "").trim();
+      }
+      setMappingStatus(card, "Mapping uretiliyor...", false);
+      try {
+        const data = await postJson(studioUrl("/api/mapping/generate"), payload);
+        if (!data || !data.ok) {
+          setMappingStatus(card, data && (data.detail || "Mapping uretilemedi."), true);
+          return;
+        }
+        if (data.generated_mapping_file) {
+          const project = (el("project").value || "").trim();
+          const domain = (el("domain").value || "").trim();
+          const level = (el("level").value || "").trim();
+          const flow = (el("flow").value || "").trim();
+          card.querySelector(".mapping-generated-path").value = [
+            project,
+            domain,
+            level,
+            flow,
+            data.generated_mapping_file,
+          ].filter(Boolean).join("/");
+        }
+        card.querySelector(".mapping-content").value = data.mapping_content || "";
+        const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+        if (warnings.length) {
+          setMappingStatus(card, `Mapping uretildi (uyari: ${warnings.length}).`, false);
+        } else {
+          setMappingStatus(card, "Mapping uretildi.", false);
+        }
+        syncMappingState(card);
+      } catch (_err) {
+        setMappingStatus(card, "Mapping uretilirken hata olustu.", true);
+      }
     }
 
     function syncPartitionState(card) {
@@ -1180,8 +1356,13 @@ async function studioFetch(path, options) {
       const targetSchemaInput = card.querySelector(".target-schema");
       const targetTableInput = card.querySelector(".target-table");
       const sourceTypeSelect = card.querySelector(".source-type");
+      const loadMethodSelect = card.querySelector(".load-method");
 
-      sourceTypeSelect.addEventListener("change", () => toggleSourceMode(card));
+      sourceTypeSelect.addEventListener("change", () => {
+        toggleSourceMode(card);
+        refreshTaskCardHeaders();
+        syncMappingState(card);
+      });
 
       sourceSchemaInput.addEventListener("input", () => {
         if (sourceTypeSelect.value === "sql") return;
@@ -1210,6 +1391,7 @@ async function studioFetch(path, options) {
       });
 
       targetSchemaInput.addEventListener("input", () => {
+        refreshTaskCardHeaders();
         clearTimeout(targetSchemaInput._ffTimer);
         targetSchemaInput._ffTimer = setTimeout(() => {
           autocompleteSchemas(
@@ -1222,6 +1404,7 @@ async function studioFetch(path, options) {
       });
 
       targetTableInput.addEventListener("input", () => {
+        refreshTaskCardHeaders();
         clearTimeout(targetTableInput._ffTimer);
         targetTableInput._ffTimer = setTimeout(() => {
           autocompleteTables(
@@ -1232,17 +1415,22 @@ async function studioFetch(path, options) {
           );
         }, 220);
       });
+      sourceSchemaInput.addEventListener("input", () => refreshTaskCardHeaders());
+      sourceTableInput.addEventListener("input", () => refreshTaskCardHeaders());
+      loadMethodSelect.addEventListener("change", () => refreshTaskCardHeaders());
     }
 
     function addTaskCard(values = {}) {
       const template = el("task_card_template");
       const node = template.content.firstElementChild.cloneNode(true);
+      const fallbackIndex = getTaskCards().length + 1;
       bindBindingsSection(node);
       bindTaskCollapse(node);
-      setTaskCardValues(node, values);
+      setTaskCardValues(node, values, fallbackIndex);
       bindTaskTabs(node);
       bindTaskAutocomplete(node);
       bindPartitionState(node);
+      bindMappingState(node);
       node.querySelector(".btn-delete-task").addEventListener("click", (ev) => {
         ev.stopPropagation();
         node.remove();
@@ -1251,6 +1439,14 @@ async function studioFetch(path, options) {
       setTaskCardCollapsed(node, false);
       el("tasks_container").appendChild(node);
       refreshTaskCardHeaders();
+    }
+
+    function bindMappingState(card) {
+      const modeSelect = card.querySelector(".column-mapping-mode");
+      const generateButton = card.querySelector(".btn-generate-mapping");
+      modeSelect.addEventListener("change", () => syncMappingState(card));
+      generateButton.addEventListener("click", () => generateMappingForCard(card));
+      syncMappingState(card);
     }
 
     function clearAndLoadTasks(taskItems) {
@@ -1341,7 +1537,7 @@ async function studioFetch(path, options) {
       const targetSchemaVal = card.querySelector(".target-schema").value.trim();
       const targetTableVal = card.querySelector(".target-table").value.trim();
       const inlineSqlVal = card.querySelector(".source-inline-sql").value.trim();
-      const manualTaskGroupId = card.querySelector(".task-group-id").value.trim();
+      const identity = resolveTaskIdentity(card, index);
       const partitioningMode = card.querySelector(".partitioning-mode").value;
       const partitioningDistinctLimit = asPositiveInt(
         card.querySelector(".partitioning-distinct-limit").value,
@@ -1352,16 +1548,6 @@ async function studioFetch(path, options) {
         : [];
       const normalizedSourceSchema = sourceType === "sql" ? undefined : sourceSchemaVal;
       const normalizedSourceTable = sourceType === "sql" ? undefined : sourceTableVal;
-      const taskGroupSourceSchema = sourceType === "sql" ? "sql" : sourceSchemaVal;
-      const taskGroupSourceTable = sourceType === "sql" ? "query" : sourceTableVal;
-      const generatedTaskGroupId = [
-        slugify(taskGroupSourceSchema, "src"),
-        slugify(taskGroupSourceTable, "table"),
-        "to",
-        slugify(targetSchemaVal, "tgt"),
-        slugify(targetTableVal, "table"),
-        `task_${index}`,
-      ].join("_");
       const bindings = getBindingRows(card)
         .map((row) => {
           const bindingSource = row.querySelector(".binding-source").value;
@@ -1380,7 +1566,7 @@ async function studioFetch(path, options) {
         })
         .filter((item) => item.variable_name);
       return {
-        task_group_id: manualTaskGroupId || generatedTaskGroupId,
+        task_group_id: identity.task_group_id,
         source_schema: normalizedSourceSchema,
         source_table: normalizedSourceTable,
         source_type: sourceType,
@@ -1389,7 +1575,9 @@ async function studioFetch(path, options) {
         target_table: targetTableVal,
         load_method: card.querySelector(".load-method").value,
         column_mapping_mode: card.querySelector(".column-mapping-mode").value,
-        mapping_file: card.querySelector(".mapping-file").value.trim() || undefined,
+        mapping_content: card.querySelector(".column-mapping-mode").value === "mapping_file"
+          ? (card.querySelector(".mapping-content").value || "").trim() || undefined
+          : undefined,
         where: card.querySelector(".where").value.trim() || undefined,
         batch_size: Number(card.querySelector(".batch-size").value || 10000),
         partitioning_enabled: !!card.querySelector(".partitioning-enabled").checked,
@@ -1426,7 +1614,6 @@ async function studioFetch(path, options) {
         target_table: firstTask.target_table,
         load_method: firstTask.load_method,
         column_mapping_mode: firstTask.column_mapping_mode,
-        mapping_file: firstTask.mapping_file,
         where: firstTask.where,
         batch_size: firstTask.batch_size,
         partitioning_enabled: firstTask.partitioning_enabled,
@@ -1457,6 +1644,8 @@ async function studioFetch(path, options) {
     el("btn_add_domain").onclick = () => addDraftFolder("domain");
     el("btn_add_level").onclick = () => addDraftFolder("level");
     el("btn_add_flow").onclick = () => addDraftFolder("flow");
+    el("source_conn_id").addEventListener("change", () => refreshTaskCardHeaders());
+    el("target_conn_id").addEventListener("change", () => refreshTaskCardHeaders());
     document.addEventListener("keydown", (evt) => {
       if (evt.key !== "Escape") return;
       if (el("folder_picker_modal").classList.contains("open")) {

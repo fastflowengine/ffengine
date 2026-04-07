@@ -10,7 +10,7 @@ if (-not (Test-Path $hooksDir)) {
     throw "Git hooks dizini bulunamadi: $hooksDir"
 }
 
-$pattern = "debugpy|ENABLE_DEBUG|DEBUGPY_|5678|5679|DEBUG_BREAKPOINT_MARKER"
+$pattern = "debugpy|ENABLE_DEBUG|DEBUGPY_|5677|5678|5679|DEBUG_BREAKPOINT_MARKER"
 
 $preCommitPath = Join-Path $hooksDir "pre-commit"
 $prePushPath = Join-Path $hooksDir "pre-push"
