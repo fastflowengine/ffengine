@@ -387,13 +387,75 @@ async function studioFetch(path, options) {
       console.warn(`[etl-studio-theme] source=fallback ${diagnostics.join(" | ")}`);
     }
 
-    const out = document.getElementById("out");
-    const show = (value) => { out.textContent = JSON.stringify(value, null, 2); };
     let currentUpdateDagId = "";
+    let currentActiveRevisionId = "";
+    let currentRevisionItems = [];
+    let isBusy = false;
 
     function el(id) { return document.getElementById(id); }
+
+    function logDebug(message, payload) {
+      if (typeof payload === "undefined") {
+        console.debug(`[etl-studio] ${message}`);
+        return;
+      }
+      console.debug(`[etl-studio] ${message}`, payload);
+    }
+
+    function pushToast(message, variant = "success", persistent = false) {
+      const container = el("toast_container");
+      if (!container || !message) return;
+      const node = document.createElement("div");
+      node.className = `toast ${variant === "error" ? "error" : "success"}`;
+      const text = document.createElement("div");
+      text.className = "toast-message";
+      text.textContent = message;
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "toast-close";
+      close.textContent = "x";
+      close.setAttribute("aria-label", "Close");
+      close.onclick = () => node.remove();
+      node.appendChild(text);
+      node.appendChild(close);
+      container.appendChild(node);
+      if (!persistent) {
+        window.setTimeout(() => node.remove(), 3800);
+      }
+    }
+
+    function setOperationBusy(active, label) {
+      isBusy = !!active;
+      const progress = el("operation_progress");
+      const progressLabel = el("operation_progress_label");
+      if (progress) {
+        progress.classList.toggle("hidden", !active);
+        progress.setAttribute("aria-busy", active ? "true" : "false");
+      }
+      if (progressLabel) {
+        progressLabel.textContent = active ? (label || "Islem devam ediyor") : "";
+      }
+      for (const btn of document.querySelectorAll(".btn-create-dag, #btn_update_top, #btn_promote_revision, #btn_add_task, #btn_refresh_revisions, #btn_delete_dag, #btn_cancel_delete_dag, #btn_confirm_delete_dag")) {
+        btn.disabled = !!active;
+      }
+      syncDeleteDagConfirmState();
+    }
+
+    function beginOperation(label) {
+      if (isBusy) {
+        pushToast("Baska bir islem devam ediyor.", "error", true);
+        return false;
+      }
+      setOperationBusy(true, label);
+      return true;
+    }
+
+    function endOperation() {
+      setOperationBusy(false, "");
+    }
     function setUpdateModeStatus(message, variant) {
       const box = el("update_mode_status");
+      if (!box) return;
       box.classList.remove("hidden", "ok", "warn");
       if (variant === "ok") box.classList.add("ok");
       if (variant === "warn") box.classList.add("warn");
@@ -403,13 +465,215 @@ async function studioFetch(path, options) {
     function setUpdateMode(active) {
       const top = el("update_actions_top");
       const bottomCreate = el("create_actions_bottom");
+      const revisionPanel = el("revision_panel");
+      const deleteButton = el("btn_delete_dag");
       if (active) {
         top.classList.remove("hidden");
         bottomCreate.classList.add("hidden");
+        revisionPanel.classList.remove("hidden");
+        if (deleteButton) deleteButton.classList.remove("hidden");
       } else {
         top.classList.add("hidden");
         bottomCreate.classList.remove("hidden");
+        revisionPanel.classList.add("hidden");
+        if (deleteButton) deleteButton.classList.add("hidden");
+        closeDeleteDagModal();
         currentUpdateDagId = "";
+        currentActiveRevisionId = "";
+        currentRevisionItems = [];
+        const sel = el("revision_select");
+        if (sel) sel.innerHTML = '<option value="">No revision</option>';
+        const meta = el("revision_meta");
+        if (meta) meta.textContent = "";
+      }
+    }
+
+    function resetStudioAfterDelete() {
+      currentUpdateDagId = "";
+      clearAndLoadTasks([{}]);
+      setUpdateMode(false);
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("dag_id");
+        window.history.replaceState({}, "", url.toString());
+      } catch (_err) {
+        // no-op
+      }
+    }
+
+    function syncDeleteDagConfirmState() {
+      const input = el("delete_dag_confirm_input");
+      const expected = String(currentUpdateDagId || "").trim();
+      const confirmBtn = el("btn_confirm_delete_dag");
+      if (!input || !confirmBtn) return;
+      const matches = !!expected && String(input.value || "").trim() === expected;
+      confirmBtn.disabled = !matches || isBusy;
+      confirmBtn.setAttribute("aria-disabled", matches && !isBusy ? "false" : "true");
+    }
+
+    function openDeleteDagModal() {
+      const dagId = String(currentUpdateDagId || "").trim();
+      if (!dagId) {
+        pushToast("Delete icin once update mode acilmis olmali.", "error", true);
+        return;
+      }
+      const modal = el("delete_dag_modal");
+      const expected = el("delete_dag_expected");
+      const input = el("delete_dag_confirm_input");
+      if (!modal || !expected || !input) return;
+      expected.textContent = dagId;
+      input.value = "";
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+      syncDeleteDagConfirmState();
+      input.focus();
+    }
+
+    function closeDeleteDagModal() {
+      const modal = el("delete_dag_modal");
+      const input = el("delete_dag_confirm_input");
+      if (!modal) return;
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+      if (input) input.value = "";
+      syncDeleteDagConfirmState();
+    }
+
+    async function deleteCurrentDag() {
+      const dagId = String(currentUpdateDagId || "").trim();
+      if (!dagId) {
+        pushToast("Delete icin once update mode acilmis olmali.", "error", true);
+        return;
+      }
+      const input = el("delete_dag_confirm_input");
+      if (!input || String(input.value || "").trim() !== dagId) {
+        pushToast("Onay icin DAG ID degerini dogru girin.", "error", true);
+        return;
+      }
+      if (!beginOperation("DAG siliniyor...")) {
+        return;
+      }
+      try {
+        const data = await deleteJson(studioUrl(`/api/delete-dag?dag_id=${encodeURIComponent(dagId)}`));
+        if (!data || !data.ok) {
+          pushToast(data && data.detail ? data.detail : "DAG silme basarisiz.", "error", true);
+          return;
+        }
+        closeDeleteDagModal();
+        const deletedCount = Array.isArray(data.deleted_paths) ? data.deleted_paths.length : 0;
+        pushToast(`DAG silindi: ${dagId} (${deletedCount} oge)`, "success", false);
+        const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+        for (const warning of warnings) {
+          if (!warning) continue;
+          pushToast(String(warning), "error", true);
+        }
+        resetStudioAfterDelete();
+      } catch (err) {
+        logDebug("delete dag error", err);
+        pushToast("DAG silme sirasinda beklenmeyen hata olustu.", "error", true);
+      } finally {
+        endOperation();
+      }
+    }
+
+    function renderRevisionMeta() {
+      const sel = el("revision_select");
+      const meta = el("revision_meta");
+      if (!sel || !meta) return;
+      const revisionId = String(sel.value || "").trim();
+      if (!revisionId) {
+        meta.textContent = currentActiveRevisionId
+          ? `Active revision: ${currentActiveRevisionId}`
+          : "Active revision snapshot not found in history.";
+        return;
+      }
+      const item = currentRevisionItems.find((x) => String(x.revision_id || "") === revisionId);
+      if (!item) {
+        meta.textContent = "";
+        return;
+      }
+      const activeMark = currentActiveRevisionId && currentActiveRevisionId === revisionId ? " (active)" : "";
+      meta.textContent = `${item.revision_id}${activeMark} - ${item.source || "unknown"} - ${item.created_at || "-"}`;
+    }
+
+    function renderRevisionOptions(items, activeRevisionId) {
+      const sel = el("revision_select");
+      if (!sel) return;
+      currentRevisionItems = Array.isArray(items) ? items : [];
+      currentActiveRevisionId = String(activeRevisionId || "").trim();
+      sel.innerHTML = "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = currentRevisionItems.length ? "Select revision" : "No revision";
+      sel.appendChild(placeholder);
+      for (const item of currentRevisionItems) {
+        const opt = document.createElement("option");
+        const rid = String(item.revision_id || "").trim();
+        const activeMark = currentActiveRevisionId && currentActiveRevisionId === rid ? " [active]" : "";
+        opt.value = rid;
+        opt.textContent = `${rid}${activeMark} - ${String(item.source || "unknown")} - ${String(item.created_at || "-")}`;
+        sel.appendChild(opt);
+      }
+      if (currentActiveRevisionId) {
+        sel.value = currentActiveRevisionId;
+      }
+      renderRevisionMeta();
+    }
+
+    async function loadRevisions(rawDagId) {
+      const dagId = String(rawDagId || currentUpdateDagId || "").trim();
+      if (!dagId) {
+        renderRevisionOptions([], "");
+        return null;
+      }
+      const r = await studioFetch(`/api/dag-revisions?dag_id=${encodeURIComponent(dagId)}`);
+      const data = await r.json();
+      logDebug("dag-revisions response", { status_code: r.status, ...data });
+      if (!r.ok || !data.ok) {
+        renderRevisionOptions([], "");
+        return null;
+      }
+      renderRevisionOptions(data.items || [], data.active_revision_id || "");
+      return data;
+    }
+
+    async function promoteSelectedRevision() {
+      const dagId = String(currentUpdateDagId || "").trim();
+      if (!dagId) {
+        setUpdateModeStatus("Promote icin once update mode acilmis olmali.", "warn");
+        pushToast("Promote icin once update mode acilmis olmali.", "error", true);
+        return;
+      }
+      const sel = el("revision_select");
+      const revisionId = String((sel && sel.value) || "").trim();
+      if (!revisionId) {
+        setUpdateModeStatus("Promote icin bir revision secin.", "warn");
+        pushToast("Promote icin bir revision secin.", "error", true);
+        return;
+      }
+
+      if (!beginOperation("Revision aktive ediliyor...")) {
+        return;
+      }
+      try {
+        const data = await postJson(
+          studioUrl(`/api/dag-revisions/promote?dag_id=${encodeURIComponent(dagId)}&revision_id=${encodeURIComponent(revisionId)}`),
+          {}
+        );
+        if (!data || !data.ok) {
+          setUpdateModeStatus("Revision promote basarisiz.", "warn");
+          pushToast(data && data.detail ? data.detail : "Revision promote basarisiz.", "error", true);
+          return;
+        }
+        setUpdateModeStatus(`Revision aktive edildi: ${revisionId}`, "ok");
+        pushToast(`Revision aktive edildi: ${revisionId}`, "success", false);
+        await preloadByDagId(dagId);
+      } catch (err) {
+        logDebug("revision promote error", err);
+        setUpdateModeStatus("Revision promote sirasinda beklenmeyen hata olustu.", "warn");
+        pushToast("Revision promote sirasinda beklenmeyen hata olustu.", "error", true);
+      } finally {
+        endOperation();
       }
     }
 
@@ -568,7 +832,7 @@ async function studioFetch(path, options) {
       const r = await studioFetch(path);
       const data = await parseJsonSafe(r);
       if (!r.ok || !data.ok) {
-        show({ status_code: r.status, ...data });
+        logDebug("schema autocomplete failed", { status_code: r.status, ...data });
         return;
       }
       const rawItems = Array.isArray(data.items) ? data.items : [];
@@ -578,21 +842,21 @@ async function studioFetch(path, options) {
       if (!filtered.length) {
         const connType = getSelectedConnectionType(connSelectId || "");
         const extra = connType === "mssql" ? " MSSQL icin schema genelde 'dbo' olur." : "";
-        show({ ok: true, detail: `'${q}' icin schema eslesmesi bulunamadi.${extra}` });
+        logDebug("schema autocomplete no match", { ok: true, detail: `'${q}' icin schema eslesmesi bulunamadi.${extra}` });
       }
     }
 
     async function autocompleteTables(connId, schema, q, listId) {
       if (!connId || !q || q.length < 3) return;
       if (!schema || !schema.trim()) {
-        show({ ok: false, detail: "Once schema alani icin en az 1 karakter girin." });
+        logDebug("table autocomplete skipped", { ok: false, detail: "Once schema alani icin en az 1 karakter girin." });
         return;
       }
       const path = `/api/tables?conn_id=${encodeURIComponent(connId)}&schema=${encodeURIComponent(schema)}&q=${encodeURIComponent(q)}&limit=50&offset=0`;
       const r = await studioFetch(path);
       const data = await parseJsonSafe(r);
       if (!r.ok || !data.ok) {
-        show({ status_code: r.status, ...data });
+        logDebug("table autocomplete failed", { status_code: r.status, ...data });
         return;
       }
       fillOptions(listId, data.items || []);
@@ -703,7 +967,7 @@ async function studioFetch(path, options) {
       const r = await studioFetch(`/api/folder-options?${params.toString()}`);
       const data = await r.json();
       if (!r.ok || !data.ok) {
-        show({ status_code: r.status, ...data });
+        logDebug("folder-options failed", { status_code: r.status, ...data });
         throw new Error(data.detail || "folder-options failed");
       }
       return data;
@@ -794,20 +1058,28 @@ async function studioFetch(path, options) {
         pickerDraft.project = raw;
         clearDraftBelow("project");
       } else if (levelName === "domain") {
-        if (!pickerDraft.project) return show({ ok: false, detail: "Once project secin." });
+        if (!pickerDraft.project) {
+          setUpdateModeStatus("Once project secin.", "warn");
+          pushToast("Once project secin.", "error", true);
+          return;
+        }
         setMapItem(pickerTemp.domains, pickerDraft.project, raw);
         pickerDraft.domain = raw;
         clearDraftBelow("domain");
       } else if (levelName === "level") {
         if (!pickerDraft.project || !pickerDraft.domain) {
-          return show({ ok: false, detail: "Once project ve domain secin." });
+          setUpdateModeStatus("Once project ve domain secin.", "warn");
+          pushToast("Once project ve domain secin.", "error", true);
+          return;
         }
         setMapItem(pickerTemp.levels, `${pickerDraft.project}/${pickerDraft.domain}`, raw);
         pickerDraft.level = raw;
         clearDraftBelow("level");
       } else if (levelName === "flow") {
         if (!pickerDraft.project || !pickerDraft.domain || !pickerDraft.level) {
-          return show({ ok: false, detail: "Once project/domain/level secin." });
+          setUpdateModeStatus("Once project/domain/level secin.", "warn");
+          pushToast("Once project/domain/level secin.", "error", true);
+          return;
         }
         setMapItem(
           pickerTemp.flows,
@@ -854,7 +1126,7 @@ async function studioFetch(path, options) {
           const airflowData = await parseJsonSafe(airflowResp);
           if (!airflowResp.ok) {
             const detail = airflowData.detail || "Connection listesi yuklenemedi.";
-            show({ status_code: airflowResp.status, detail });
+            logDebug("airflow fallback connection list failed", { status_code: airflowResp.status, detail });
             fillConnectionSelect("source_conn_id", [], "");
             fillConnectionSelect("target_conn_id", [], "");
             return;
@@ -870,7 +1142,7 @@ async function studioFetch(path, options) {
         fillConnectionSelect("target_conn_id", items, "ffengine_target");
         refreshTaskCardHeaders();
       } catch (err) {
-        show({ ok: false, detail: `Connection listesi yuklenemedi: ${String(err && err.message ? err.message : err)}` });
+        logDebug("connection list load failed", { ok: false, detail: `Connection listesi yuklenemedi: ${String(err && err.message ? err.message : err)}` });
         fillConnectionSelect("source_conn_id", [], "");
         fillConnectionSelect("target_conn_id", [], "");
         refreshTaskCardHeaders();
@@ -1443,7 +1715,7 @@ async function studioFetch(path, options) {
       }
       const r = await studioFetch(`/api/dag-config?dag_id=${encodeURIComponent(dagId)}`);
       const data = await r.json();
-      show({ status_code: r.status, ...data });
+      logDebug("dag-config preload response", { status_code: r.status, ...data });
       if (!r.ok || !data.ok) {
         currentUpdateDagId = "";
         setUpdateModeStatus(`DAG preload basarisiz: ${data.detail || r.status}`, "warn");
@@ -1453,7 +1725,9 @@ async function studioFetch(path, options) {
       currentUpdateDagId = dagId;
       applyPreloadPayload(data.payload || {}, dagId);
       await loadFolderOptions();
-      setUpdateModeStatus(`Update mode loaded: ${dagId}`, "ok");
+      renderRevisionOptions([], data.active_revision_id || "");
+      await loadRevisions(dagId);
+      setUpdateModeStatus(`Update mode loaded: ${dagId}. Yeni task ekleyip Guncelle ile kaydedin.`, "ok");
       setUpdateMode(true);
     }
 
@@ -1461,6 +1735,18 @@ async function studioFetch(path, options) {
       const params = new URLSearchParams(window.location.search || "");
       const fromQuery = (params.get("dag_id") || "").trim();
       if (fromQuery) return fromQuery;
+
+      const path = String(window.location.pathname || "").trim();
+      if (path) {
+        const mPath = path.match(/\/dags\/([^\/?#]+)/);
+        if (mPath && mPath[1]) {
+          try {
+            return decodeURIComponent(mPath[1]);
+          } catch (_err) {
+            return String(mPath[1] || "").trim();
+          }
+        }
+      }
 
       const ref = (document.referrer || "").trim();
       if (!ref) return "";
@@ -1473,13 +1759,6 @@ async function studioFetch(path, options) {
       }
     }
 
-    async function getJson(url) {
-      const r = await fetch(url);
-      const data = await r.json();
-      show({ status_code: r.status, ...data });
-      return data;
-    }
-
     async function postJson(url, body) {
       const r = await fetch(url, {
         method: "POST",
@@ -1487,21 +1766,49 @@ async function studioFetch(path, options) {
         body: JSON.stringify(body),
       });
       const data = await r.json();
-      show({ status_code: r.status, ...data });
+      logDebug("POST response", { url, status_code: r.status, ...data });
+      return data;
+    }
+
+    async function deleteJson(url) {
+      const r = await fetch(url, { method: "DELETE" });
+      const data = await parseJsonSafe(r);
+      logDebug("DELETE response", { url, status_code: r.status, ...data });
       return data;
     }
 
     async function submitUpdate() {
       const dagId = (currentUpdateDagId || "").trim();
       if (!dagId) {
-        show({ status_code: 422, detail: "Update mode icin dag_id gerekli. Once DAG preload edin." });
         setUpdateModeStatus("Update mode icin dag_id gerekli. Once DAG preload edin.", "warn");
+        pushToast("Update mode icin dag_id gerekli. Once DAG preload edin.", "error", true);
         return;
       }
-      await postJson(
-        studioUrl(`/api/update-dag?dag_id=${encodeURIComponent(dagId)}`),
-        collectPayload()
-      );
+
+      if (!beginOperation("Konfigurasyon guncelleniyor...")) {
+        return;
+      }
+      try {
+        const data = await postJson(
+          studioUrl(`/api/update-dag?dag_id=${encodeURIComponent(dagId)}`),
+          collectPayload()
+        );
+        if (!data || !data.ok) {
+          setUpdateModeStatus("Update basarisiz.", "warn");
+          pushToast(data && data.detail ? data.detail : "Update basarisiz.", "error", true);
+          return;
+        }
+        currentUpdateDagId = String(data.dag_id || dagId || "").trim();
+        await loadRevisions(currentUpdateDagId);
+        setUpdateModeStatus(`Update tamamlandi: ${currentUpdateDagId}`, "ok");
+        pushToast(`Update tamamlandi: ${currentUpdateDagId}`, "success", false);
+      } catch (err) {
+        logDebug("submit update error", err);
+        setUpdateModeStatus("Update sirasinda beklenmeyen hata olustu.", "warn");
+        pushToast("Update sirasinda beklenmeyen hata olustu.", "error", true);
+      } finally {
+        endOperation();
+      }
     }
 
     function dagIdFromDagPath(rawDagPath) {
@@ -1513,24 +1820,39 @@ async function studioFetch(path, options) {
     }
 
     async function submitCreate() {
-      const data = await postJson(studioUrl("/api/create-dag"), collectPayload());
-      if (!data || !data.ok) {
+      if (!beginOperation("Yeni DAG olusturuluyor...")) {
         return;
       }
-      const dagId = dagIdFromDagPath(data.dag_path);
-      if (!dagId) {
-        setUpdateModeStatus("Create basarili, fakat dag_id cozumlenemedi. Update mode acilmadi.", "warn");
-        return;
-      }
-      currentUpdateDagId = dagId;
-      setUpdateMode(true);
-      setUpdateModeStatus(`Create tamamlandi, update mode aktif: ${dagId}`, "ok");
       try {
-        const url = new URL(window.location.href);
-        url.searchParams.set("dag_id", dagId);
-        window.history.replaceState({}, "", url.toString());
-      } catch (_err) {
-        // no-op
+        const data = await postJson(studioUrl("/api/create-dag"), collectPayload());
+        if (!data || !data.ok) {
+          pushToast(data && data.detail ? data.detail : "Create basarisiz.", "error", true);
+          return;
+        }
+        const dagId = String(data.dag_id || "").trim() || dagIdFromDagPath(data.dag_path);
+        if (!dagId) {
+          setUpdateModeStatus("Create basarili, fakat dag_id cozumlenemedi. Update mode acilmadi.", "warn");
+          pushToast("Create basarili, fakat dag_id cozumlenemedi.", "error", true);
+          return;
+        }
+        currentUpdateDagId = dagId;
+        setUpdateMode(true);
+        setUpdateModeStatus(`Create tamamlandi, update mode aktif: ${dagId}`, "ok");
+        pushToast(`Create tamamlandi: ${dagId}`, "success", false);
+        await loadRevisions(dagId);
+        try {
+          const url = new URL(window.location.href);
+          url.searchParams.set("dag_id", dagId);
+          window.history.replaceState({}, "", url.toString());
+        } catch (_err) {
+          // no-op
+        }
+      } catch (err) {
+        logDebug("submit create error", err);
+        setUpdateModeStatus("Create sirasinda beklenmeyen hata olustu.", "warn");
+        pushToast("Create sirasinda beklenmeyen hata olustu.", "error", true);
+      } finally {
+        endOperation();
       }
     }
 
@@ -1647,6 +1969,14 @@ async function studioFetch(path, options) {
     el("btn_collapse_all_tasks").onclick = () => setAllTaskCardsCollapsed(true);
     el("btn_add_task").onclick = () => addTaskCard({});
     el("btn_update_top").onclick = () => submitUpdate();
+    el("btn_refresh_revisions").onclick = () => loadRevisions(currentUpdateDagId);
+    el("btn_promote_revision").onclick = () => promoteSelectedRevision();
+    el("btn_delete_dag").onclick = () => openDeleteDagModal();
+    el("btn_cancel_delete_dag").onclick = () => closeDeleteDagModal();
+    el("btn_confirm_delete_dag").onclick = () => deleteCurrentDag();
+    el("delete_dag_confirm_input").addEventListener("input", () => syncDeleteDagConfirmState());
+    el("delete_dag_backdrop").onclick = () => closeDeleteDagModal();
+    el("revision_select").addEventListener("change", () => renderRevisionMeta());
 
     el("btn_open_folder_picker").onclick = openFolderPicker;
     el("btn_close_folder_picker").onclick = closeFolderPicker;
@@ -1663,6 +1993,10 @@ async function studioFetch(path, options) {
       if (evt.key !== "Escape") return;
       if (el("folder_picker_modal").classList.contains("open")) {
         closeFolderPicker();
+        return;
+      }
+      if (el("delete_dag_modal").classList.contains("open")) {
+        closeDeleteDagModal();
       }
     });
 

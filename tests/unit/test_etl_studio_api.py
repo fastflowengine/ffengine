@@ -36,6 +36,7 @@ def studio_paths(monkeypatch):
     gen.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("FFENGINE_STUDIO_PROJECTS_ROOT", str(proj))
     monkeypatch.setenv("FFENGINE_STUDIO_DAG_ROOT", str(gen))
+    monkeypatch.setenv("FFENGINE_STUDIO_PROMOTE_VERIFY_PARSE", "0")
     try:
         yield proj, gen
     finally:
@@ -107,6 +108,8 @@ def test_index_html_ok(client):
     assert "Tumunu Kapat" in r.text
     assert "Save Configuration" in r.text
     assert "+ Add New Task" in r.text
+    assert "Delete DAG" in r.text
+    assert "delete_dag_modal" in r.text
     assert "Update DAG + YAML" not in r.text
     assert "Load Timeline" not in r.text
     assert "Timeline DAG ID (opsiyonel)" not in r.text
@@ -327,6 +330,17 @@ def test_create_dag_writes_files(client, studio_paths):
     assert "FFEngineOperator" in dag_source
     assert "_resolve_task_dependencies" in dag_source
     assert yaml_name in dag_source
+
+
+def test_create_dag_response_includes_revision_metadata(client, studio_paths):
+    payload = _minimal_table_payload()
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["dag_id"] == Path(body["dag_path"]).stem
+    assert isinstance(body["revision_count"], int)
+    assert body["revision_count"] >= 1
+    assert str(body.get("active_revision_id") or "").startswith("rev_")
 
 
 def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
@@ -684,6 +698,46 @@ def test_update_dag_ok(client, studio_paths):
     assert r2.json()["config_path"] == cfg_path
 
 
+def test_update_dag_allows_adding_new_task(client, studio_paths):
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_path = r1.json()["dag_path"]
+    dag_id = Path(dag_path).stem
+    cfg_path = Path(r1.json()["config_path"])
+
+    update_payload = _minimal_table_payload()
+    update_payload["etl_tasks"] = [
+        {
+            "source_type": "table",
+            "source_schema": "public",
+            "source_table": "orders",
+            "target_schema": "dwh",
+            "target_table": "orders_stg",
+            "load_method": "append",
+            "column_mapping_mode": "source",
+        },
+        {
+            "source_type": "table",
+            "source_schema": "public",
+            "source_table": "customers",
+            "target_schema": "dwh",
+            "target_table": "customers_stg",
+            "load_method": "append",
+            "column_mapping_mode": "source",
+        },
+    ]
+    r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=update_payload)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["dag_path"] == dag_path
+
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    tasks = cfg.get("etl_tasks") or []
+    assert len(tasks) == 2
+    assert tasks[0]["target_table"] == "orders_stg"
+    assert tasks[1]["target_table"] == "customers_stg"
+
+
 def test_update_dag_targets_selected_dag_when_same_flow_has_multiple_groups(client, studio_paths):
     p1 = _minimal_table_payload()
     p2 = _minimal_table_payload()
@@ -709,6 +763,234 @@ def test_update_dag_targets_selected_dag_when_same_flow_has_multiple_groups(clie
     c2 = yaml.safe_load(cfg2.read_text(encoding="utf-8"))
     assert c1["etl_tasks"][0]["load_method"] == "replace"
     assert c2["etl_tasks"][0]["load_method"] == "append"
+
+
+def test_dag_revisions_promote_roundtrip(client, studio_paths):
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
+    cfg_path = Path(r1.json()["config_path"])
+
+    payload["load_method"] = "replace"
+    r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
+    assert r2.status_code == 200, r2.text
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["etl_tasks"][0]["load_method"] == "replace"
+
+    r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
+    assert r_rev.status_code == 200, r_rev.text
+    rev_items = r_rev.json()["items"]
+    assert len(rev_items) >= 2
+    revision_count_before = len(rev_items)
+    create_revision = next((x["revision_id"] for x in rev_items if x.get("source") == "create_initial"), "")
+    update_revision = next((x["revision_id"] for x in rev_items if x.get("source") == "update"), "")
+    assert create_revision
+    assert update_revision
+    assert create_revision != update_revision
+
+    r_promote_old = client.post(
+        f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id={create_revision}",
+        json={},
+    )
+    assert r_promote_old.status_code == 200, r_promote_old.text
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["etl_tasks"][0]["load_method"] == "append"
+
+    r_rev_after = client.get(f"/api/dag-revisions?dag_id={dag_id}")
+    assert r_rev_after.status_code == 200, r_rev_after.text
+    rev_items_after = r_rev_after.json()["items"]
+    assert len(rev_items_after) == revision_count_before
+    assert not any(str(x.get("source") or "") == "promote_before_switch" for x in rev_items_after)
+
+    r_promote_new = client.post(
+        f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id={update_revision}",
+        json={},
+    )
+    assert r_promote_new.status_code == 200, r_promote_new.text
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["etl_tasks"][0]["load_method"] == "replace"
+
+
+def test_promote_rejects_invalid_revision_id_format(client, studio_paths):
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
+    r = client.post(f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id=bad_revision", json={})
+    assert r.status_code == 422
+    assert "revision_id" in r.text
+
+
+def test_promote_returns_404_for_missing_revision(client, studio_paths):
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
+    r = client.post(f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id=rev_999999", json={})
+    assert r.status_code == 404
+
+
+def test_delete_dag_requires_dag_id_query(client, studio_paths):
+    r = client.delete("/api/delete-dag")
+    assert r.status_code == 422
+
+
+def test_delete_dag_removes_etl_studio_bundle_files(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["column_mapping_mode"] = "mapping_file"
+    payload["mapping_content"] = _sql_mapping_yaml(["id"])
+
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    body1 = r1.json()
+    dag_path = Path(body1["dag_path"])
+    cfg_path = Path(body1["config_path"])
+    dag_id = dag_path.stem
+
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    mapping_rel = str(cfg["etl_tasks"][0].get("mapping_file") or "")
+    assert mapping_rel
+    mapping_path = cfg_path.parent / mapping_rel
+    history_path = cfg_path.parent / ss.STUDIO_HISTORY_DIR_NAME / dag_id
+    metadata_path = cfg_path.parent / ss.STUDIO_METADATA_NAME
+
+    assert dag_path.is_file()
+    assert cfg_path.is_file()
+    assert mapping_path.is_file()
+    assert history_path.is_dir()
+    assert metadata_path.is_file()
+
+    r2 = client.delete(f"/api/delete-dag?dag_id={dag_id}")
+    assert r2.status_code == 200, r2.text
+    body2 = r2.json()
+    assert body2["ok"] is True
+    assert body2["dag_id"] == dag_id
+    warnings = [str(x) for x in body2.get("warnings", [])]
+    deleted_paths = [str(x) for x in body2.get("deleted_paths", [])]
+
+    dag_deleted = any(Path(x).name == dag_path.name for x in deleted_paths)
+    cfg_deleted = any(Path(x).name == cfg_path.name for x in deleted_paths)
+    mapping_deleted = any(Path(x).name == mapping_path.name for x in deleted_paths)
+    history_deleted = any(Path(x).name == history_path.name for x in deleted_paths)
+    metadata_deleted = any(Path(x).name == metadata_path.name for x in deleted_paths)
+
+    if dag_deleted:
+        assert not dag_path.exists()
+    else:
+        assert any("DAG dosyasi silinemedi" in w for w in warnings)
+    if cfg_deleted:
+        assert not cfg_path.exists()
+    else:
+        assert any("YAML dosyasi silinemedi" in w for w in warnings)
+    if mapping_deleted:
+        assert not mapping_path.exists()
+    else:
+        assert any("Mapping dosyasi silinemedi" in w for w in warnings)
+    if history_path.exists() and not history_deleted:
+        assert any("History dizini silinemedi" in w for w in warnings)
+    if metadata_deleted:
+        assert not metadata_path.exists()
+    elif metadata_path.exists():
+        assert any("Metadata dosyasi silinemedi" in w for w in warnings)
+
+
+def test_delete_dag_rejects_non_studio_marker_dag(client, studio_paths):
+    _, gen = studio_paths
+    dag_path = gen / "manual_non_studio_dag.py"
+    dag_path.parent.mkdir(parents=True, exist_ok=True)
+    dag_path.write_text("from airflow import DAG\n", encoding="utf-8")
+
+    r = client.delete("/api/delete-dag?dag_id=manual_non_studio_dag")
+    assert r.status_code == 422
+    assert "ETL Studio" in r.text
+
+
+def test_delete_dag_reports_airflow_cleanup_success(client, studio_paths):
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
+
+    with patch.object(
+        ss,
+        "_cleanup_airflow_dag_metadata",
+        return_value={"ok": True, "details": {"dag_models": 1}, "warnings": []},
+    ):
+        r2 = client.delete(f"/api/delete-dag?dag_id={dag_id}")
+
+    assert r2.status_code == 200, r2.text
+    body = r2.json()
+    assert body["ok"] is True
+    assert body["airflow_cleanup"]["ok"] is True
+    assert body["airflow_cleanup"]["details"]["dag_models"] == 1
+
+
+def test_delete_dag_continues_when_airflow_cleanup_fails(client, studio_paths):
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
+    dag_path = Path(r1.json()["dag_path"])
+    cfg_path = Path(r1.json()["config_path"])
+
+    with patch.object(ss, "_cleanup_airflow_dag_metadata", side_effect=RuntimeError("db cleanup failed")):
+        r2 = client.delete(f"/api/delete-dag?dag_id={dag_id}")
+
+    assert r2.status_code == 200, r2.text
+    body = r2.json()
+    assert body["ok"] is True
+    assert body["airflow_cleanup"]["ok"] is False
+    assert any("cleanup exception" in str(x).lower() for x in body.get("warnings", []))
+    if dag_path.exists():
+        assert any("DAG dosyasi silinemedi" in str(x) for x in body.get("warnings", []))
+    if cfg_path.exists():
+        assert any("YAML dosyasi silinemedi" in str(x) for x in body.get("warnings", []))
+
+
+def test_revision_retention_keeps_last_20_snapshots(client, studio_paths, monkeypatch):
+    monkeypatch.setenv("FFENGINE_STUDIO_HISTORY_KEEP_LIMIT", "20")
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_path = Path(r1.json()["dag_path"])
+    dag_id = dag_path.stem
+
+    for i in range(1, 26):
+        payload["target_table"] = f"orders_stg_{i}"
+        payload["load_method"] = "replace" if i % 2 else "append"
+        r_upd = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
+        assert r_upd.status_code == 200, r_upd.text
+
+    r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
+    assert r_rev.status_code == 200, r_rev.text
+    assert r_rev.json()["count"] == 20
+    assert len(list(dag_path.parent.glob("*_dag.py"))) == 1
+
+
+def test_promote_rolls_back_when_parse_verification_fails(client, studio_paths, monkeypatch):
+    monkeypatch.setenv("FFENGINE_STUDIO_PROMOTE_VERIFY_PARSE", "1")
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
+    cfg_path = Path(r1.json()["config_path"])
+
+    payload["load_method"] = "replace"
+    r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
+    assert r2.status_code == 200, r2.text
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["etl_tasks"][0]["load_method"] == "replace"
+
+    r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
+    assert r_rev.status_code == 200, r_rev.text
+    create_revision = next((x["revision_id"] for x in r_rev.json()["items"] if x.get("source") == "create_initial"), "")
+    assert create_revision
+
+    with patch.object(ss, "_wait_for_parse_refresh", return_value=False):
+        r_promote = client.post(
+            f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id={create_revision}",
+            json={},
+        )
+    assert r_promote.status_code == 422
+    assert "geri donuldu" in r_promote.text
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["etl_tasks"][0]["load_method"] == "replace"
 
 
 def test_update_dag_rejects_dag_id_payload_flow_mismatch(client, studio_paths):
@@ -1077,4 +1359,13 @@ def test_api_key_required_when_env_set(client, studio_paths, monkeypatch):
         headers={"X-ETL-Studio-API-Key": "secret123"},
     )
     assert r2.status_code == 201
+    dag_id = Path(r2.json()["dag_path"]).stem
+
+    r3 = client.delete(f"/api/delete-dag?dag_id={dag_id}")
+    assert r3.status_code == 401
+    r4 = client.delete(
+        f"/api/delete-dag?dag_id={dag_id}",
+        headers={"X-ETL-Studio-API-Key": "secret123"},
+    )
+    assert r4.status_code == 200
 

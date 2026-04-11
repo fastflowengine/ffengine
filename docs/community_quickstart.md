@@ -105,14 +105,18 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 
 ## 6) Release Kontrol Listesi (Community)
 
-- [ ] `ff_test_data` tablosu 3 DB'de mevcut (100 satır, 3 kolon)
-- [ ] `FFENGINE_ENABLE_PG_TESTS=1` ile `test_pg_to_pg.py` 4/4 PASS
-- [ ] `FFENGINE_ENABLE_CROSS_DB_TESTS=1` ile `test_cross_db_etl.py` 9/9 PASS
-- [ ] `FFENGINE_ENABLE_CROSS_DB_TESTS=1` ile `test_mapping_chain.py` 1/1 PASS
-- [ ] Unit testler 466+ PASS, 0 FAIL
-- [ ] `README.md` durumu güncel
+- [x] `ff_test_data` tablosu 3 DB'de mevcut (100 satır, 3 kolon)
+- [x] `FFENGINE_ENABLE_PG_TESTS=1` ile `test_pg_to_pg.py` 4/4 PASS
+- [x] `FFENGINE_ENABLE_CROSS_DB_TESTS=1` ile `test_cross_db_etl.py` 9/9 PASS
+- [x] `FFENGINE_ENABLE_CROSS_DB_TESTS=1` ile `test_mapping_chain.py` 1/1 PASS
+- [x] Unit testler 466+ PASS, 0 FAIL
+- [x] `README.md` durumu güncel
+
+> Not: Bu baseline tamamlandi. Sonraki gelisimler yeni epic/story/task'ler ile planlanacaktir.
+
 
 ## Airflow Runtime Model (Current)
+
 
 - Airflow tarafinda tek kanonik yol: `FFEngineOperator`.
 - `plan/prepare/run` fazlari operator icinde calisir.
@@ -140,6 +144,7 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 - New naming DAG'lerde form preload edilip update mode acilir.
 - Ayni flow klasorunde birden fazla group DAG olabilir; bu desteklenir.
 - `POST /etl-studio/api/update-dag` cagrisi `dag_id` query parami ile hedef DAG'i zorunlu olarak belirtmelidir.
+- `DELETE /etl-studio/api/delete-dag?dag_id=<dag_id>` sadece ETL Studio marker'li DAG'lerde calisir ve DAG bundle'i (dag.py + YAML + auto mapping + history) siler.
 
 ## ETL Studio Form Notes
 
@@ -152,3 +157,5 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 
 - Debugpy ile UI -> service -> scheduler asamali UAT icin:
   `docs/debugpy-uat-playbook.md`
+
+

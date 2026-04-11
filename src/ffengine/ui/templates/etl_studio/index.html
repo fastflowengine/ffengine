@@ -4,9 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ETL Studio</title>
-  <link rel="stylesheet" href="/etl-studio/static/etl_studio/css/style.css?v=14">
+  <link rel="stylesheet" href="/etl-studio/static/etl_studio/css/style.css?v=20">
 </head>
 <body class="etl-studio-root" data-ui-variant="current">
+  <div id="operation_progress" class="operation-progress hidden" role="status" aria-live="polite" aria-busy="false">
+    <div class="operation-progress-bar"></div>
+    <span id="operation_progress_label" class="operation-progress-label"></span>
+  </div>
+  <div id="toast_container" class="toast-container" aria-live="polite" aria-atomic="false"></div>
   <div class="page etl-studio">
     <header class="page-header">
       <h1>ETL Configuration Studio</h1>
@@ -114,9 +119,13 @@
         <datalist id="target_table_options"></datalist>
         <datalist id="airflow_variable_options"></datalist>
 
-        <div class="actions" id="create_actions_bottom">
-          <button class="btn btn-success" id="btn_add_task" type="button">+ Add New Task</button>
-          <button class="btn btn-primary btn-create-dag" type="button">Save Configuration</button>
+        <div class="actions actions-inline" id="bottom_actions_row">
+          <div id="task_actions_shared">
+            <button class="btn btn-success" id="btn_add_task" type="button">+ Add New Task</button>
+          </div>
+          <div id="create_actions_bottom">
+            <button class="btn btn-primary btn-create-dag" type="button">Save Configuration</button>
+          </div>
         </div>
       </div>
     </section>
@@ -278,10 +287,49 @@
       </div>
     </template>
 
-    <pre class="response" id="out">{}</pre>
+    <div id="revision_panel" class="revision-panel hidden">
+      <div class="revision-head">
+        <strong>Revision History</strong>
+        <div class="revision-actions">
+          <button class="btn btn-secondary" id="btn_refresh_revisions" type="button">Refresh</button>
+          <button class="btn btn-primary" id="btn_promote_revision" type="button">Activate Selected</button>
+        </div>
+      </div>
+      <label>
+        Available Revisions
+        <select id="revision_select">
+          <option value="">No revision</option>
+        </select>
+      </label>
+      <div id="revision_meta" class="muted-note"></div>
+      <div class="revision-danger-actions">
+        <button class="btn btn-danger" id="btn_delete_dag" type="button">Delete DAG</button>
+      </div>
+    </div>
   </div>
 
-  <script src="/etl-studio/static/etl_studio/js/app.js?v=23"></script>
+  <div id="delete_dag_modal" class="confirm-modal" aria-hidden="true">
+    <div class="confirm-backdrop" id="delete_dag_backdrop"></div>
+    <div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete_dag_title">
+      <div class="confirm-head">
+        <h3 id="delete_dag_title">Delete DAG</h3>
+      </div>
+      <div class="confirm-body">
+        <p>Bu islem geri alinamaz. Silmek icin DAG ID degerini aynen yazin.</p>
+        <p class="muted-note">DAG ID: <strong id="delete_dag_expected">-</strong></p>
+        <label>
+          Confirm DAG ID
+          <input id="delete_dag_confirm_input" placeholder="DAG ID yazin">
+        </label>
+      </div>
+      <div class="confirm-actions">
+        <button class="btn btn-secondary" id="btn_cancel_delete_dag" type="button">Cancel</button>
+        <button class="btn btn-danger" id="btn_confirm_delete_dag" type="button" disabled aria-disabled="true">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/etl-studio/static/etl_studio/js/app.js?v=29"></script>
 </body>
 </html>
 

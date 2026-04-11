@@ -22,7 +22,7 @@ from ffengine.errors import http_status_for, normalize_exception
 from ffengine.ui.studio_service import (
     STUDIO_DAG_MARKER,
     create_or_update_dag,
-    resolve_dag_config_for_update,
+    delete_dag_bundle,
     discover_connections,
     discover_columns,
     discover_hierarchy_options,
@@ -31,6 +31,9 @@ from ffengine.ui.studio_service import (
     discover_tables,
     fetch_timeline_runs,
     generate_mapping_preview,
+    get_dag_revisions,
+    promote_dag_revision,
+    resolve_dag_config_for_update,
 )
 
 
@@ -515,5 +518,51 @@ def api_dag_config(dag_id: str = Query(..., min_length=1)) -> dict[str, Any]:
         return {"ok": True, **result}
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@etl_studio_app.get("/api/dag-revisions")
+def api_dag_revisions(dag_id: str = Query(..., min_length=1)) -> dict[str, Any]:
+    try:
+        result = get_dag_revisions(dag_id=dag_id)
+        return {"ok": True, **result}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@etl_studio_app.post("/api/dag-revisions/promote")
+def api_promote_dag_revision(
+    dag_id: str = Query(..., min_length=1),
+    revision_id: str = Query(..., min_length=1),
+    _: None = Depends(_optional_api_key_dep),
+) -> dict[str, Any]:
+    try:
+        result = promote_dag_revision(dag_id=dag_id, revision_id=revision_id)
+        return {"ok": True, **result}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@etl_studio_app.delete("/api/delete-dag")
+def api_delete_dag(
+    dag_id: str = Query(..., min_length=1),
+    _: None = Depends(_optional_api_key_dep),
+) -> dict[str, Any]:
+    try:
+        result = delete_dag_bundle(dag_id=dag_id)
+        return {"ok": True, **result}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         _raise_http_from_exception(exc)

@@ -6,11 +6,16 @@ Faz 1 (T01-T04, T07, T11) ve Faz 2 (T05-T10, T08-T09, T12) endpoint'leri bu modu
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shutil
 import stat
+import threading
 import time
+from contextlib import contextmanager, nullcontext
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +31,14 @@ from ffengine.mapping.resolver import VALID_MAPPING_VERSIONS, _dialect_name
 
 STUDIO_METADATA_NAME = ".etl_studio.json"
 STUDIO_DAG_MARKER = "# generated_by: etl_studio"
+STUDIO_HISTORY_DIR_NAME = ".etl_studio_history"
+STUDIO_HISTORY_KEEP_LIMIT = 20
+REVISION_SOURCE_CREATE_INITIAL = "create_initial"
+REVISION_SOURCE_UPDATE = "update"
+
+_REVISION_DIR_RE = re.compile(r"^rev_(\d{6})$")
+_DAG_LOCKS: dict[str, threading.Lock] = {}
+_DAG_LOCKS_GUARD = threading.Lock()
 
 
 def _slugify(value: str, default: str) -> str:
@@ -369,6 +382,33 @@ def _best_effort_unlink(path: Path, *, retries: int = 80, wait_seconds: float = 
     return False
 
 
+def _best_effort_rmtree(path: Path) -> bool:
+    if not path.exists():
+        return True
+    if not path.is_dir():
+        return False
+
+    def _onerror(func, raw_path, _exc_info):
+        try:
+            os.chmod(raw_path, stat.S_IWRITE | stat.S_IREAD)
+        except OSError:
+            pass
+        try:
+            func(raw_path)
+        except OSError:
+            pass
+
+    try:
+        shutil.rmtree(path, onerror=_onerror)
+        return True
+    except OSError:
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            return False
+    return not path.exists()
+
+
 def _normalize_relative_mapping_file(value: str) -> str:
     raw = str(value or "").strip().replace("\\", "/")
     raw = re.sub(r"/{2,}", "/", raw).lstrip("/")
@@ -592,6 +632,269 @@ def _load_studio_metadata(flow_dir: Path) -> dict[str, Any] | None:
         return None
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw not in {"", "0", "false", "no", "off"}
+
+
+def _history_keep_limit() -> int:
+    raw = str(os.getenv("FFENGINE_STUDIO_HISTORY_KEEP_LIMIT", str(STUDIO_HISTORY_KEEP_LIMIT))).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = STUDIO_HISTORY_KEEP_LIMIT
+    return max(1, value)
+
+
+def _revision_history_root(flow_dir: Path, dag_id: str) -> Path:
+    return flow_dir / STUDIO_HISTORY_DIR_NAME / str(dag_id or "").strip()
+
+
+def _revision_dirs_sorted(history_root: Path) -> list[Path]:
+    if not history_root.is_dir():
+        return []
+    items: list[tuple[int, Path]] = []
+    for item in history_root.iterdir():
+        if not item.is_dir():
+            continue
+        m = _REVISION_DIR_RE.fullmatch(item.name)
+        if not m:
+            continue
+        try:
+            seq = int(m.group(1))
+        except ValueError:
+            continue
+        items.append((seq, item))
+    items.sort(key=lambda x: x[0])
+    return [x[1] for x in items]
+
+
+def _next_revision_id(history_root: Path) -> str:
+    dirs = _revision_dirs_sorted(history_root)
+    if not dirs:
+        return "rev_000001"
+    last = dirs[-1].name
+    m = _REVISION_DIR_RE.fullmatch(last)
+    if not m:
+        return "rev_000001"
+    return f"rev_{(int(m.group(1)) + 1):06d}"
+
+
+def _prune_revision_history(history_root: Path, keep_limit: int) -> None:
+    dirs = _revision_dirs_sorted(history_root)
+    stale = dirs[:-max(1, keep_limit)]
+    for item in stale:
+        def _onerror(func, path, _exc_info):
+            try:
+                os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            except OSError:
+                pass
+            try:
+                func(path)
+            except OSError:
+                pass
+
+        try:
+            shutil.rmtree(item, onerror=_onerror)
+        except OSError:
+            shutil.rmtree(item, ignore_errors=True)
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
+
+
+def _auto_mapping_rel_paths_from_config_obj(config_obj: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    tasks = config_obj.get("etl_tasks") if isinstance(config_obj, dict) else None
+    if not isinstance(tasks, list):
+        return out
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        rel = str(task.get("mapping_file") or "").strip()
+        if not _is_auto_mapping_relative_file(rel):
+            continue
+        out.append(_normalize_relative_mapping_file(rel))
+    return sorted(set(out))
+
+
+def _read_active_bundle(dag_path: Path, config_path: Path, flow_dir: Path) -> dict[str, Any]:
+    if not dag_path.is_file():
+        raise FileNotFoundError(f"DAG dosyasi bulunamadi: {dag_path.as_posix()}")
+    if not config_path.is_file():
+        raise FileNotFoundError(f"YAML dosyasi bulunamadi: {config_path.as_posix()}")
+
+    dag_text = dag_path.read_text(encoding="utf-8")
+    config_text = config_path.read_text(encoding="utf-8")
+    config_obj = yaml.safe_load(config_text) or {}
+    if not isinstance(config_obj, dict):
+        raise ValueError("YAML root dict olmalidir.")
+
+    mapping_texts: dict[str, str] = {}
+    for rel in _auto_mapping_rel_paths_from_config_obj(config_obj):
+        path = _resolve_mapping_file_path(flow_dir, rel)
+        if not path.is_file():
+            continue
+        mapping_texts[rel] = path.read_text(encoding="utf-8")
+
+    file_hashes: dict[str, str] = {
+        "dag.py": _sha256_text(dag_text),
+        "config.yaml": _sha256_text(config_text),
+    }
+    for rel in sorted(mapping_texts):
+        file_hashes[rel] = _sha256_text(mapping_texts[rel])
+    bundle_hash = _sha256_text(json.dumps(file_hashes, sort_keys=True))
+    file_hashes["bundle"] = bundle_hash
+
+    return {
+        "dag_text": dag_text,
+        "config_text": config_text,
+        "config_obj": config_obj,
+        "mapping_texts": mapping_texts,
+        "hashes": file_hashes,
+    }
+
+
+def _save_bundle_as_revision(
+    *,
+    flow_dir: Path,
+    dag_id: str,
+    dag_path: Path,
+    config_path: Path,
+    source: str,
+    actor: str,
+) -> dict[str, Any]:
+    bundle = _read_active_bundle(dag_path, config_path, flow_dir)
+    history_root = _revision_history_root(flow_dir, dag_id)
+    history_root.mkdir(parents=True, exist_ok=True)
+    revision_id = _next_revision_id(history_root)
+    revision_dir = history_root / revision_id
+    revision_dir.mkdir(parents=True, exist_ok=True)
+
+    (revision_dir / "dag.py").write_text(bundle["dag_text"], encoding="utf-8")
+    (revision_dir / "config.yaml").write_text(bundle["config_text"], encoding="utf-8")
+    for rel, text in bundle["mapping_texts"].items():
+        target = revision_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+
+    manifest = {
+        "revision_id": revision_id,
+        "dag_id": dag_id,
+        "created_at": _utc_now_iso(),
+        "source": source,
+        "actor": actor,
+        "hashes": bundle["hashes"],
+        "mapping_files": sorted(bundle["mapping_texts"].keys()),
+    }
+    (revision_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    _prune_revision_history(history_root, _history_keep_limit())
+    return manifest
+
+
+def _load_bundle_from_revision(revision_dir: Path) -> dict[str, Any]:
+    manifest_path = revision_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Revision manifest bulunamadi: {manifest_path.as_posix()}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    dag_file = revision_dir / "dag.py"
+    cfg_file = revision_dir / "config.yaml"
+    if not dag_file.is_file() or not cfg_file.is_file():
+        raise FileNotFoundError("Revision icinde dag.py veya config.yaml eksik.")
+    mapping_texts: dict[str, str] = {}
+    for rel in manifest.get("mapping_files") or []:
+        rel_path = _normalize_relative_mapping_file(str(rel or ""))
+        src = revision_dir / rel_path
+        if not src.is_file():
+            raise FileNotFoundError(f"Revision mapping dosyasi eksik: {rel_path}")
+        mapping_texts[rel_path] = src.read_text(encoding="utf-8")
+    return {
+        "manifest": manifest,
+        "dag_text": dag_file.read_text(encoding="utf-8"),
+        "config_text": cfg_file.read_text(encoding="utf-8"),
+        "mapping_texts": mapping_texts,
+    }
+
+
+def _write_studio_metadata(flow_dir: Path, metadata: dict[str, Any]) -> None:
+    (flow_dir / STUDIO_METADATA_NAME).write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _list_revision_items(history_root: Path, *, limit: int | None = None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for revision_dir in reversed(_revision_dirs_sorted(history_root)):
+        manifest_path = revision_dir / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        out.append(
+            {
+                "revision_id": str(manifest.get("revision_id") or revision_dir.name),
+                "created_at": str(manifest.get("created_at") or ""),
+                "source": str(manifest.get("source") or ""),
+                "actor": str(manifest.get("actor") or ""),
+                "bundle_hash": str((manifest.get("hashes") or {}).get("bundle") or ""),
+            }
+        )
+        if isinstance(limit, int) and limit > 0 and len(out) >= limit:
+            break
+    return out
+
+
+def _resolve_active_revision_id(
+    *,
+    history_root: Path,
+    dag_path: Path,
+    config_path: Path,
+    flow_dir: Path,
+) -> str | None:
+    if not history_root.is_dir():
+        return None
+    try:
+        active = _read_active_bundle(dag_path, config_path, flow_dir)
+    except Exception:
+        return None
+    bundle_hash = str((active.get("hashes") or {}).get("bundle") or "")
+    if not bundle_hash:
+        return None
+    for item in _list_revision_items(history_root):
+        if item.get("bundle_hash") == bundle_hash:
+            return str(item.get("revision_id") or "") or None
+    return None
+
+
+@contextmanager
+def _dag_operation_lock(dag_id: str):
+    did = str(dag_id or "").strip()
+    if not did:
+        yield
+        return
+    with _DAG_LOCKS_GUARD:
+        lock = _DAG_LOCKS.get(did)
+        if lock is None:
+            lock = threading.Lock()
+            _DAG_LOCKS[did] = lock
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def _extract_group_no(dag_id: str, config_path: Path) -> int:
     match = re.search(r"_group_(\d+)_dag$", dag_id)
     if match:
@@ -739,7 +1042,406 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "payload": payload,
         "dag_path": dag_path.as_posix(),
         "config_path": config_path.as_posix(),
+        "active_revision_id": _resolve_active_revision_id(
+            history_root=_revision_history_root(config_resolved.parent, did),
+            dag_path=dag_path,
+            config_path=config_resolved,
+            flow_dir=config_resolved.parent,
+        ),
+        "revision_count": len(
+            _list_revision_items(
+                _revision_history_root(config_resolved.parent, did),
+                limit=_history_keep_limit(),
+            )
+        ),
     }
+
+
+def _airflow_parse_state(dag_id: str) -> dict[str, Any] | None:
+    """Airflow metadata uzerinden parse/version durumunu best-effort okur."""
+    try:
+        from airflow.models.dag_version import DagVersion
+        from airflow.models.serialized_dag import SerializedDagModel
+        from airflow.utils.session import create_session
+    except Exception:
+        return None
+
+    try:
+        with create_session() as session:
+            dag_ver = (
+                session.query(DagVersion)
+                .filter(DagVersion.dag_id == dag_id)
+                .order_by(DagVersion.created_at.desc())
+                .first()
+            )
+            ser = (
+                session.query(SerializedDagModel)
+                .filter(SerializedDagModel.dag_id == dag_id)
+                .order_by(SerializedDagModel.created_at.desc())
+                .first()
+            )
+    except Exception:
+        return None
+
+    if dag_ver is None and ser is None:
+        return None
+
+    return {
+        "dag_version_id": str(getattr(dag_ver, "id", "") or ""),
+        "version_number": int(getattr(dag_ver, "version_number", 0) or 0),
+        "dag_hash": str(getattr(ser, "dag_hash", "") or ""),
+        "serialized_last_updated": str(getattr(ser, "last_updated", "") or ""),
+    }
+
+
+def _parse_state_changed(before: dict[str, Any] | None, after: dict[str, Any] | None) -> bool:
+    if before is None:
+        return after is not None
+    if after is None:
+        return False
+    if str(after.get("dag_version_id") or "") != str(before.get("dag_version_id") or ""):
+        return True
+    if str(after.get("dag_hash") or "") != str(before.get("dag_hash") or ""):
+        return True
+    if str(after.get("serialized_last_updated") or "") != str(before.get("serialized_last_updated") or ""):
+        return True
+    if int(after.get("version_number") or 0) > int(before.get("version_number") or 0):
+        return True
+    return False
+
+
+def _wait_for_parse_refresh(dag_id: str, before_state: dict[str, Any] | None) -> bool:
+    if not _env_bool("FFENGINE_STUDIO_PROMOTE_VERIFY_PARSE", True):
+        return True
+    timeout_seconds_raw = str(os.getenv("FFENGINE_STUDIO_PROMOTE_VERIFY_TIMEOUT_SECONDS", "35")).strip()
+    interval_seconds_raw = str(os.getenv("FFENGINE_STUDIO_PROMOTE_VERIFY_INTERVAL_SECONDS", "1")).strip()
+    try:
+        timeout_seconds = max(2.0, float(timeout_seconds_raw))
+    except ValueError:
+        timeout_seconds = 35.0
+    try:
+        interval_seconds = max(0.2, float(interval_seconds_raw))
+    except ValueError:
+        interval_seconds = 1.0
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        current = _airflow_parse_state(dag_id)
+        if _parse_state_changed(before_state, current):
+            return True
+        time.sleep(interval_seconds)
+    return False
+
+
+def _import_airflow_model(candidates: list[tuple[str, str]]) -> type | None:
+    for module_name, class_name in candidates:
+        try:
+            module = __import__(module_name, fromlist=[class_name])
+            model = getattr(module, class_name, None)
+            if model is not None:
+                return model
+        except Exception:
+            continue
+    return None
+
+
+def _cleanup_airflow_dag_metadata(dag_id: str) -> dict[str, Any]:
+    did = str(dag_id or "").strip()
+    if not did:
+        return {"ok": False, "details": {}, "warnings": ["dag_id bos oldugu icin metadata cleanup atlandi."]}
+
+    try:
+        from airflow.utils.session import create_session
+    except Exception as exc:
+        return {
+            "ok": False,
+            "details": {},
+            "warnings": [f"Airflow DB session acilamadi: {exc}"],
+        }
+
+    model_specs: list[tuple[str, list[tuple[str, str]]]] = [
+        ("task_instances", [("airflow.models.taskinstance", "TaskInstance")]),
+        ("task_reschedules", [("airflow.models.taskreschedule", "TaskReschedule")]),
+        ("task_fails", [("airflow.models.taskfail", "TaskFail")]),
+        # Airflow 3'te XCom -> BaseXCom alias olabilir; ORM model XComModel'dir.
+        ("xcom", [("airflow.models.xcom", "XComModel"), ("airflow.models.xcom", "XCom")]),
+        ("dag_runs", [("airflow.models.dagrun", "DagRun")]),
+        ("dag_versions", [("airflow.models.dag_version", "DagVersion")]),
+        ("serialized_dags", [("airflow.models.serialized_dag", "SerializedDagModel")]),
+        ("dag_tags", [("airflow.models.dag", "DagTag"), ("airflow.models.dagtag", "DagTag")]),
+        ("dag_code", [("airflow.models.dagcode", "DagCode")]),
+        ("dag_models", [("airflow.models.dag", "DagModel"), ("airflow.models.dagmodel", "DagModel")]),
+        ("parse_import_errors", [("airflow.models.errors", "ParseImportError"), ("airflow.models.errors", "ImportError")]),
+    ]
+
+    details: dict[str, int] = {}
+    warnings: list[str] = []
+
+    try:
+        with create_session() as session:
+            for label, candidates in model_specs:
+                model = _import_airflow_model(candidates)
+                if model is None:
+                    continue
+                # ORM model olmayan siniflarda (ornegin BaseXCom) query kurmaya calismayiz.
+                if not hasattr(model, "__mapper__"):
+                    continue
+                try:
+                    query = session.query(model)
+                    if hasattr(model, "dag_id"):
+                        query = query.filter(getattr(model, "dag_id") == did)
+                    elif hasattr(model, "filename"):
+                        query = query.filter(getattr(model, "filename").like(f"%{did}%"))
+                    else:
+                        continue
+                    details[label] = int(query.delete(synchronize_session=False) or 0)
+                except Exception as exc:
+                    warnings.append(f"{label} temizligi basarisiz: {exc}")
+            try:
+                session.commit()
+            except Exception as exc:
+                session.rollback()
+                warnings.append(f"Airflow metadata commit basarisiz: {exc}")
+    except Exception as exc:
+        warnings.append(f"Airflow metadata cleanup calisamadi: {exc}")
+
+    return {
+        "ok": len(warnings) == 0,
+        "details": details,
+        "warnings": warnings,
+    }
+
+
+def _apply_bundle_to_active(
+    *,
+    flow_dir: Path,
+    dag_path: Path,
+    config_path: Path,
+    bundle: dict[str, Any],
+) -> None:
+    existing_auto_mapping_paths = _collect_existing_auto_mapping_paths(config_path, flow_dir)
+
+    dag_path.write_text(str(bundle.get("dag_text") or ""), encoding="utf-8")
+    config_text = str(bundle.get("config_text") or "")
+    config_path.write_text(config_text, encoding="utf-8")
+
+    parsed_cfg = yaml.safe_load(config_text) or {}
+    if not isinstance(parsed_cfg, dict):
+        raise ValueError("Promote edilen config root dict olmalidir.")
+    required_rels = _auto_mapping_rel_paths_from_config_obj(parsed_cfg)
+    mapping_texts = dict(bundle.get("mapping_texts") or {})
+    new_auto_mapping_paths: set[Path] = set()
+    for rel in required_rels:
+        rel_norm = _normalize_relative_mapping_file(rel)
+        if rel_norm not in mapping_texts:
+            raise ValueError(f"Revision icinde mapping dosyasi eksik: {rel_norm}")
+        target = _resolve_mapping_file_path(flow_dir, rel_norm)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(str(mapping_texts.get(rel_norm) or ""), encoding="utf-8")
+        new_auto_mapping_paths.add(target)
+
+    stale_auto_paths = existing_auto_mapping_paths - new_auto_mapping_paths
+    for stale_path in sorted(stale_auto_paths):
+        if stale_path.is_file():
+            _best_effort_unlink(stale_path)
+
+
+def get_dag_revisions(dag_id: str) -> dict[str, Any]:
+    did = (dag_id or "").strip()
+    if not did:
+        raise ValueError("dag_id zorunludur.")
+
+    dag_path = _find_studio_dag_file_by_id(did)
+    if dag_path is None:
+        raise FileNotFoundError(f"DAG bulunamadi: {did}")
+    config_path = _extract_config_path_from_dag_source(dag_path)
+    if not config_path.is_file():
+        raise ValueError("DAG bulundu ancak bagli YAML dosyasi bulunamadi.")
+
+    flow_dir = config_path.resolve().parent
+    history_root = _revision_history_root(flow_dir, did)
+    _prune_revision_history(history_root, _history_keep_limit())
+    items = _list_revision_items(history_root, limit=_history_keep_limit())
+    active_revision_id = _resolve_active_revision_id(
+        history_root=history_root,
+        dag_path=dag_path,
+        config_path=config_path,
+        flow_dir=flow_dir,
+    )
+    return {
+        "dag_id": did,
+        "dag_path": dag_path.as_posix(),
+        "config_path": config_path.as_posix(),
+        "items": items,
+        "count": len(items),
+        "active_revision_id": active_revision_id,
+    }
+
+
+def promote_dag_revision(
+    *,
+    dag_id: str,
+    revision_id: str,
+    actor: str = "etl_studio",
+) -> dict[str, Any]:
+    did = (dag_id or "").strip()
+    rid = (revision_id or "").strip()
+    if not did:
+        raise ValueError("dag_id zorunludur.")
+    if not rid:
+        raise ValueError("revision_id zorunludur.")
+    if not _REVISION_DIR_RE.fullmatch(rid):
+        raise ValueError("revision_id formati gecersiz.")
+
+    with _dag_operation_lock(did):
+        dag_path = _find_studio_dag_file_by_id(did)
+        if dag_path is None:
+            raise FileNotFoundError(f"DAG bulunamadi: {did}")
+        config_path = _extract_config_path_from_dag_source(dag_path)
+        if not config_path.is_file():
+            raise ValueError("DAG bulundu ancak bagli YAML dosyasi bulunamadi.")
+
+        flow_dir = config_path.resolve().parent
+        history_root = _revision_history_root(flow_dir, did)
+        revision_dir = history_root / rid
+        if not revision_dir.is_dir():
+            raise FileNotFoundError(f"Revision bulunamadi: {rid}")
+
+        rollback_bundle = _read_active_bundle(dag_path, config_path, flow_dir)
+        before_state = _airflow_parse_state(did)
+        target_bundle = _load_bundle_from_revision(revision_dir)
+        try:
+            _apply_bundle_to_active(
+                flow_dir=flow_dir,
+                dag_path=dag_path,
+                config_path=config_path,
+                bundle=target_bundle,
+            )
+            if not _wait_for_parse_refresh(did, before_state):
+                raise TimeoutError("Airflow parse dogrulamasi zaman asimina ugradi.")
+        except Exception as exc:
+            _apply_bundle_to_active(
+                flow_dir=flow_dir,
+                dag_path=dag_path,
+                config_path=config_path,
+                bundle=rollback_bundle,
+            )
+            raise ValueError(
+                "Revision promote basarisiz oldu; onceki aktif surume geri donuldu."
+            ) from exc
+
+        revision_state = get_dag_revisions(did)
+        metadata = _load_studio_metadata(flow_dir) or {}
+        metadata.update(
+            {
+                "flow_dir": flow_dir.as_posix(),
+                "config_path": config_path.as_posix(),
+                "dag_path": dag_path.as_posix(),
+                "dag_id": did,
+                "active_revision_id": revision_state.get("active_revision_id"),
+                "revision_count": revision_state.get("count", 0),
+            }
+        )
+        _write_studio_metadata(flow_dir, metadata)
+        return {
+            "dag_id": did,
+            "dag_path": dag_path.as_posix(),
+            "config_path": config_path.as_posix(),
+            "active_revision_id": revision_state.get("active_revision_id"),
+            "revision_count": revision_state.get("count", 0),
+            "promoted_revision_id": rid,
+        }
+
+
+def delete_dag_bundle(
+    *,
+    dag_id: str,
+    actor: str = "etl_studio",
+) -> dict[str, Any]:
+    _ = str(actor or "").strip() or "etl_studio"
+    did = str(dag_id or "").strip()
+    if not did:
+        raise ValueError("dag_id zorunludur.")
+
+    with _dag_operation_lock(did):
+        dag_path = _find_studio_dag_file_by_id(did)
+        if dag_path is None:
+            raise FileNotFoundError(f"DAG bulunamadi: {did}")
+        dag_path = _ensure_path_under_root(dag_path, _generated_dag_root())
+
+        config_path = _extract_config_path_from_dag_source(dag_path)
+        if not config_path.is_file():
+            raise ValueError("DAG bulundu ancak bagli YAML dosyasi bulunamadi.")
+        config_path = _ensure_path_under_root(config_path, _projects_root())
+
+        flow_dir = config_path.resolve().parent
+        auto_mapping_paths = _collect_existing_auto_mapping_paths(config_path, flow_dir)
+        history_root = _revision_history_root(flow_dir, did)
+        metadata_path = flow_dir / STUDIO_METADATA_NAME
+
+        deleted_paths: list[str] = []
+        warnings: list[str] = []
+
+        try:
+            airflow_cleanup = _cleanup_airflow_dag_metadata(did)
+        except Exception as exc:
+            airflow_cleanup = {
+                "ok": False,
+                "details": {},
+                "warnings": [f"Airflow metadata cleanup exception: {exc}"],
+            }
+        warnings.extend(list(airflow_cleanup.get("warnings") or []))
+
+        for mapping_path in sorted(auto_mapping_paths):
+            if not mapping_path.is_file():
+                continue
+            if _best_effort_unlink(mapping_path, retries=6, wait_seconds=0.05):
+                deleted_paths.append(mapping_path.as_posix())
+            else:
+                warnings.append(f"Mapping dosyasi silinemedi: {mapping_path.as_posix()}")
+
+        if config_path.is_file():
+            if _best_effort_unlink(config_path, retries=6, wait_seconds=0.05):
+                deleted_paths.append(config_path.as_posix())
+            else:
+                warnings.append(f"YAML dosyasi silinemedi: {config_path.as_posix()}")
+
+        if dag_path.is_file():
+            if _best_effort_unlink(dag_path, retries=6, wait_seconds=0.05):
+                deleted_paths.append(dag_path.as_posix())
+            else:
+                warnings.append(f"DAG dosyasi silinemedi: {dag_path.as_posix()}")
+
+        if history_root.exists():
+            if _best_effort_rmtree(history_root):
+                deleted_paths.append(history_root.as_posix())
+            else:
+                warnings.append(f"History dizini silinemedi: {history_root.as_posix()}")
+
+        history_parent = flow_dir / STUDIO_HISTORY_DIR_NAME
+        if history_parent.is_dir() and not any(history_parent.iterdir()):
+            try:
+                history_parent.rmdir()
+                deleted_paths.append(history_parent.as_posix())
+            except OSError:
+                pass
+
+        if metadata_path.is_file():
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except Exception:
+                metadata = {}
+            if str((metadata or {}).get("dag_id") or "").strip() == did:
+                if _best_effort_unlink(metadata_path, retries=6, wait_seconds=0.05):
+                    deleted_paths.append(metadata_path.as_posix())
+                else:
+                    warnings.append(f"Metadata dosyasi silinemedi: {metadata_path.as_posix()}")
+
+        return {
+            "dag_id": did,
+            "deleted_paths": sorted(set(deleted_paths)),
+            "airflow_cleanup": airflow_cleanup,
+            "warnings": warnings,
+        }
 
 
 def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1179,7 +1881,7 @@ def create_or_update_dag(
     *,
     update: bool = False,
     dag_id: str | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     validate_pipeline_payload(payload)
 
     project = _slugify(payload["project"], "default_project")
@@ -1193,224 +1895,274 @@ def create_or_update_dag(
     else:
         tasks_input = [dict(payload)]
 
-    root = _projects_root()
-    flow_dir = root / project / domain / level / flow
-    flow_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_path_under_root(flow_dir, root)
-    (flow_dir / "mapping").mkdir(parents=True, exist_ok=True)
+    lock_ctx = _dag_operation_lock(str(dag_id or "").strip()) if update else nullcontext()
+    with lock_ctx:
+        root = _projects_root()
+        flow_dir = root / project / domain / level / flow
+        flow_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_path_under_root(flow_dir, root)
+        (flow_dir / "mapping").mkdir(parents=True, exist_ok=True)
 
-    gen_root = _generated_dag_root()
-    flow_dag_dir = gen_root / project / domain / level / flow
-    flow_dag_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_path_under_root(flow_dag_dir, gen_root)
+        gen_root = _generated_dag_root()
+        flow_dag_dir = gen_root / project / domain / level / flow
+        flow_dag_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_path_under_root(flow_dag_dir, gen_root)
 
-    dag_path: Path
-    config_path: Path
-    if update:
-        update_dag_id = str(dag_id or "").strip()
-        if not update_dag_id:
-            raise ValueError("update-dag icin dag_id query param zorunludur.")
-        existing_studio_dag = _find_studio_dag_file_by_id(update_dag_id)
-        if existing_studio_dag is None:
-            raise ValueError(
-                f"Guncellenecek DAG bulunamadi: dag_id={update_dag_id}"
+        dag_path: Path
+        config_path: Path
+        if update:
+            update_dag_id = str(dag_id or "").strip()
+            if not update_dag_id:
+                raise ValueError("update-dag icin dag_id query param zorunludur.")
+            existing_studio_dag = _find_studio_dag_file_by_id(update_dag_id)
+            if existing_studio_dag is None:
+                raise ValueError(
+                    f"Guncellenecek DAG bulunamadi: dag_id={update_dag_id}"
+                )
+            dag_path = existing_studio_dag
+            _ensure_path_under_root(dag_path, gen_root)
+            config_path = _extract_config_path_from_dag_source(dag_path)
+            if not config_path.is_file():
+                raise ValueError("Guncellenecek YAML dosyasi bulunamadi.")
+            _ensure_path_under_root(config_path, root)
+
+            config_resolved = config_path.resolve()
+            rel = config_resolved.relative_to(root.resolve())
+            if len(rel.parts) < 5:
+                raise ValueError("DAG'a bagli YAML path hiyerarsisi gecersiz.")
+            cfg_project, cfg_domain, cfg_level, cfg_flow = rel.parts[:4]
+            if (cfg_project, cfg_domain, cfg_level, cfg_flow) != (project, domain, level, flow):
+                raise ValueError(
+                    "dag_id ile payload hiyerarsisi uyusmuyor: "
+                    f"dag=({cfg_project}/{cfg_domain}/{cfg_level}/{cfg_flow}) "
+                    f"payload=({project}/{domain}/{level}/{flow})"
+                )
+
+            group_no = _extract_group_no(dag_path.stem, config_path)
+        else:
+            group_no = _next_group_no(flow_dir, flow_dag_dir)
+            dag_path = flow_dag_dir / _build_dag_filename(domain, level, flow, group_no)
+            _ensure_path_under_root(dag_path, gen_root)
+            config_path = flow_dir / _build_yaml_filename(project, domain, level, flow, group_no)
+
+        existing_auto_mapping_paths = _collect_existing_auto_mapping_paths(config_path, flow_dir)
+        tags = _derive_tags(project, domain, level, flow)
+        actor = str(os.getenv("FFENGINE_STUDIO_ACTOR", "etl_studio")).strip() or "etl_studio"
+
+        task_cfgs: list[dict[str, Any]] = []
+        sql_mapping_checks: list[dict[str, Any]] = []
+        pending_mapping_writes: list[dict[str, Any]] = []
+        for idx, item in enumerate(tasks_input, start=1):
+            source_schema = str(item.get("source_schema") or "").strip()
+            source_table = str(item.get("source_table") or "").strip()
+            target_schema = str(item.get("target_schema") or "").strip()
+            target_table = str(item.get("target_table") or "").strip()
+            source_type = str(item.get("source_type") or "table").strip() or "table"
+            normalized_source_schema = source_schema or ("sql" if source_type == "sql" else "")
+            normalized_source_table = source_table or ("query" if source_type == "sql" else "")
+            load_method = (
+                str(item.get("load_method") or "create_if_not_exists_or_truncate").strip()
+                or "create_if_not_exists_or_truncate"
             )
-        dag_path = existing_studio_dag
-        _ensure_path_under_root(dag_path, gen_root)
-        config_path = _extract_config_path_from_dag_source(dag_path)
-        if not config_path.is_file():
-            raise ValueError("Guncellenecek YAML dosyasi bulunamadi.")
-        _ensure_path_under_root(config_path, root)
-
-        config_resolved = config_path.resolve()
-        rel = config_resolved.relative_to(root.resolve())
-        if len(rel.parts) < 5:
-            raise ValueError("DAG'a bagli YAML path hiyerarsisi gecersiz.")
-        cfg_project, cfg_domain, cfg_level, cfg_flow = rel.parts[:4]
-        if (cfg_project, cfg_domain, cfg_level, cfg_flow) != (project, domain, level, flow):
-            raise ValueError(
-                "dag_id ile payload hiyerarsisi uyusmuyor: "
-                f"dag=({cfg_project}/{cfg_domain}/{cfg_level}/{cfg_flow}) "
-                f"payload=({project}/{domain}/{level}/{flow})"
+            task_group_id = str(item.get("task_group_id") or "").strip() or _auto_task_group_id(
+                source_db=str(payload.get("source_conn_id") or ""),
+                src_schema=normalized_source_schema,
+                src_table=normalized_source_table,
+                target_db=str(payload.get("target_conn_id") or ""),
+                load_method=load_method,
+                tgt_schema=target_schema,
+                tgt_table=target_table,
+                task_index=idx,
             )
-
-        group_no = _extract_group_no(dag_path.stem, config_path)
-    else:
-        group_no = _next_group_no(flow_dir, flow_dag_dir)
-        dag_path = flow_dag_dir / _build_dag_filename(domain, level, flow, group_no)
-        _ensure_path_under_root(dag_path, gen_root)
-
-        config_path = flow_dir / _build_yaml_filename(project, domain, level, flow, group_no)
-
-    existing_auto_mapping_paths = _collect_existing_auto_mapping_paths(config_path, flow_dir)
-
-    tags = _derive_tags(project, domain, level, flow)
-
-    task_cfgs: list[dict[str, Any]] = []
-    sql_mapping_checks: list[dict[str, Any]] = []
-    pending_mapping_writes: list[dict[str, Any]] = []
-    for idx, item in enumerate(tasks_input, start=1):
-        source_schema = str(item.get("source_schema") or "").strip()
-        source_table = str(item.get("source_table") or "").strip()
-        target_schema = str(item.get("target_schema") or "").strip()
-        target_table = str(item.get("target_table") or "").strip()
-        source_type = str(item.get("source_type") or "table").strip() or "table"
-        normalized_source_schema = source_schema or ("sql" if source_type == "sql" else "")
-        normalized_source_table = source_table or ("query" if source_type == "sql" else "")
-        load_method = (
-            str(item.get("load_method") or "create_if_not_exists_or_truncate").strip()
-            or "create_if_not_exists_or_truncate"
-        )
-        task_group_id = str(item.get("task_group_id") or "").strip() or _auto_task_group_id(
-            source_db=str(payload.get("source_conn_id") or ""),
-            src_schema=normalized_source_schema,
-            src_table=normalized_source_table,
-            target_db=str(payload.get("target_conn_id") or ""),
-            load_method=load_method,
-            tgt_schema=target_schema,
-            tgt_table=target_table,
-            task_index=idx,
-        )
-        task_cfg: dict[str, Any] = {
-            "task_group_id": task_group_id,
-            "source_schema": normalized_source_schema,
-            "source_table": normalized_source_table,
-            "source_type": source_type,
-            "inline_sql": str(item.get("inline_sql") or "").strip() or None,
-            "column_mapping_mode": str(item.get("column_mapping_mode") or "source").strip() or "source",
-            "target_schema": target_schema,
-            "target_table": target_table,
-            "load_method": load_method,
-            "where": item.get("where") or None,
-            "batch_size": int(item.get("batch_size", 10000)),
-            "partitioning": {
-                "enabled": bool(item.get("partitioning_enabled", False)),
-                "mode": item.get("partitioning_mode", "auto"),
-                "column": item.get("partitioning_column") or None,
-                "parts": int(item.get("partitioning_parts", 2)),
-                "distinct_limit": int(item.get("partitioning_distinct_limit") or 16),
-                "ranges": item.get("partitioning_ranges") or [],
-            },
-            "tags": tags,
-        }
-        bindings = _normalize_bindings(item.get("bindings"))
-        if bindings:
-            task_cfg["bindings"] = bindings
-        mode = task_cfg["column_mapping_mode"]
-        mapping_content = str(item.get("mapping_content") or "")
-        if source_type == "sql" and mode != "mapping_file":
-            raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
-        if mode == "mapping_file":
-            mapping_rel = _auto_mapping_relative_file(idx, task_group_id)
-            mapping_path = _resolve_mapping_file_path(flow_dir, mapping_rel)
-            task_cfg["mapping_file"] = mapping_rel
-            pending_mapping_writes.append(
-                {
-                    "task_group_id": task_group_id,
-                    "mapping_path": mapping_path,
-                    "mapping_content": mapping_content,
-                }
-            )
-            if source_type == "sql":
-                sql_mapping_checks.append(
+            task_cfg: dict[str, Any] = {
+                "task_group_id": task_group_id,
+                "source_schema": normalized_source_schema,
+                "source_table": normalized_source_table,
+                "source_type": source_type,
+                "inline_sql": str(item.get("inline_sql") or "").strip() or None,
+                "column_mapping_mode": str(item.get("column_mapping_mode") or "source").strip() or "source",
+                "target_schema": target_schema,
+                "target_table": target_table,
+                "load_method": load_method,
+                "where": item.get("where") or None,
+                "batch_size": int(item.get("batch_size", 10000)),
+                "partitioning": {
+                    "enabled": bool(item.get("partitioning_enabled", False)),
+                    "mode": item.get("partitioning_mode", "auto"),
+                    "column": item.get("partitioning_column") or None,
+                    "parts": int(item.get("partitioning_parts", 2)),
+                    "distinct_limit": int(item.get("partitioning_distinct_limit") or 16),
+                    "ranges": item.get("partitioning_ranges") or [],
+                },
+                "tags": tags,
+            }
+            bindings = _normalize_bindings(item.get("bindings"))
+            if bindings:
+                task_cfg["bindings"] = bindings
+            mode = task_cfg["column_mapping_mode"]
+            mapping_content = str(item.get("mapping_content") or "")
+            if source_type == "sql" and mode != "mapping_file":
+                raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
+            if mode == "mapping_file":
+                mapping_rel = _auto_mapping_relative_file(idx, task_group_id)
+                mapping_path = _resolve_mapping_file_path(flow_dir, mapping_rel)
+                task_cfg["mapping_file"] = mapping_rel
+                pending_mapping_writes.append(
                     {
                         "task_group_id": task_group_id,
-                        "inline_sql": task_cfg.get("inline_sql"),
                         "mapping_path": mapping_path,
                         "mapping_content": mapping_content,
                     }
                 )
-        task_cfgs.append(task_cfg)
+                if source_type == "sql":
+                    sql_mapping_checks.append(
+                        {
+                            "task_group_id": task_group_id,
+                            "inline_sql": task_cfg.get("inline_sql"),
+                            "mapping_path": mapping_path,
+                            "mapping_content": mapping_content,
+                        }
+                    )
+            task_cfgs.append(task_cfg)
 
-    resolve_task_dependencies(task_cfgs)
+        resolve_task_dependencies(task_cfgs)
 
-    if sql_mapping_checks:
-        for check in sql_mapping_checks:
-            inline_sql = str(check.get("inline_sql") or "").strip()
-            if not inline_sql:
-                raise ValueError(
-                    f"source_type='sql' icin inline_sql zorunludur. task_group_id={check['task_group_id']}"
+        if sql_mapping_checks:
+            for check in sql_mapping_checks:
+                inline_sql = str(check.get("inline_sql") or "").strip()
+                if not inline_sql:
+                    raise ValueError(
+                        f"source_type='sql' icin inline_sql zorunludur. task_group_id={check['task_group_id']}"
+                    )
+                sql_columns = [
+                    col["name"] for col in extract_sql_select_columns_for_conn(payload["source_conn_id"], inline_sql)
+                ]
+                mapping_content = str(check.get("mapping_content") or "")
+                if mapping_content.strip():
+                    mapping_obj = _parse_yaml_mapping_text(
+                        mapping_content,
+                        label=f"task_group_id={check['task_group_id']}",
+                    )
+                else:
+                    mapping_obj = _read_mapping_object(check["mapping_path"])
+                mapping_columns = _mapping_yaml_to_source_columns(mapping_obj)
+                if sql_columns != mapping_columns:
+                    raise ValueError(
+                        "SQL select kolonlari mapping ile uyumsuz: "
+                        f"task_group_id={check['task_group_id']}; "
+                        f"expected={sql_columns}; actual={mapping_columns}"
+                    )
+
+        history_root = _revision_history_root(flow_dir, dag_path.stem)
+        pre_update_bundle: dict[str, Any] | None = None
+        if update and dag_path.is_file() and config_path.is_file():
+            pre_update_bundle = _read_active_bundle(dag_path, config_path, flow_dir)
+
+        try:
+            for pending in pending_mapping_writes:
+                mapping_content = str(pending.get("mapping_content") or "")
+                if not mapping_content.strip():
+                    continue
+                _parse_yaml_mapping_text(mapping_content, label=pending["mapping_path"].as_posix())
+                normalized_text = mapping_content if mapping_content.endswith("\n") else f"{mapping_content}\n"
+                mapping_path: Path = pending["mapping_path"]
+                mapping_path.parent.mkdir(parents=True, exist_ok=True)
+                if mapping_path.is_file():
+                    existing = mapping_path.read_text(encoding="utf-8")
+                    if _semantic_yaml_equal(existing, normalized_text):
+                        continue
+                mapping_path.write_text(normalized_text, encoding="utf-8")
+
+            new_auto_mapping_paths: set[Path] = set()
+            for task_cfg in task_cfgs:
+                rel = str(task_cfg.get("mapping_file") or "").strip()
+                if not _is_auto_mapping_relative_file(rel):
+                    continue
+                new_auto_mapping_paths.add(_resolve_mapping_file_path(flow_dir, rel))
+            stale_auto_paths = existing_auto_mapping_paths - new_auto_mapping_paths
+            for stale_path in sorted(stale_auto_paths):
+                if stale_path.is_file():
+                    _best_effort_unlink(stale_path)
+
+            config_obj = {
+                "source_db_var": payload["source_conn_id"],
+                "target_db_var": payload["target_conn_id"],
+                "etl_tasks": task_cfgs,
+            }
+            config_path.write_text(
+                yaml.safe_dump(config_obj, sort_keys=False, allow_unicode=False),
+                encoding="utf-8",
+            )
+
+            dag_source = _render_group_dag_source(
+                dag_id=dag_path.stem,
+                config_path=config_path,
+                tags=tags,
+            )
+            dag_path.write_text(dag_source, encoding="utf-8")
+        except Exception:
+            if update and pre_update_bundle is not None:
+                _apply_bundle_to_active(
+                    flow_dir=flow_dir,
+                    dag_path=dag_path,
+                    config_path=config_path,
+                    bundle=pre_update_bundle,
                 )
-            sql_columns = [
-                col["name"] for col in extract_sql_select_columns_for_conn(payload["source_conn_id"], inline_sql)
-            ]
-            mapping_content = str(check.get("mapping_content") or "")
-            if mapping_content.strip():
-                mapping_obj = _parse_yaml_mapping_text(
-                    mapping_content,
-                    label=f"task_group_id={check['task_group_id']}",
+            raise
+
+        if update and pre_update_bundle is not None:
+            current_bundle = _read_active_bundle(dag_path, config_path, flow_dir)
+            previous_hash = str((pre_update_bundle.get("hashes") or {}).get("bundle") or "")
+            current_hash = str((current_bundle.get("hashes") or {}).get("bundle") or "")
+            if previous_hash and current_hash and previous_hash != current_hash:
+                _save_bundle_as_revision(
+                    flow_dir=flow_dir,
+                    dag_id=dag_path.stem,
+                    dag_path=dag_path,
+                    config_path=config_path,
+                    source=REVISION_SOURCE_UPDATE,
+                    actor=actor,
                 )
-            else:
-                mapping_obj = _read_mapping_object(check["mapping_path"])
-            mapping_columns = _mapping_yaml_to_source_columns(mapping_obj)
-            if sql_columns != mapping_columns:
-                raise ValueError(
-                    "SQL select kolonlari mapping ile uyumsuz: "
-                    f"task_group_id={check['task_group_id']}; "
-                    f"expected={sql_columns}; actual={mapping_columns}"
-                )
+        elif not update:
+            _save_bundle_as_revision(
+                flow_dir=flow_dir,
+                dag_id=dag_path.stem,
+                dag_path=dag_path,
+                config_path=config_path,
+                source=REVISION_SOURCE_CREATE_INITIAL,
+                actor=actor,
+            )
 
-    for pending in pending_mapping_writes:
-        mapping_content = str(pending.get("mapping_content") or "")
-        if not mapping_content.strip():
-            continue
-        _parse_yaml_mapping_text(mapping_content, label=pending["mapping_path"].as_posix())
-        normalized_text = mapping_content if mapping_content.endswith("\n") else f"{mapping_content}\n"
-        mapping_path: Path = pending["mapping_path"]
-        mapping_path.parent.mkdir(parents=True, exist_ok=True)
-        if mapping_path.is_file():
-            existing = mapping_path.read_text(encoding="utf-8")
-            if _semantic_yaml_equal(existing, normalized_text):
-                continue
-        mapping_path.write_text(normalized_text, encoding="utf-8")
+        revision_items = _list_revision_items(history_root, limit=_history_keep_limit())
+        active_revision_id = _resolve_active_revision_id(
+            history_root=history_root,
+            dag_path=dag_path,
+            config_path=config_path,
+            flow_dir=flow_dir,
+        )
 
-    new_auto_mapping_paths: set[Path] = set()
-    for task_cfg in task_cfgs:
-        rel = str(task_cfg.get("mapping_file") or "").strip()
-        if not _is_auto_mapping_relative_file(rel):
-            continue
-        new_auto_mapping_paths.add(_resolve_mapping_file_path(flow_dir, rel))
-    stale_auto_paths = existing_auto_mapping_paths - new_auto_mapping_paths
-    for stale_path in sorted(stale_auto_paths):
-        if stale_path.is_file():
-            _best_effort_unlink(stale_path)
+        metadata = {
+            "flow_dir": flow_dir.as_posix(),
+            "config_path": config_path.as_posix(),
+            "dag_path": dag_path.as_posix(),
+            "dag_id": dag_path.stem,
+            "task_group_id": task_cfgs[0]["task_group_id"],
+            "task_count": len(task_cfgs),
+            "group_no": group_no,
+            "tags": tags,
+            "auto_tags": tags,
+            "user_tags": [],
+            "active_revision_id": active_revision_id,
+            "revision_count": len(revision_items),
+        }
+        _write_studio_metadata(flow_dir, metadata)
 
-    config_obj = {
-        "source_db_var": payload["source_conn_id"],
-        "target_db_var": payload["target_conn_id"],
-        "etl_tasks": task_cfgs,
-    }
-    config_path.write_text(
-        yaml.safe_dump(config_obj, sort_keys=False, allow_unicode=False),
-        encoding="utf-8",
-    )
-
-    dag_source = _render_group_dag_source(
-        dag_id=dag_path.stem,
-        config_path=config_path,
-        tags=tags,
-    )
-    dag_path.write_text(dag_source, encoding="utf-8")
-
-    metadata = {
-        "flow_dir": flow_dir.as_posix(),
-        "config_path": config_path.as_posix(),
-        "dag_path": dag_path.as_posix(),
-        "task_group_id": task_cfgs[0]["task_group_id"],
-        "task_count": len(task_cfgs),
-        "group_no": group_no,
-        "tags": tags,
-        "auto_tags": tags,
-        "user_tags": [],
-    }
-    (flow_dir / STUDIO_METADATA_NAME).write_text(
-        json.dumps(metadata, indent=2),
-        encoding="utf-8",
-    )
-
-    return {
-        "flow_dir": metadata["flow_dir"],
-        "config_path": metadata["config_path"],
-        "dag_path": metadata["dag_path"],
-        "task_group_id": task_cfgs[0]["task_group_id"],
-    }
+        return {
+            "flow_dir": metadata["flow_dir"],
+            "config_path": metadata["config_path"],
+            "dag_path": metadata["dag_path"],
+            "dag_id": metadata["dag_id"],
+            "task_group_id": task_cfgs[0]["task_group_id"],
+            "active_revision_id": active_revision_id,
+            "revision_count": len(revision_items),
+        }
