@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -344,7 +344,8 @@ def _load_index_html() -> str:
 
 
 @etl_studio_app.get("/", response_class=HTMLResponse)
-def studio_index() -> str:
+def studio_index(response: Response) -> str:
+    response.headers["Cache-Control"] = "no-store"
     return _load_index_html()
 
 
@@ -467,10 +468,15 @@ def api_create_dag(
 @etl_studio_app.post("/api/update-dag")
 def api_update_dag(
     payload: DagUpsertPayload,
+    dag_id: str = Query(..., min_length=1, description="Guncellenecek DAG id"),
     _: None = Depends(_optional_api_key_dep),
 ) -> dict[str, Any]:
     try:
-        result = create_or_update_dag(_payload_to_service_dict(payload), update=True)
+        result = create_or_update_dag(
+            _payload_to_service_dict(payload),
+            update=True,
+            dag_id=dag_id,
+        )
         return {"ok": True, **result}
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

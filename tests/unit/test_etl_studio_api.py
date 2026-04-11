@@ -649,13 +649,23 @@ def test_create_dag_same_flow_creates_group_based_dags_and_yamls(client, studio_
     assert Path(body2["dag_path"]).name == "whk_to_stg_level1_group_2_dag.py"
 
 
+def test_update_dag_requires_dag_id_query(client, studio_paths):
+    payload = _minimal_table_payload()
+    r0 = client.post("/api/create-dag", json=payload)
+    assert r0.status_code == 201
+    r = client.post("/api/update-dag", json=payload)
+    assert r.status_code == 422
+    assert "dag_id" in r.text
+
+
 def test_update_dag_requires_studio_marker(client, studio_paths):
     payload = _minimal_table_payload()
     r0 = client.post("/api/create-dag", json=payload)
     assert r0.status_code == 201
     dag_path = Path(r0.json()["dag_path"])
+    dag_id = dag_path.stem
     dag_path.write_text("# manual dag\n", encoding="utf-8")
-    r = client.post("/api/update-dag", json=payload)
+    r = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r.status_code == 422
     assert "ETL Studio" in r.json()["detail"]
 
@@ -665,42 +675,64 @@ def test_update_dag_ok(client, studio_paths):
     r1 = client.post("/api/create-dag", json=payload)
     assert r1.status_code == 201
     dag_path = r1.json()["dag_path"]
+    dag_id = Path(dag_path).stem
     cfg_path = r1.json()["config_path"]
     payload["load_method"] = "replace"
-    r2 = client.post("/api/update-dag", json=payload)
+    r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 200
     assert r2.json()["dag_path"] == dag_path
     assert r2.json()["config_path"] == cfg_path
+
+
+def test_update_dag_targets_selected_dag_when_same_flow_has_multiple_groups(client, studio_paths):
+    p1 = _minimal_table_payload()
+    p2 = _minimal_table_payload()
+    p2["source_table"] = "customers"
+    p2["target_table"] = "customers_stg"
+
+    r1 = client.post("/api/create-dag", json=p1)
+    r2 = client.post("/api/create-dag", json=p2)
+    assert r1.status_code == 201, r1.text
+    assert r2.status_code == 201, r2.text
+
+    dag1 = Path(r1.json()["dag_path"]).stem
+    dag2 = Path(r2.json()["dag_path"]).stem
+    assert dag1 != dag2
+
+    p1["load_method"] = "replace"
+    r_upd = client.post(f"/api/update-dag?dag_id={dag1}", json=p1)
+    assert r_upd.status_code == 200, r_upd.text
+
+    cfg1 = Path(r1.json()["config_path"])
+    cfg2 = Path(r2.json()["config_path"])
+    c1 = yaml.safe_load(cfg1.read_text(encoding="utf-8"))
+    c2 = yaml.safe_load(cfg2.read_text(encoding="utf-8"))
+    assert c1["etl_tasks"][0]["load_method"] == "replace"
+    assert c2["etl_tasks"][0]["load_method"] == "append"
+
+
+def test_update_dag_rejects_dag_id_payload_flow_mismatch(client, studio_paths):
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
+
+    payload["flow"] = "src_to_dwh"
+    r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
+    assert r2.status_code == 422
+    assert "hiyerarsisi uyusmuyor" in r2.text
 
 
 def test_update_dag_rejects_full_scan_partitioning_mode(client, studio_paths):
     payload = _minimal_table_payload()
     r1 = client.post("/api/create-dag", json=payload)
     assert r1.status_code == 201
+    dag_id = Path(r1.json()["dag_path"]).stem
     payload["partitioning_enabled"] = True
     payload["partitioning_mode"] = "full_scan"
-    r2 = client.post("/api/update-dag", json=payload)
+    r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 422
     assert "partitioning.mode gecersiz" in r2.text
-
-
-def test_create_dag_migrates_legacy_generated_dag(client, studio_paths):
-    proj, gen = studio_paths
-    legacy_dir = gen / "generated"
-    legacy_dir.mkdir(parents=True, exist_ok=True)
-    legacy_dag = legacy_dir / "webhook_whk_level1_src_to_stg.py"
-    legacy_dag.write_text(
-        f"{ss.STUDIO_DAG_MARKER}\nprint('legacy')\n",
-        encoding="utf-8",
-    )
-
-    payload = _minimal_table_payload()
-    r = client.post("/api/create-dag", json=payload)
-    assert r.status_code == 201, r.text
-    dag_path = Path(r.json()["dag_path"])
-    assert dag_path.as_posix().endswith("/dags/webhook/whk/level1/src_to_stg/whk_to_stg_level1_group_1_dag.py")
-    assert dag_path.is_file()
-    assert ss.STUDIO_DAG_MARKER in dag_path.read_text(encoding="utf-8")
 
 
 def test_resolve_task_dependencies_depends_on_and_default_order():
@@ -732,8 +764,8 @@ def test_resolve_task_dependencies_cycle_error():
         ss.resolve_task_dependencies(tasks)
 
 
-def test_create_dag_rejects_legacy_payload_shape(client, studio_paths):
-    legacy_payload = {
+def test_create_dag_rejects_invalid_payload_shape(client, studio_paths):
+    invalid_payload = {
         "project_folder": "webhook",
         "source_conn_id": "src_c",
         "target_conn_id": "tgt_c",
@@ -744,7 +776,7 @@ def test_create_dag_rejects_legacy_payload_shape(client, studio_paths):
         "source_type": "table",
         "load_method": "append",
     }
-    r = client.post("/api/create-dag", json=legacy_payload)
+    r = client.post("/api/create-dag", json=invalid_payload)
     assert r.status_code == 422
 
 
@@ -767,38 +799,19 @@ def test_timeline_mocked(client):
 def test_dag_config_mocked_success(client):
     mocked = {
         "dag_id": "whk_to_stg_level1_group_1_dag",
-        "supported_for_update": True,
-        "reason": None,
-        "migration_hint": None,
-        "migration_url": None,
         "payload": {"project": "webhook"},
+        "dag_path": "/opt/airflow/dags/webhook/whk/level1/src_to_stg/whk_to_stg_level1_group_1_dag.py",
+        "config_path": "/opt/airflow/projects/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_1.yaml",
     }
     with patch.object(api_app_module, "resolve_dag_config_for_update", return_value=mocked):
         r = client.get("/api/dag-config?dag_id=whk_to_stg_level1_group_1_dag")
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
-    assert body["supported_for_update"] is True
+    assert body["dag_id"] == mocked["dag_id"]
+    assert body["dag_path"] == mocked["dag_path"]
+    assert body["config_path"] == mocked["config_path"]
     assert body["payload"]["project"] == "webhook"
-
-
-def test_dag_config_mocked_legacy_guard(client):
-    mocked = {
-        "dag_id": "ffengine_config_group_12_public_ff_test_data_to_dbo_ff_test_data_psql_v12",
-        "supported_for_update": False,
-        "reason": "legacy_dag_id_not_supported",
-        "migration_hint": "legacy",
-        "migration_url": "/etl-studio/",
-    }
-    with patch.object(api_app_module, "resolve_dag_config_for_update", return_value=mocked):
-        r = client.get(
-            "/api/dag-config?dag_id=ffengine_config_group_12_public_ff_test_data_to_dbo_ff_test_data_psql_v12"
-        )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is True
-    assert body["supported_for_update"] is False
-    assert body["reason"] == "legacy_dag_id_not_supported"
 
 
 def test_dag_config_not_found_returns_404(client):
@@ -819,7 +832,6 @@ def test_resolve_dag_config_for_update_roundtrip(client, studio_paths):
     dag_id = Path(r.json()["dag_path"]).stem
 
     resolved = ss.resolve_dag_config_for_update(dag_id)
-    assert resolved["supported_for_update"] is True
     assert resolved["payload"]["project"] == "webhook"
     assert resolved["payload"]["domain"] == "whk"
     assert resolved["payload"]["level"] == "level1"
@@ -853,7 +865,6 @@ def test_resolve_dag_config_for_update_roundtrip_sql_inline_sql(client, studio_p
     dag_id = Path(r.json()["dag_path"]).stem
 
     resolved = ss.resolve_dag_config_for_update(dag_id)
-    assert resolved["supported_for_update"] is True
     task = resolved["payload"]["etl_tasks"][0]
     assert task["source_type"] == "sql"
     assert task["inline_sql"] == "SELECT 1 AS id"
@@ -874,6 +885,7 @@ def test_update_dag_sql_mapping_semantic_same_does_not_touch_file(client, studio
     with patch.object(ss, "extract_sql_select_columns_for_conn", return_value=[{"name": "id", "source_type": "INTEGER"}]):
         r1 = client.post("/api/create-dag", json=payload)
     assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
     flow = Path(r1.json()["flow_dir"])
     mapping_path = flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
     before = mapping_path.stat().st_mtime_ns
@@ -892,7 +904,7 @@ def test_update_dag_sql_mapping_semantic_same_does_not_touch_file(client, studio
         """
     )
     with patch.object(ss, "extract_sql_select_columns_for_conn", return_value=[{"name": "id", "source_type": "INTEGER"}]):
-        r2 = client.post("/api/update-dag", json=payload)
+        r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 200, r2.text
     after = mapping_path.stat().st_mtime_ns
     assert after == before
@@ -913,13 +925,14 @@ def test_update_dag_sql_mapping_task_group_change_moves_active_path_to_new_file(
     with patch.object(ss, "extract_sql_select_columns_for_conn", return_value=[{"name": "id", "source_type": "INTEGER"}]):
         r1 = client.post("/api/create-dag", json=payload)
     assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
     flow = Path(r1.json()["flow_dir"])
     old_path = flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
     assert old_path.is_file()
 
     payload["task_group_id"] = "custom_sql_orders_task"
     with patch.object(ss, "extract_sql_select_columns_for_conn", return_value=[{"name": "id", "source_type": "INTEGER"}]):
-        r2 = client.post("/api/update-dag", json=payload)
+        r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 200, r2.text
     new_path = flow / "mapping" / "1_custom_sql_orders_task.yaml"
     assert new_path.is_file()
@@ -952,14 +965,13 @@ def test_resolve_dag_config_for_update_roundtrip_bindings(client, studio_paths):
     assert task["bindings"][0]["default_value"] == "100"
 
 
-def test_resolve_dag_config_for_update_legacy_guard():
+def test_resolve_dag_config_for_update_not_found_raises_file_not_found():
     dag_id = "ffengine_config_group_12_public_ff_test_data_to_dbo_ff_test_data_psql_v12"
-    resolved = ss.resolve_dag_config_for_update(dag_id)
-    assert resolved["supported_for_update"] is False
-    assert resolved["reason"] == "legacy_dag_id_not_supported"
+    with pytest.raises(FileNotFoundError, match="DAG bulunamadi"):
+        ss.resolve_dag_config_for_update(dag_id)
 
 
-def test_resolve_dag_config_for_update_legacy_id_allowed_when_studio_dag_exists(studio_paths):
+def test_resolve_dag_config_for_update_with_nonstandard_dag_id_when_studio_dag_exists(studio_paths):
     proj_root, dag_root = studio_paths
     dag_id = "ffengine_config_group_12_public_ff_test_data_to_dbo_ff_test_data_psql_v12"
 
@@ -1013,7 +1025,6 @@ def test_resolve_dag_config_for_update_legacy_id_allowed_when_studio_dag_exists(
     )
 
     resolved = ss.resolve_dag_config_for_update(dag_id)
-    assert resolved["supported_for_update"] is True
     assert resolved["payload"]["project"] == "test"
     assert resolved["payload"]["domain"] == "public"
     assert resolved["payload"]["level"] == "level1"

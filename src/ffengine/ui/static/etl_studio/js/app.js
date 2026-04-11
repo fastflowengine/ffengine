@@ -389,6 +389,7 @@ async function studioFetch(path, options) {
 
     const out = document.getElementById("out");
     const show = (value) => { out.textContent = JSON.stringify(value, null, 2); };
+    let currentUpdateDagId = "";
 
     function el(id) { return document.getElementById(id); }
     function setUpdateModeStatus(message, variant) {
@@ -397,21 +398,6 @@ async function studioFetch(path, options) {
       if (variant === "ok") box.classList.add("ok");
       if (variant === "warn") box.classList.add("warn");
       box.textContent = message;
-    }
-
-    function setLegacyGuard(data) {
-      const hint = (data && data.migration_hint) || "Legacy DAG update mode desteklenmiyor.";
-      const url = (data && data.migration_url) || "/etl-studio/";
-      const box = el("legacy_guard");
-      box.classList.remove("hidden");
-      box.innerHTML = `${hint} <a href="${url}">Migration rehberi</a>`;
-      setUpdateModeStatus("Legacy DAG icin update kilitlendi.", "warn");
-    }
-
-    function clearLegacyGuard() {
-      const box = el("legacy_guard");
-      box.classList.add("hidden");
-      box.textContent = "";
     }
 
     function setUpdateMode(active) {
@@ -423,6 +409,7 @@ async function studioFetch(path, options) {
       } else {
         top.classList.add("hidden");
         bottomCreate.classList.remove("hidden");
+        currentUpdateDagId = "";
       }
     }
 
@@ -1038,25 +1025,6 @@ async function studioFetch(path, options) {
       updateBindingsVisibility(card);
     }
 
-    const LEGACY_PARTITION_MODE = "full_scan";
-
-    function syncLegacyPartitionModeOption(modeSelect, rawMode) {
-      if (!modeSelect) return;
-      const mode = String(rawMode || "").trim();
-      const legacyOptions = modeSelect.querySelectorAll('option[data-legacy-partition-mode="true"]');
-      for (const opt of legacyOptions) {
-        opt.remove();
-      }
-      if (mode !== LEGACY_PARTITION_MODE) return;
-
-      const opt = document.createElement("option");
-      opt.value = LEGACY_PARTITION_MODE;
-      opt.textContent = "full_scan (legacy, deprecated)";
-      opt.disabled = true;
-      opt.setAttribute("data-legacy-partition-mode", "true");
-      modeSelect.insertBefore(opt, modeSelect.firstChild);
-    }
-
     function setTaskCardValues(card, values, fallbackIndex = 1) {
       const sourceType = values.source_type || "table";
       const partitioningMode = values.partitioning_mode || "auto";
@@ -1080,7 +1048,6 @@ async function studioFetch(path, options) {
       card.querySelector(".batch-size").value = String(values.batch_size || 10000);
       card.querySelector(".partitioning-enabled").checked = !!values.partitioning_enabled;
       const partitioningModeSelect = card.querySelector(".partitioning-mode");
-      syncLegacyPartitionModeOption(partitioningModeSelect, partitioningMode);
       partitioningModeSelect.value = partitioningMode;
       if (partitioningModeSelect.value !== partitioningMode) {
         partitioningModeSelect.value = "auto";
@@ -1288,7 +1255,6 @@ async function studioFetch(path, options) {
 
       const enabled = !!enabledInput.checked;
       const mode = String(modeSelect.value || "auto").trim() || "auto";
-      const isLegacyMode = mode === LEGACY_PARTITION_MODE;
       const isExplicit = mode === "explicit";
       const isDistinct = mode === "distinct";
       const isHashMod = mode === "hash_mod";
@@ -1304,7 +1270,7 @@ async function studioFetch(path, options) {
       };
 
       const showMode = enabled;
-      const showColumn = enabled && !isExplicit && !isLegacyMode;
+      const showColumn = enabled && !isExplicit;
       const showParts = enabled && (isDistinct || isHashMod);
       const showDistinctLimit = enabled && isDistinct;
       const showExplicit = enabled && isExplicit;
@@ -1329,7 +1295,6 @@ async function studioFetch(path, options) {
       const modeSelect = card.querySelector(".partitioning-mode");
       enabledInput.addEventListener("change", () => syncPartitionState(card));
       modeSelect.addEventListener("change", () => {
-        syncLegacyPartitionModeOption(modeSelect, modeSelect.value);
         syncPartitionState(card);
       });
       syncPartitionState(card);
@@ -1471,6 +1436,7 @@ async function studioFetch(path, options) {
     async function preloadByDagId(rawDagId) {
       const dagId = (rawDagId || "").trim();
       if (!dagId) {
+        currentUpdateDagId = "";
         setUpdateModeStatus("Preload icin dag_id girin.", "warn");
         setUpdateMode(false);
         return;
@@ -1479,17 +1445,12 @@ async function studioFetch(path, options) {
       const data = await r.json();
       show({ status_code: r.status, ...data });
       if (!r.ok || !data.ok) {
-        clearLegacyGuard();
+        currentUpdateDagId = "";
         setUpdateModeStatus(`DAG preload basarisiz: ${data.detail || r.status}`, "warn");
         setUpdateMode(false);
         return;
       }
-      if (!data.supported_for_update) {
-        setLegacyGuard(data);
-        setUpdateMode(false);
-        return;
-      }
-      clearLegacyGuard();
+      currentUpdateDagId = dagId;
       applyPreloadPayload(data.payload || {}, dagId);
       await loadFolderOptions();
       setUpdateModeStatus(`Update mode loaded: ${dagId}`, "ok");
@@ -1528,6 +1489,58 @@ async function studioFetch(path, options) {
       const data = await r.json();
       show({ status_code: r.status, ...data });
       return data;
+    }
+
+    async function submitUpdate() {
+      const dagId = (currentUpdateDagId || "").trim();
+      if (!dagId) {
+        show({ status_code: 422, detail: "Update mode icin dag_id gerekli. Once DAG preload edin." });
+        setUpdateModeStatus("Update mode icin dag_id gerekli. Once DAG preload edin.", "warn");
+        return;
+      }
+      await postJson(
+        studioUrl(`/api/update-dag?dag_id=${encodeURIComponent(dagId)}`),
+        collectPayload()
+      );
+    }
+
+    function dagIdFromDagPath(rawDagPath) {
+      const dagPath = String(rawDagPath || "").trim();
+      if (!dagPath) return "";
+      const parts = dagPath.split("/");
+      const fileName = String(parts[parts.length - 1] || "").trim();
+      return fileName.endsWith(".py") ? fileName.slice(0, -3) : fileName;
+    }
+
+    async function submitCreate() {
+      const data = await postJson(studioUrl("/api/create-dag"), collectPayload());
+      if (!data || !data.ok) {
+        return;
+      }
+      const dagId = dagIdFromDagPath(data.dag_path);
+      if (!dagId) {
+        setUpdateModeStatus("Create basarili, fakat dag_id cozumlenemedi. Update mode acilmadi.", "warn");
+        return;
+      }
+      currentUpdateDagId = dagId;
+      setUpdateMode(true);
+      setUpdateModeStatus(`Create tamamlandi, update mode aktif: ${dagId}`, "ok");
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set("dag_id", dagId);
+        window.history.replaceState({}, "", url.toString());
+      } catch (_err) {
+        // no-op
+      }
+    }
+
+    async function submitSave() {
+      const dagId = (currentUpdateDagId || "").trim();
+      if (dagId) {
+        await submitUpdate();
+        return;
+      }
+      await submitCreate();
     }
 
     function collectTaskPayload(card, index) {
@@ -1628,12 +1641,12 @@ async function studioFetch(path, options) {
     }
 
     for (const btn of document.querySelectorAll(".btn-create-dag")) {
-      btn.onclick = () => postJson(studioUrl("/api/create-dag"), collectPayload());
+      btn.onclick = () => submitSave();
     }
     el("btn_expand_all_tasks").onclick = () => setAllTaskCardsCollapsed(false);
     el("btn_collapse_all_tasks").onclick = () => setAllTaskCardsCollapsed(true);
     el("btn_add_task").onclick = () => addTaskCard({});
-    el("btn_update_top").onclick = () => postJson(studioUrl("/api/update-dag"), collectPayload());
+    el("btn_update_top").onclick = () => submitUpdate();
 
     el("btn_open_folder_picker").onclick = openFolderPicker;
     el("btn_close_folder_picker").onclick = closeFolderPicker;

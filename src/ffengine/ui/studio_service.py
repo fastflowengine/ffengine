@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import stat
 import time
 from pathlib import Path
@@ -27,7 +26,6 @@ from ffengine.mapping.resolver import VALID_MAPPING_VERSIONS, _dialect_name
 
 STUDIO_METADATA_NAME = ".etl_studio.json"
 STUDIO_DAG_MARKER = "# generated_by: etl_studio"
-LEGACY_DAG_ID_PREFIXES = ("ffengine_config_", "ffengine_")
 
 
 def _slugify(value: str, default: str) -> str:
@@ -138,68 +136,13 @@ def _next_group_no(flow_dir: Path, flow_dag_dir: Path) -> int:
     return (max(groups) + 1) if groups else 1
 
 
-def _find_existing_studio_dag(flow_dag_dir: Path) -> Path | None:
-    if not flow_dag_dir.is_dir():
-        return None
-    matches = []
-    for item in sorted(flow_dag_dir.glob("*_dag.py")):
-        try:
-            if STUDIO_DAG_MARKER in item.read_text(encoding="utf-8"):
-                matches.append(item)
-        except OSError:
-            continue
-    if len(matches) > 1:
-        raise ValueError(
-            "Ayni flow klasorunde birden fazla ETL Studio DAG dosyasi bulundu."
-        )
-    return matches[0] if matches else None
-
-
 def _projects_root() -> Path:
     root = os.getenv("FFENGINE_STUDIO_PROJECTS_ROOT", "/opt/airflow/projects")
     return Path(root)
 
 
 def _generated_dag_root() -> Path:
-    root = Path(os.getenv("FFENGINE_STUDIO_DAG_ROOT", "/opt/airflow/dags"))
-    # Legacy değer "/.../dags/generated" geldiyse mirror model için "/.../dags" kullan.
-    if root.name == "generated":
-        return root.parent
-    return root
-
-
-def _legacy_generated_dir(gen_root: Path) -> Path:
-    return gen_root / "generated"
-
-
-def _legacy_dag_filename(project: str, domain: str, level: str, flow: str) -> str:
-    return f"{project}_{domain}_{level}_{flow}.py"
-
-
-def _legacy_yaml_candidates(flow_dir: Path, group_no: int) -> list[Path]:
-    return [
-        flow_dir / f"config_group_{int(group_no)}.yaml",
-        flow_dir / "config.yaml",
-    ]
-
-
-def _find_legacy_studio_dag(
-    gen_root: Path,
-    project: str,
-    domain: str,
-    level: str,
-    flow: str,
-) -> Path | None:
-    legacy_dir = _legacy_generated_dir(gen_root)
-    legacy_path = legacy_dir / _legacy_dag_filename(project, domain, level, flow)
-    if not legacy_path.is_file():
-        return None
-    try:
-        if STUDIO_DAG_MARKER in legacy_path.read_text(encoding="utf-8"):
-            return legacy_path
-    except OSError:
-        return None
-    return None
+    return Path(os.getenv("FFENGINE_STUDIO_DAG_ROOT", "/opt/airflow/dags"))
 
 
 def resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str, str]]:
@@ -649,11 +592,6 @@ def _load_studio_metadata(flow_dir: Path) -> dict[str, Any] | None:
         return None
 
 
-def _is_legacy_dag_id(dag_id: str) -> bool:
-    did = (dag_id or "").strip().lower()
-    return any(did.startswith(prefix) for prefix in LEGACY_DAG_ID_PREFIXES)
-
-
 def _extract_group_no(dag_id: str, config_path: Path) -> int:
     match = re.search(r"_group_(\d+)_dag$", dag_id)
     if match:
@@ -704,34 +642,9 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
 
     dag_path = _find_studio_dag_file_by_id(did)
     if dag_path is None:
-        if _is_legacy_dag_id(did):
-            return {
-                "dag_id": did,
-                "supported_for_update": False,
-                "reason": "legacy_dag_id_not_supported",
-                "migration_hint": (
-                    "Bu DAG legacy formatta. ETL Studio'da yeni naming ile "
-                    "'Create DAG + YAML' calistirip yeni DAG uzerinden update edin."
-                ),
-                "migration_url": "/etl-studio/",
-            }
         raise FileNotFoundError(f"DAG bulunamadi: {did}")
 
-    try:
-        config_path = _extract_config_path_from_dag_source(dag_path)
-    except ValueError:
-        if _is_legacy_dag_id(did):
-            return {
-                "dag_id": did,
-                "supported_for_update": False,
-                "reason": "legacy_dag_id_not_supported",
-                "migration_hint": (
-                    "Bu DAG legacy formatta. ETL Studio'da yeni naming ile "
-                    "'Create DAG + YAML' calistirip yeni DAG uzerinden update edin."
-                ),
-                "migration_url": "/etl-studio/",
-            }
-        raise
+    config_path = _extract_config_path_from_dag_source(dag_path)
     if not config_path.is_file():
         raise ValueError("DAG bulundu ancak bagli YAML dosyasi bulunamadi.")
 
@@ -823,10 +736,6 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
 
     return {
         "dag_id": did,
-        "supported_for_update": True,
-        "reason": None,
-        "migration_hint": None,
-        "migration_url": None,
         "payload": payload,
         "dag_path": dag_path.as_posix(),
         "config_path": config_path.as_posix(),
@@ -1265,7 +1174,12 @@ def generate_mapping_preview(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> dict[str, str]:
+def create_or_update_dag(
+    payload: dict[str, Any],
+    *,
+    update: bool = False,
+    dag_id: str | None = None,
+) -> dict[str, str]:
     validate_pipeline_payload(payload)
 
     project = _slugify(payload["project"], "default_project")
@@ -1290,53 +1204,44 @@ def create_or_update_dag(payload: dict[str, Any], *, update: bool = False) -> di
     flow_dag_dir.mkdir(parents=True, exist_ok=True)
     _ensure_path_under_root(flow_dag_dir, gen_root)
 
-    existing_studio_dag = _find_existing_studio_dag(flow_dag_dir)
+    dag_path: Path
+    config_path: Path
     if update:
+        update_dag_id = str(dag_id or "").strip()
+        if not update_dag_id:
+            raise ValueError("update-dag icin dag_id query param zorunludur.")
+        existing_studio_dag = _find_studio_dag_file_by_id(update_dag_id)
         if existing_studio_dag is None:
             raise ValueError(
-                "Guncellenecek DAG bulunamadi veya ETL Studio tarafindan uretilmemis."
+                f"Guncellenecek DAG bulunamadi: dag_id={update_dag_id}"
             )
         dag_path = existing_studio_dag
-        group_no = _extract_group_no_from_name(dag_path.stem)
-        if group_no is None:
-            raise ValueError("Mevcut DAG dosyasindan group_no cozumlenemedi.")
+        _ensure_path_under_root(dag_path, gen_root)
+        config_path = _extract_config_path_from_dag_source(dag_path)
+        if not config_path.is_file():
+            raise ValueError("Guncellenecek YAML dosyasi bulunamadi.")
+        _ensure_path_under_root(config_path, root)
+
+        config_resolved = config_path.resolve()
+        rel = config_resolved.relative_to(root.resolve())
+        if len(rel.parts) < 5:
+            raise ValueError("DAG'a bagli YAML path hiyerarsisi gecersiz.")
+        cfg_project, cfg_domain, cfg_level, cfg_flow = rel.parts[:4]
+        if (cfg_project, cfg_domain, cfg_level, cfg_flow) != (project, domain, level, flow):
+            raise ValueError(
+                "dag_id ile payload hiyerarsisi uyusmuyor: "
+                f"dag=({cfg_project}/{cfg_domain}/{cfg_level}/{cfg_flow}) "
+                f"payload=({project}/{domain}/{level}/{flow})"
+            )
+
+        group_no = _extract_group_no(dag_path.stem, config_path)
     else:
         group_no = _next_group_no(flow_dir, flow_dag_dir)
         dag_path = flow_dag_dir / _build_dag_filename(domain, level, flow, group_no)
-    _ensure_path_under_root(dag_path, gen_root)
+        _ensure_path_under_root(dag_path, gen_root)
 
-    config_path = flow_dir / _build_yaml_filename(project, domain, level, flow, group_no)
-    for legacy_yaml in _legacy_yaml_candidates(flow_dir, group_no):
-        if legacy_yaml.is_file() and not config_path.exists():
-            shutil.copy2(legacy_yaml, config_path)
-            try:
-                legacy_yaml.unlink()
-            except OSError:
-                pass
+        config_path = flow_dir / _build_yaml_filename(project, domain, level, flow, group_no)
 
-    legacy_dag = _find_legacy_studio_dag(
-        gen_root=gen_root,
-        project=project,
-        domain=domain,
-        level=level,
-        flow=flow,
-    )
-    if legacy_dag is not None:
-        try:
-            legacy_dag.unlink()
-        except OSError:
-            pass
-    old_mirror_legacy = flow_dag_dir / _legacy_dag_filename(project, domain, level, flow)
-    if old_mirror_legacy.is_file() and old_mirror_legacy != dag_path:
-        try:
-            old_mirror_legacy.unlink()
-        except OSError:
-            pass
-
-    if update and not config_path.exists():
-        raise ValueError("Guncellenecek YAML dosyasi bulunamadi.")
-    if update and STUDIO_DAG_MARKER not in dag_path.read_text(encoding="utf-8"):
-        raise ValueError("Bu DAG ETL Studio tarafindan uretilmemis.")
     existing_auto_mapping_paths = _collect_existing_auto_mapping_paths(config_path, flow_dir)
 
     tags = _derive_tags(project, domain, level, flow)

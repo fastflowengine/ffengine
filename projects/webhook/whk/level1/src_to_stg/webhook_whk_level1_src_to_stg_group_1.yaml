@@ -1,13 +1,14 @@
-source_db_var: test_postgres
-target_db_var: test_mssql
+source_db_var: test_mssql
+target_db_var: test_oracle
 etl_tasks:
-- task_group_id: public_ff_test_data_to_master_ff_test_data_psql_v1
-  source_schema: public
+- task_group_id: 1_test_mssql_dbo_ff_test_data_to_test_oracle_create_if_not_exists_or_truncate_ffengine_test2
+  source_schema: dbo
   source_table: ff_test_data
   source_type: table
+  inline_sql: null
   column_mapping_mode: source
-  target_schema: master
-  target_table: ff_test_data_psql
+  target_schema: FFENGINE
+  target_table: test2
   load_method: create_if_not_exists_or_truncate
   where: null
   batch_size: 10000
@@ -16,6 +17,7 @@ etl_tasks:
     mode: auto
     column: null
     parts: 2
+    distinct_limit: 16
     ranges: []
   tags:
   - webhook

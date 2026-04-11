@@ -138,7 +138,8 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 
 - DAG detail deep-link supported: `/etl-studio/?dag_id=<dag_id>`.
 - New naming DAG'lerde form preload edilip update mode acilir.
-- Legacy DAG id'lerde (`ffengine_config_*`, `ffengine_*`) update mode kilitlenir ve migration yonlendirmesi gosterilir.
+- Ayni flow klasorunde birden fazla group DAG olabilir; bu desteklenir.
+- `POST /etl-studio/api/update-dag` cagrisi `dag_id` query parami ile hedef DAG'i zorunlu olarak belirtmelidir.
 
 ## ETL Studio Form Notes
 

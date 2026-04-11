@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ETL Studio</title>
-  <link rel="stylesheet" href="/etl-studio/static/etl_studio/css/style.css?v=13">
+  <link rel="stylesheet" href="/etl-studio/static/etl_studio/css/style.css?v=14">
 </head>
 <body class="etl-studio-root" data-ui-variant="current">
   <div class="page etl-studio">
@@ -17,12 +17,13 @@
     <div id="theme_notice" class="status-note warn hidden"></div>
     <div id="theme_source_debug" class="muted-note"></div>
 
-    <div class="actions hidden" id="update_actions_top">
-      <button class="btn btn-primary" id="btn_update_top" type="button">Guncelle</button>
-    </div>
-
     <section class="panel">
-      <div class="panel-title">Global Settings (Project & DB)</div>
+      <div class="panel-title panel-title-row">
+        <span>Global Settings (Project & DB)</span>
+        <div class="panel-title-actions hidden" id="update_actions_top">
+          <button class="btn btn-primary" id="btn_update_top" type="button">Guncelle</button>
+        </div>
+      </div>
       <div class="panel-body grid-3">
         <label>
           Folder Path
@@ -102,7 +103,6 @@
     <section class="panel">
       <div class="panel-body">
         <div id="update_mode_status" class="status-note hidden"></div>
-        <div id="legacy_guard" class="status-note warn hidden"></div>
         <div class="task-toolbar">
           <button class="btn btn-secondary" id="btn_expand_all_tasks" type="button">Tumunu Ac</button>
           <button class="btn btn-secondary" id="btn_collapse_all_tasks" type="button">Tumunu Kapat</button>
@@ -281,7 +281,7 @@
     <pre class="response" id="out">{}</pre>
   </div>
 
-  <script src="/etl-studio/static/etl_studio/js/app.js?v=22"></script>
+  <script src="/etl-studio/static/etl_studio/js/app.js?v=23"></script>
 </body>
 </html>
 

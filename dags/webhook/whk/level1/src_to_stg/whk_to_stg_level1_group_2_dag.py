@@ -8,8 +8,8 @@ from airflow import DAG
 
 from ffengine.airflow.operator import FFEngineOperator
 
-CONFIG_PATH = Path("/opt/airflow/projects/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_13.yaml")
-DAG_ID = "whk_to_stg_level1_group_13_dag"
+CONFIG_PATH = Path("/opt/airflow/projects/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_2.yaml")
+DAG_ID = "whk_to_stg_level1_group_2_dag"
 DAG_TAGS = ["webhook", "whk", "level1", "src_to_stg"]
 
 

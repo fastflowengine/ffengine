@@ -72,6 +72,24 @@
       border-bottom: 1px solid var(--line);
     }
 
+    .panel-title-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .panel-title-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .panel-title-actions .btn {
+      padding: 6px 12px;
+      font-size: 12px;
+    }
+
     .btn {
       display: inline-flex;
       align-items: center;
