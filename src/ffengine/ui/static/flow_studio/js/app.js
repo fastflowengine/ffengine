@@ -1,4 +1,4 @@
-const STUDIO_BASE_CANDIDATES = (() => {
+﻿const STUDIO_BASE_CANDIDATES = (() => {
   const pathname = (window.location.pathname || "").toLowerCase();
   const candidates = [];
   if (pathname.startsWith("/plugin/flow-studio")) {
@@ -226,8 +226,8 @@ async function studioFetch(path, options) {
         for (let i = 0; i < parentStyles.length; i += 1) {
           const cssText = parentStyles[i].textContent || "";
           if (!cssText.trim()) continue;
-          // Airflow app'in runtime global kurallarini (opacity, app layout vb.)
-          // buraya tasimamak icin yalniz tema token tanimlari olan stilleri kopyala.
+          // Avoid copying Airflow app runtime global rules (opacity, app layout, etc.).
+          // Only copy styles that define theme tokens.
           const looksLikeThemeTokenBlock = (
             cssText.includes("--color-bg-main")
             || cssText.includes("--color-text")
@@ -383,7 +383,7 @@ async function studioFetch(path, options) {
       diagnostics.push("known_static_link=0");
 
       setThemeSource("fallback");
-      showThemeNotice("Airflow tema assetleri yuklenemedi, fallback tema kullaniliyor.");
+      showThemeNotice("Airflow theme assets could not be loaded; fallback theme is active.");
       console.warn(`[flow-studio-theme] source=fallback ${diagnostics.join(" | ")}`);
     }
 
@@ -391,6 +391,9 @@ async function studioFetch(path, options) {
     let currentActiveRevisionId = "";
     let currentRevisionItems = [];
     let isBusy = false;
+    const CUSTOM_TAG_MAX_COUNT = 10;
+    const CUSTOM_TAG_MAX_LENGTH = 32;
+    let customTagsState = [];
 
     function el(id) { return document.getElementById(id); }
 
@@ -400,6 +403,83 @@ async function studioFetch(path, options) {
         return;
       }
       console.debug(`[flow-studio] ${message}`, payload);
+    }
+
+    function normalizeCustomTag(rawValue) {
+      return String(rawValue || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "_")
+        .replace(/^[_-]+|[_-]+$/g, "");
+    }
+
+    function renderCustomTags() {
+      const chipsWrap = el("custom_tags_chips");
+      if (!chipsWrap) return;
+      chipsWrap.innerHTML = "";
+      for (const tag of customTagsState) {
+        const chip = document.createElement("span");
+        chip.className = "tag-chip";
+        chip.textContent = tag;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "tag-chip-remove";
+        remove.textContent = "x";
+        remove.title = `Remove tag: ${tag}`;
+        remove.disabled = !!isBusy;
+        remove.onclick = () => {
+          customTagsState = customTagsState.filter((item) => item !== tag);
+          renderCustomTags();
+        };
+        chip.appendChild(remove);
+        chipsWrap.appendChild(chip);
+      }
+    }
+
+    function setCustomTags(rawTags) {
+      const next = [];
+      const seen = new Set();
+      const items = Array.isArray(rawTags) ? rawTags : [];
+      for (const raw of items) {
+        const normalized = normalizeCustomTag(raw);
+        if (!normalized) continue;
+        if (normalized.length > CUSTOM_TAG_MAX_LENGTH) continue;
+        if (seen.has(normalized)) continue;
+        seen.add(normalized);
+        next.push(normalized);
+        if (next.length >= CUSTOM_TAG_MAX_COUNT) break;
+      }
+      customTagsState = next;
+      renderCustomTags();
+    }
+
+    function addCustomTag(rawTag) {
+      const normalized = normalizeCustomTag(rawTag);
+      if (!normalized) return false;
+      if (normalized.length > CUSTOM_TAG_MAX_LENGTH) {
+        pushToast(`Tag too long (max ${CUSTOM_TAG_MAX_LENGTH} chars).`, "error", true);
+        return false;
+      }
+      if (customTagsState.includes(normalized)) return false;
+      if (customTagsState.length >= CUSTOM_TAG_MAX_COUNT) {
+        pushToast(`Maximum ${CUSTOM_TAG_MAX_COUNT} tags allowed.`, "error", true);
+        return false;
+      }
+      customTagsState = [...customTagsState, normalized];
+      renderCustomTags();
+      return true;
+    }
+
+    function flushCustomTagInput() {
+      const input = el("custom_tags_input");
+      if (!input) return;
+      const value = String(input.value || "");
+      if (!value.trim()) return;
+      const parts = value.split(/[,\s]+/g);
+      for (const part of parts) {
+        addCustomTag(part);
+      }
+      input.value = "";
     }
 
     function pushToast(message, variant = "success", persistent = false) {
@@ -433,17 +513,22 @@ async function studioFetch(path, options) {
         progress.setAttribute("aria-busy", active ? "true" : "false");
       }
       if (progressLabel) {
-        progressLabel.textContent = active ? (label || "Islem devam ediyor") : "";
+        progressLabel.textContent = active ? (label || "Operation in progress") : "";
       }
       for (const btn of document.querySelectorAll(".btn-create-dag, #btn_update_top, #btn_promote_revision, #btn_add_task, #btn_refresh_revisions, #btn_delete_dag, #btn_cancel_delete_dag, #btn_confirm_delete_dag")) {
         btn.disabled = !!active;
       }
+      const customTagInput = el("custom_tags_input");
+      if (customTagInput) {
+        customTagInput.disabled = !!active;
+      }
+      renderCustomTags();
       syncDeleteDagConfirmState();
     }
 
     function beginOperation(label) {
       if (isBusy) {
-        pushToast("Baska bir islem devam ediyor.", "error", true);
+        pushToast("Another operation is already in progress.", "error", true);
         return false;
       }
       setOperationBusy(true, label);
@@ -490,6 +575,7 @@ async function studioFetch(path, options) {
 
     function resetStudioAfterDelete() {
       currentUpdateDagId = "";
+      setCustomTags([]);
       clearAndLoadTasks([{}]);
       setUpdateMode(false);
       try {
@@ -531,7 +617,7 @@ async function studioFetch(path, options) {
     function openDeleteDagModal() {
       const dagId = String(currentUpdateDagId || "").trim();
       if (!dagId) {
-        pushToast("Delete icin once update mode acilmis olmali.", "error", true);
+        pushToast("Update mode must be active before delete.", "error", true);
         return;
       }
       const modal = el("delete_dag_modal");
@@ -559,26 +645,26 @@ async function studioFetch(path, options) {
     async function deleteCurrentDag() {
       const dagId = String(currentUpdateDagId || "").trim();
       if (!dagId) {
-        pushToast("Delete icin once update mode acilmis olmali.", "error", true);
+        pushToast("Update mode must be active before delete.", "error", true);
         return;
       }
       const input = el("delete_dag_confirm_input");
       if (!input || String(input.value || "").trim() !== dagId) {
-        pushToast("Onay icin DAG ID degerini dogru girin.", "error", true);
+        pushToast("Enter the exact DAG ID to confirm.", "error", true);
         return;
       }
-      if (!beginOperation("DAG siliniyor...")) {
+      if (!beginOperation("Deleting DAG...")) {
         return;
       }
       try {
         const data = await deleteJson(studioUrl(`/api/delete-dag?dag_id=${encodeURIComponent(dagId)}`));
         if (!data || !data.ok) {
-          pushToast(data && data.detail ? data.detail : "DAG silme basarisiz.", "error", true);
+          pushToast(data && data.detail ? data.detail : "DAG deletion failed.", "error", true);
           return;
         }
         closeDeleteDagModal();
         const deletedCount = Array.isArray(data.deleted_paths) ? data.deleted_paths.length : 0;
-        pushToast(`DAG silindi: ${dagId} (${deletedCount} oge)`, "success", false);
+        pushToast(`DAG deleted: ${dagId} (${deletedCount} items)`, "success", false);
         const warnings = Array.isArray(data.warnings) ? data.warnings : [];
         for (const warning of warnings) {
           if (!warning) continue;
@@ -588,7 +674,7 @@ async function studioFetch(path, options) {
         redirectToDagListAfterDelete(dagId);
       } catch (err) {
         logDebug("delete dag error", err);
-        pushToast("DAG silme sirasinda beklenmeyen hata olustu.", "error", true);
+        pushToast("Unexpected error occurred during DAG deletion.", "error", true);
       } finally {
         endOperation();
       }
@@ -658,15 +744,15 @@ async function studioFetch(path, options) {
     async function promoteSelectedRevision() {
       const dagId = String(currentUpdateDagId || "").trim();
       if (!dagId) {
-        setUpdateModeStatus("Promote icin once update mode acilmis olmali.", "warn");
-        pushToast("Promote icin once update mode acilmis olmali.", "error", true);
+        setUpdateModeStatus("Update mode must be active before promote.", "warn");
+        pushToast("Update mode must be active before promote.", "error", true);
         return;
       }
       const sel = el("revision_select");
       const revisionId = String((sel && sel.value) || "").trim();
       if (!revisionId) {
-        setUpdateModeStatus("Promote icin bir revision secin.", "warn");
-        pushToast("Promote icin bir revision secin.", "error", true);
+        setUpdateModeStatus("Select a revision to promote.", "warn");
+        pushToast("Select a revision to promote.", "error", true);
         return;
       }
 
@@ -679,8 +765,8 @@ async function studioFetch(path, options) {
           {}
         );
         if (!data || !data.ok) {
-          setUpdateModeStatus("Revision promote basarisiz.", "warn");
-          pushToast(data && data.detail ? data.detail : "Revision promote basarisiz.", "error", true);
+          setUpdateModeStatus("Revision promote failed.", "warn");
+          pushToast(data && data.detail ? data.detail : "Revision promote failed.", "error", true);
           return;
         }
         setUpdateModeStatus(`Revision aktive edildi: ${revisionId}`, "ok");
@@ -688,8 +774,8 @@ async function studioFetch(path, options) {
         await preloadByDagId(dagId);
       } catch (err) {
         logDebug("revision promote error", err);
-        setUpdateModeStatus("Revision promote sirasinda beklenmeyen hata olustu.", "warn");
-        pushToast("Revision promote sirasinda beklenmeyen hata olustu.", "error", true);
+        setUpdateModeStatus("Unexpected error occurred during revision promote.", "warn");
+        pushToast("Unexpected error occurred during revision promote.", "error", true);
       } finally {
         endOperation();
       }
@@ -762,7 +848,7 @@ async function studioFetch(path, options) {
       if (!items.length) {
         const opt = document.createElement("option");
         opt.value = "";
-        opt.textContent = "Connection bulunamadi";
+        opt.textContent = "No connections found";
         select.appendChild(opt);
         return;
       }
@@ -826,8 +912,8 @@ async function studioFetch(path, options) {
         const r = await studioFetch(path);
         const data = await parseJsonSafe(r);
         if (!r.ok || !data.ok) {
-          // Airflow Variable listesi sadece Bindings icindeki opsiyonel alan icin kullanilir.
-          // Bu nedenle burada ana UI hata kutusunu kirletmiyoruz.
+          // Airflow Variable list is only used for the optional field in Bindings.
+          // Therefore, we do not pollute the main UI error area here.
           console.warn("Airflow variables could not be loaded.", r.status, data);
           setAirflowVariableOptions([]);
           return;
@@ -859,15 +945,15 @@ async function studioFetch(path, options) {
       fillOptions(listId, filtered);
       if (!filtered.length) {
         const connType = getSelectedConnectionType(connSelectId || "");
-        const extra = connType === "mssql" ? " MSSQL icin schema genelde 'dbo' olur." : "";
-        logDebug("schema autocomplete no match", { ok: true, detail: `'${q}' icin schema eslesmesi bulunamadi.${extra}` });
+        const extra = connType === "mssql" ? " For MSSQL, schema is usually 'dbo'." : "";
+        logDebug("schema autocomplete no match", { ok: true, detail: `No schema match found for '${q}'.${extra}` });
       }
     }
 
     async function autocompleteTables(connId, schema, q, listId) {
       if (!connId || !q || q.length < 3) return;
       if (!schema || !schema.trim()) {
-        logDebug("table autocomplete skipped", { ok: false, detail: "Once schema alani icin en az 1 karakter girin." });
+        logDebug("table autocomplete skipped", { ok: false, detail: "Enter at least 1 character for schema first." });
         return;
       }
       const path = `/api/tables?conn_id=${encodeURIComponent(connId)}&schema=${encodeURIComponent(schema)}&q=${encodeURIComponent(q)}&limit=50&offset=0`;
@@ -1143,7 +1229,7 @@ async function studioFetch(path, options) {
           const airflowResp = await fetch("/api/v2/connections?limit=1000&offset=0&order_by=connection_id");
           const airflowData = await parseJsonSafe(airflowResp);
           if (!airflowResp.ok) {
-            const detail = airflowData.detail || "Connection listesi yuklenemedi.";
+            const detail = airflowData.detail || "Connection list could not be loaded.";
             logDebug("airflow fallback connection list failed", { status_code: airflowResp.status, detail });
             fillConnectionSelect("source_conn_id", [], "");
             fillConnectionSelect("target_conn_id", [], "");
@@ -1160,7 +1246,7 @@ async function studioFetch(path, options) {
         fillConnectionSelect("target_conn_id", items, "ffengine_target");
         refreshTaskCardHeaders();
       } catch (err) {
-        logDebug("connection list load failed", { ok: false, detail: `Connection listesi yuklenemedi: ${String(err && err.message ? err.message : err)}` });
+        logDebug("connection list load failed", { ok: false, detail: `Connection list could not be loaded: ${String(err && err.message ? err.message : err)}` });
         fillConnectionSelect("source_conn_id", [], "");
         fillConnectionSelect("target_conn_id", [], "");
         refreshTaskCardHeaders();
@@ -1468,7 +1554,7 @@ async function studioFetch(path, options) {
       const generatedPathInput = card.querySelector(".mapping-generated-path");
       generatedPathInput.value = isMappingFileMode ? buildGeneratedMappingDisplayPath(card) : "";
       if (isSql) {
-        setMappingStatus(card, "SQL source icin mapping_file modu zorunlu.", false);
+        setMappingStatus(card, "mapping_file mode is required for SQL source.", false);
       } else if (!isMappingFileMode) {
         setMappingStatus(card, "", false);
       }
@@ -1518,13 +1604,13 @@ async function studioFetch(path, options) {
         card.querySelector(".mapping-content").value = data.mapping_content || "";
         const warnings = Array.isArray(data.warnings) ? data.warnings : [];
         if (warnings.length) {
-          setMappingStatus(card, `Mapping uretildi (uyari: ${warnings.length}).`, false);
+          setMappingStatus(card, `Mapping generated (warning: ${warnings.length}).`, false);
         } else {
           setMappingStatus(card, "Mapping uretildi.", false);
         }
         syncMappingState(card);
       } catch (_err) {
-        setMappingStatus(card, "Mapping uretilirken hata olustu.", true);
+        setMappingStatus(card, "Error occurred while generating mapping.", true);
       }
     }
 
@@ -1717,6 +1803,7 @@ async function studioFetch(path, options) {
       el("domain").value = payload.domain || "";
       el("level").value = payload.level || "";
       el("flow").value = payload.flow || "";
+      setCustomTags(payload.custom_tags || []);
       syncFolderPathDisplay();
       setConnectionValue("source_conn_id", payload.source_conn_id || "");
       setConnectionValue("target_conn_id", payload.target_conn_id || "");
@@ -1727,7 +1814,7 @@ async function studioFetch(path, options) {
       const dagId = (rawDagId || "").trim();
       if (!dagId) {
         currentUpdateDagId = "";
-        setUpdateModeStatus("Preload icin dag_id girin.", "warn");
+        setUpdateModeStatus("Enter dag_id for preload.", "warn");
         setUpdateMode(false);
         return;
       }
@@ -1736,7 +1823,7 @@ async function studioFetch(path, options) {
       logDebug("dag-config preload response", { status_code: r.status, ...data });
       if (!r.ok || !data.ok) {
         currentUpdateDagId = "";
-        setUpdateModeStatus(`DAG preload basarisiz: ${data.detail || r.status}`, "warn");
+        setUpdateModeStatus(`DAG preload failed: ${data.detail || r.status}`, "warn");
         setUpdateMode(false);
         return;
       }
@@ -1798,12 +1885,12 @@ async function studioFetch(path, options) {
     async function submitUpdate() {
       const dagId = (currentUpdateDagId || "").trim();
       if (!dagId) {
-        setUpdateModeStatus("Update mode icin dag_id gerekli. Once DAG preload edin.", "warn");
-        pushToast("Update mode icin dag_id gerekli. Once DAG preload edin.", "error", true);
+        setUpdateModeStatus("dag_id is required for update mode. Preload a DAG first.", "warn");
+        pushToast("dag_id is required for update mode. Preload a DAG first.", "error", true);
         return;
       }
 
-      if (!beginOperation("Konfigurasyon guncelleniyor...")) {
+      if (!beginOperation("Updating configuration...")) {
         return;
       }
       try {
@@ -1812,8 +1899,8 @@ async function studioFetch(path, options) {
           collectPayload()
         );
         if (!data || !data.ok) {
-          setUpdateModeStatus("Update basarisiz.", "warn");
-          pushToast(data && data.detail ? data.detail : "Update basarisiz.", "error", true);
+          setUpdateModeStatus("Update failed.", "warn");
+          pushToast(data && data.detail ? data.detail : "Update failed.", "error", true);
           return;
         }
         currentUpdateDagId = String(data.dag_id || dagId || "").trim();
@@ -1822,8 +1909,8 @@ async function studioFetch(path, options) {
         pushToast(`Update tamamlandi: ${currentUpdateDagId}`, "success", false);
       } catch (err) {
         logDebug("submit update error", err);
-        setUpdateModeStatus("Update sirasinda beklenmeyen hata olustu.", "warn");
-        pushToast("Update sirasinda beklenmeyen hata olustu.", "error", true);
+        setUpdateModeStatus("Unexpected error occurred during update.", "warn");
+        pushToast("Unexpected error occurred during update.", "error", true);
       } finally {
         endOperation();
       }
@@ -1844,13 +1931,13 @@ async function studioFetch(path, options) {
       try {
         const data = await postJson(studioUrl("/api/create-dag"), collectPayload());
         if (!data || !data.ok) {
-          pushToast(data && data.detail ? data.detail : "Create basarisiz.", "error", true);
+          pushToast(data && data.detail ? data.detail : "Create failed.", "error", true);
           return;
         }
         const dagId = String(data.dag_id || "").trim() || dagIdFromDagPath(data.dag_path);
         if (!dagId) {
-          setUpdateModeStatus("Create basarili, fakat dag_id cozumlenemedi. Update mode acilmadi.", "warn");
-          pushToast("Create basarili, fakat dag_id cozumlenemedi.", "error", true);
+          setUpdateModeStatus("Create succeeded, but dag_id could not be resolved. Update mode was not enabled.", "warn");
+          pushToast("Create succeeded, but dag_id could not be resolved.", "error", true);
           return;
         }
         currentUpdateDagId = dagId;
@@ -1867,8 +1954,8 @@ async function studioFetch(path, options) {
         }
       } catch (err) {
         logDebug("submit create error", err);
-        setUpdateModeStatus("Create sirasinda beklenmeyen hata olustu.", "warn");
-        pushToast("Create sirasinda beklenmeyen hata olustu.", "error", true);
+        setUpdateModeStatus("Unexpected error occurred during create.", "warn");
+        pushToast("Unexpected error occurred during create.", "error", true);
       } finally {
         endOperation();
       }
@@ -1949,13 +2036,14 @@ async function studioFetch(path, options) {
       const levelVal = el("level").value.trim() || "level1";
       const flowVal = el("flow").value.trim() || "src_to_stg";
       const cards = getTaskCards();
-      const etlTasks = cards.map((card, idx) => collectTaskPayload(card, idx + 1));
-      const firstTask = etlTasks[0] || {};
+      const flowTasks = cards.map((card, idx) => collectTaskPayload(card, idx + 1));
+      const firstTask = flowTasks[0] || {};
       const payload = {
         project: projectVal,
         domain: domainVal,
         level: levelVal,
         flow: flowVal,
+        custom_tags: customTagsState.slice(),
         source_conn_id: el("source_conn_id").value,
         target_conn_id: el("target_conn_id").value,
         task_group_id: firstTask.task_group_id,
@@ -1975,7 +2063,7 @@ async function studioFetch(path, options) {
         partitioning_parts: firstTask.partitioning_parts,
         partitioning_distinct_limit: firstTask.partitioning_distinct_limit,
         partitioning_ranges: firstTask.partitioning_ranges,
-        flow_tasks: etlTasks,
+        flow_tasks: flowTasks,
       };
       return payload;
     }
@@ -2007,6 +2095,22 @@ async function studioFetch(path, options) {
     el("btn_add_flow").onclick = () => addDraftFolder("flow");
     el("source_conn_id").addEventListener("change", () => refreshTaskCardHeaders());
     el("target_conn_id").addEventListener("change", () => refreshTaskCardHeaders());
+    const customTagsInput = el("custom_tags_input");
+    if (customTagsInput) {
+      customTagsInput.addEventListener("keydown", (evt) => {
+        if (evt.key === "Enter" || evt.key === "," || (evt.key === " " && String(customTagsInput.value || "").trim())) {
+          evt.preventDefault();
+          flushCustomTagInput();
+          return;
+        }
+        if (evt.key === "Backspace" && !String(customTagsInput.value || "").trim() && customTagsState.length) {
+          evt.preventDefault();
+          customTagsState = customTagsState.slice(0, -1);
+          renderCustomTags();
+        }
+      });
+      customTagsInput.addEventListener("blur", () => flushCustomTagInput());
+    }
     document.addEventListener("keydown", (evt) => {
       if (evt.key !== "Escape") return;
       if (el("folder_picker_modal").classList.contains("open")) {
@@ -2021,9 +2125,10 @@ async function studioFetch(path, options) {
     async function initPage() {
       await applyAirflowThemeAssets();
       setUpdateMode(false);
+      setCustomTags([]);
       syncFolderPathDisplay();
       clearAndLoadTasks([{}]);
-      // Ana form kullanimi icin once connection listesi yuklenmeli.
+      // Connection list must be loaded first for main form usage.
       try {
         await loadConnections();
       } catch (_err) {
@@ -2046,3 +2151,4 @@ async function studioFetch(path, options) {
     }
 
     initPage();
+

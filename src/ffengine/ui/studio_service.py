@@ -1,7 +1,7 @@
-"""
-Flow Studio MVP servis katmani.
+﻿"""
+Flow Studio MVP service layer.
 
-Faz 1 (T01-T04, T07, T11) ve Faz 2 (T05-T10, T08-T09, T12) endpoint'leri bu modulu kullanir.
+Phase 1 (T01-T04, T07, T11) and Phase 2 (T05-T10, T08-T09, T12) endpoints use this module.
 """
 
 from __future__ import annotations
@@ -33,6 +33,8 @@ STUDIO_METADATA_NAME = ".flow_studio.json"
 STUDIO_DAG_MARKER = "# generated_by: flow_studio"
 STUDIO_HISTORY_DIR_NAME = ".flow_studio_history"
 STUDIO_HISTORY_KEEP_LIMIT = 20
+STUDIO_CUSTOM_TAG_MAX_COUNT = 10
+STUDIO_CUSTOM_TAG_MAX_LENGTH = 32
 REVISION_SOURCE_CREATE_INITIAL = "create_initial"
 REVISION_SOURCE_UPDATE = "update"
 
@@ -89,6 +91,53 @@ def _derive_tags(project: str, domain: str, level: str, flow: str) -> list[str]:
         _slugify(level, "level1"),
         _slugify(flow, "src_to_stg"),
     ]
+
+
+def _normalize_custom_tag(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    normalized = re.sub(r"[^a-z0-9_-]+", "_", raw)
+    normalized = normalized.strip("_-")
+    return normalized
+
+
+def _normalize_custom_tags(raw_tags: Any) -> list[str]:
+    if raw_tags is None:
+        return []
+    if not isinstance(raw_tags, list):
+        raise ValueError("custom_tags must be a list.")
+    out: list[str] = []
+    seen: set[str] = set()
+    for idx, raw in enumerate(raw_tags, start=1):
+        tag = _normalize_custom_tag(raw)
+        if not tag:
+            continue
+        if len(tag) > STUDIO_CUSTOM_TAG_MAX_LENGTH:
+            raise ValueError(
+                f"custom_tags[{idx-1}] length must be at most {STUDIO_CUSTOM_TAG_MAX_LENGTH}."
+            )
+        if tag in seen:
+            continue
+        seen.add(tag)
+        out.append(tag)
+        if len(out) > STUDIO_CUSTOM_TAG_MAX_COUNT:
+            raise ValueError(
+                f"custom_tags can contain at most {STUDIO_CUSTOM_TAG_MAX_COUNT} items."
+            )
+    return out
+
+
+def _merge_tags(auto_tags: list[str], user_tags: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for raw in [*(auto_tags or []), *(user_tags or [])]:
+        tag = str(raw or "").strip()
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        merged.append(tag)
+    return merged
 
 
 def _extract_flow_target(flow: str) -> str:
@@ -160,21 +209,21 @@ def _generated_dag_root() -> Path:
 
 def resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str, str]]:
     """
-    flow_tasks icin bagimlilik kenarlarini uretir.
-    - depends_on varsa onu kullanir.
-    - depends_on yoksa YAML sirasina gore zincirler.
+    Build dependency edges for flow_tasks.
+    - Uses depends_on when provided.
+    - If depends_on is missing, chains tasks by YAML order.
     """
     if not isinstance(task_defs, list):
-        raise ValueError("flow_tasks bir liste olmalidir.")
+        raise ValueError("flow_tasks must be a list.")
 
     task_ids: list[str] = []
     id_set: set[str] = set()
     for task in task_defs:
         if not isinstance(task, dict):
-            raise ValueError("Her flow_task bir dict olmalidir.")
+            raise ValueError("Each flow_task must be a dict.")
         task_id = str(task.get("task_group_id") or "").strip()
         if not task_id:
-            raise ValueError("Her flow_task icin task_group_id zorunludur.")
+            raise ValueError("task_group_id is required for each flow_task.")
         if task_id in id_set:
             raise ValueError(f"Ayni task_group_id birden fazla kez kullanildi: {task_id}")
         task_ids.append(task_id)
@@ -191,7 +240,7 @@ def resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str
         else:
             if not isinstance(depends_on, list):
                 raise ValueError(
-                    f"depends_on list olmalidir: task_group_id={task_id}"
+                    f"depends_on must be a list: task_group_id={task_id}"
                 )
             for dep in depends_on:
                 dep_id = str(dep or "").strip()
@@ -199,7 +248,7 @@ def resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str
                     continue
                 if dep_id not in id_set:
                     raise ValueError(
-                        f"depends_on gecersiz task_group_id iceriyor: {dep_id}"
+                        f"depends_on contains invalid task_group_id: {dep_id}"
                     )
                 edges.append((dep_id, task_id))
         previous_task_id = task_id
@@ -256,10 +305,10 @@ def _resolve_task_dependencies(task_defs):
     id_set = set()
     for task in task_defs:
         if not isinstance(task, dict):
-            raise ValueError("Her flow_task bir dict olmalidir.")
+            raise ValueError("Each flow_task must be a dict.")
         task_id = str(task.get("task_group_id") or "").strip()
         if not task_id:
-            raise ValueError("Her flow_task icin task_group_id zorunludur.")
+            raise ValueError("task_group_id is required for each flow_task.")
         if task_id in id_set:
             raise ValueError(f"Ayni task_group_id birden fazla kez kullanildi: {{task_id}}")
         task_ids.append(task_id)
@@ -275,13 +324,13 @@ def _resolve_task_dependencies(task_defs):
                 edges.append((previous_task_id, task_id))
         else:
             if not isinstance(depends_on, list):
-                raise ValueError(f"depends_on list olmalidir: task_group_id={{task_id}}")
+                raise ValueError(f"depends_on must be a list: task_group_id={{task_id}}")
             for dep in depends_on:
                 dep_id = str(dep or "").strip()
                 if not dep_id:
                     continue
                 if dep_id not in id_set:
-                    raise ValueError(f"depends_on gecersiz task_group_id iceriyor: {{dep_id}}")
+                    raise ValueError(f"depends_on contains invalid task_group_id: {{dep_id}}")
                 edges.append((dep_id, task_id))
         previous_task_id = task_id
 
@@ -309,16 +358,16 @@ def _resolve_task_dependencies(task_defs):
 
 raw = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {{}}
 if not isinstance(raw, dict):
-    raise ValueError("YAML root dict olmalidir.")
+    raise ValueError("YAML root must be a dict.")
 
 source_conn_id = str(raw.get("source_db_var") or "").strip()
 target_conn_id = str(raw.get("target_db_var") or "").strip()
 task_defs = raw.get("flow_tasks") or []
 
 if not source_conn_id or not target_conn_id:
-    raise ValueError("source_db_var ve target_db_var zorunludur.")
+    raise ValueError("source_db_var and target_db_var are required.")
 if not isinstance(task_defs, list) or not task_defs:
-    raise ValueError("flow_tasks en az bir task iceren list olmalidir.")
+    raise ValueError("flow_tasks must be a list with at least one task.")
 
 edges = _resolve_task_dependencies(task_defs)
 
@@ -345,13 +394,13 @@ with DAG(
 
 
 def _ensure_path_under_root(path: Path, root: Path) -> Path:
-    """Path traversal korumasi: path root altinda olmalidir."""
+    """Path traversal guard: path must stay under root."""
     resolved = path.resolve()
     root_resolved = root.resolve()
     try:
         resolved.relative_to(root_resolved)
     except ValueError as exc:
-        raise ValueError(f"Gecersiz path: {path!s}") from exc
+        raise ValueError(f"Invalid path: {path!s}") from exc
     return resolved
 
 
@@ -413,10 +462,10 @@ def _normalize_relative_mapping_file(value: str) -> str:
     raw = str(value or "").strip().replace("\\", "/")
     raw = re.sub(r"/{2,}", "/", raw).lstrip("/")
     if not raw:
-        raise ValueError("mapping_file bos olamaz.")
+        raise ValueError("mapping_file cannot be empty.")
     path = Path(raw)
     if path.is_absolute():
-        raise ValueError("mapping_file relative bir yol olmalidir.")
+        raise ValueError("mapping_file must be a relative path.")
     return Path(raw).as_posix()
 
 
@@ -424,9 +473,9 @@ def _auto_mapping_relative_file(task_no: int, task_group_id: str) -> str:
     safe_task_no = max(1, int(task_no))
     tg = str(task_group_id or "").strip()
     if not tg:
-        raise ValueError("task_group_id bos olamaz.")
+        raise ValueError("task_group_id cannot be empty.")
     if "/" in tg or "\\" in tg or ".." in tg:
-        raise ValueError(f"Gecersiz task_group_id (mapping path icin): {tg!r}")
+        raise ValueError(f"Invalid task_group_id (for mapping path): {tg!r}")
     return f"mapping/{safe_task_no}_{tg}.yaml"
 
 
@@ -443,23 +492,23 @@ def _resolve_mapping_file_path(flow_dir: Path, mapping_file: str) -> Path:
 
 def _mapping_yaml_to_source_columns(mapping_obj: dict[str, Any]) -> list[str]:
     if not isinstance(mapping_obj, dict):
-        raise ValueError("Mapping YAML root dict olmalidir.")
+        raise ValueError("Mapping YAML root must be a dict.")
     version = mapping_obj.get("version")
     if version not in VALID_MAPPING_VERSIONS:
         raise ValueError(
-            f"Desteklenmeyen mapping dosyasi versiyonu: {version!r}. "
+            f"Unsupported mapping file version: {version!r}. "
             f"Gecerli: {sorted(VALID_MAPPING_VERSIONS)}"
         )
     entries = mapping_obj.get("columns")
     if not isinstance(entries, list) or not entries:
-        raise ValueError("Mapping YAML icinde columns listesi bos veya gecersiz.")
+        raise ValueError("columns in Mapping YAML is empty or invalid.")
     out: list[str] = []
     for idx, item in enumerate(entries, start=1):
         if not isinstance(item, dict):
-            raise ValueError(f"Mapping columns[{idx-1}] dict olmalidir.")
+            raise ValueError(f"Mapping columns[{idx-1}] must be a dict.")
         src = str(item.get("source_name") or "").strip()
         if not src:
-            raise ValueError(f"Mapping columns[{idx-1}] source_name bos olamaz.")
+            raise ValueError(f"Mapping columns[{idx-1}] source_name cannot be empty.")
         out.append(src)
     return out
 
@@ -468,16 +517,16 @@ def _parse_yaml_mapping_text(mapping_content: str, *, label: str) -> dict[str, A
     try:
         parsed = yaml.safe_load(mapping_content)
     except yaml.YAMLError as exc:
-        raise ValueError(f"Gecersiz mapping YAML ({label}): {exc}") from exc
+        raise ValueError(f"Invalid mapping YAML ({label}): {exc}") from exc
     if not isinstance(parsed, dict):
-        raise ValueError(f"Gecersiz mapping YAML ({label}): root dict olmalidir.")
+        raise ValueError(f"Invalid mapping YAML ({label} ): root must be a dict.")
     _mapping_yaml_to_source_columns(parsed)
     return parsed
 
 
 def _read_mapping_object(path: Path) -> dict[str, Any]:
     if not path.is_file():
-        raise FileNotFoundError(f"Mapping dosyasi bulunamadi: {path.as_posix()}")
+        raise FileNotFoundError(f"Mapping file not found: {path.as_posix()}")
     return _parse_yaml_mapping_text(path.read_text(encoding="utf-8"), label=path.as_posix())
 
 
@@ -497,7 +546,7 @@ def _normalize_description_type(type_code: Any) -> str:
 def _wrap_zero_row_sql_for_dialect(inline_sql: str, dialect_name: str) -> str:
     base = str(inline_sql or "").strip().rstrip(";")
     if not base:
-        raise ValueError("source_type='sql' icin inline_sql zorunludur.")
+        raise ValueError("inline_sql is required when source_type='sql'.")
     if dialect_name == "mssql":
         return f"SELECT TOP 0 * FROM ({base}) AS ffengine_inline_sql"
     if dialect_name == "oracle":
@@ -506,7 +555,7 @@ def _wrap_zero_row_sql_for_dialect(inline_sql: str, dialect_name: str) -> str:
 
 
 def extract_sql_select_columns(src_session: DBSession, src_dialect, inline_sql: str) -> list[dict[str, str]]:
-    """SQL query metadata'sindan kolon adlarini ve normalize tip adini dondurur."""
+    """Extract column names and normalized type names from SQL query metadata."""
     dialect_name = _dialect_name(src_dialect)
     query = _wrap_zero_row_sql_for_dialect(inline_sql, dialect_name)
     cursor = src_session.cursor(server_side=False)
@@ -514,7 +563,7 @@ def extract_sql_select_columns(src_session: DBSession, src_dialect, inline_sql: 
         cursor.execute(query)
         desc = list(cursor.description or [])
     except Exception as exc:
-        raise ValueError(f"SQL metadata cikarimi basarisiz: {exc}") from exc
+        raise ValueError(f"SQL metadata extraction failed: {exc}") from exc
     finally:
         cursor.close()
     cols: list[dict[str, str]] = []
@@ -525,7 +574,7 @@ def extract_sql_select_columns(src_session: DBSession, src_dialect, inline_sql: 
         type_code = col[1] if len(col) > 1 else None
         cols.append({"name": name, "source_type": _normalize_description_type(type_code)})
     if not cols:
-        raise ValueError("SQL metadata cikariminda kolon bulunamadi.")
+        raise ValueError("No columns found during SQL metadata extraction.")
     return cols
 
 
@@ -569,7 +618,7 @@ def _build_mapping_from_columns(
 ) -> tuple[dict[str, Any], list[str]]:
     if version not in VALID_MAPPING_VERSIONS:
         raise ValueError(
-            f"Gecersiz mapping versiyonu: {version!r}. "
+            f"Invalid mapping version: {version!r}. "
             f"Gecerli: {sorted(VALID_MAPPING_VERSIONS)}"
         )
     warnings: list[str] = []
@@ -585,7 +634,7 @@ def _build_mapping_from_columns(
         except UnsupportedTypeError:
             tgt_type = fallback_target
             warnings.append(
-                f"{src_name}: source_type={src_type!r} cozulemedi, target_type={tgt_type!r} fallback uygulandi."
+                f"{src_name}: source_type={src_type!r} could not be resolved, target_type={tgt_type!r} fallback applied."
             )
         rows.append(
             {
@@ -597,7 +646,7 @@ def _build_mapping_from_columns(
             }
         )
     if not rows:
-        raise ValueError("Mapping uretimi icin kullanilabilir kolon bulunamadi.")
+        raise ValueError("No usable columns found for mapping generation.")
     return (
         {
             "version": version,
@@ -725,15 +774,15 @@ def _auto_mapping_rel_paths_from_config_obj(config_obj: dict[str, Any]) -> list[
 
 def _read_active_bundle(dag_path: Path, config_path: Path, flow_dir: Path) -> dict[str, Any]:
     if not dag_path.is_file():
-        raise FileNotFoundError(f"DAG dosyasi bulunamadi: {dag_path.as_posix()}")
+        raise FileNotFoundError(f"DAG file not found: {dag_path.as_posix()}")
     if not config_path.is_file():
-        raise FileNotFoundError(f"YAML dosyasi bulunamadi: {config_path.as_posix()}")
+        raise FileNotFoundError(f"YAML file not found: {config_path.as_posix()}")
 
     dag_text = dag_path.read_text(encoding="utf-8")
     config_text = config_path.read_text(encoding="utf-8")
     config_obj = yaml.safe_load(config_text) or {}
     if not isinstance(config_obj, dict):
-        raise ValueError("YAML root dict olmalidir.")
+        raise ValueError("YAML root must be a dict.")
 
     mapping_texts: dict[str, str] = {}
     for rel in _auto_mapping_rel_paths_from_config_obj(config_obj):
@@ -803,18 +852,18 @@ def _save_bundle_as_revision(
 def _load_bundle_from_revision(revision_dir: Path) -> dict[str, Any]:
     manifest_path = revision_dir / "manifest.json"
     if not manifest_path.is_file():
-        raise FileNotFoundError(f"Revision manifest bulunamadi: {manifest_path.as_posix()}")
+        raise FileNotFoundError(f"Revision manifest not found: {manifest_path.as_posix()}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     dag_file = revision_dir / "dag.py"
     cfg_file = revision_dir / "config.yaml"
     if not dag_file.is_file() or not cfg_file.is_file():
-        raise FileNotFoundError("Revision icinde dag.py veya config.yaml eksik.")
+        raise FileNotFoundError("dag.py or config.yaml is missing in revision.")
     mapping_texts: dict[str, str] = {}
     for rel in manifest.get("mapping_files") or []:
         rel_path = _normalize_relative_mapping_file(str(rel or ""))
         src = revision_dir / rel_path
         if not src.is_file():
-            raise FileNotFoundError(f"Revision mapping dosyasi eksik: {rel_path}")
+            raise FileNotFoundError(f"Revision mapping file is missing: {rel_path}")
         mapping_texts[rel_path] = src.read_text(encoding="utf-8")
     return {
         "manifest": manifest,
@@ -902,7 +951,7 @@ def _extract_group_no(dag_id: str, config_path: Path) -> int:
     cfg_match = re.search(r"_group_(\d+)\.ya?ml$", config_path.name)
     if cfg_match:
         return int(cfg_match.group(1))
-    raise ValueError("group_no dag_id/config isminden cozumlenemedi.")
+    raise ValueError("group_no could not be resolved from dag_id/config name.")
 
 
 def _extract_config_path_from_dag_source(dag_path: Path) -> Path:
@@ -914,7 +963,7 @@ def _extract_config_path_from_dag_source(dag_path: Path) -> Path:
         source,
     )
     if not match:
-        raise ValueError("DAG icinde CONFIG_PATH cozumlenemedi.")
+        raise ValueError("CONFIG_PATH could not be resolved inside DAG.")
     return Path(match.group("path"))
 
 
@@ -941,15 +990,15 @@ def _load_mapping_content_for_task(flow_dir: Path, task: dict[str, Any]) -> str 
 def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
     did = (dag_id or "").strip()
     if not did:
-        raise ValueError("dag_id zorunludur.")
+        raise ValueError("dag_id is required.")
 
     dag_path = _find_studio_dag_file_by_id(did)
     if dag_path is None:
-        raise FileNotFoundError(f"DAG bulunamadi: {did}")
+        raise FileNotFoundError(f"DAG not found: {did}")
 
     config_path = _extract_config_path_from_dag_source(dag_path)
     if not config_path.is_file():
-        raise ValueError("DAG bulundu ancak bagli YAML dosyasi bulunamadi.")
+        raise ValueError("DAG was found but linked YAML file was not found.")
 
     projects_root = _projects_root().resolve()
     config_resolved = config_path.resolve()
@@ -958,19 +1007,19 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
     except ValueError as exc:
         raise ValueError("YAML path Flow Studio projects root altinda degil.") from exc
     if len(rel.parts) < 5:
-        raise ValueError("YAML path hiyerarsisi gecersiz.")
+        raise ValueError("YAML path hierarchy is invalid.")
     project, domain, level, flow = rel.parts[:4]
 
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
-        raise ValueError("YAML root dict olmalidir.")
+        raise ValueError("YAML root must be a dict.")
     tasks = raw.get("flow_tasks") or []
     if not isinstance(tasks, list) or not tasks:
-        raise ValueError("YAML flow_tasks listesi bos veya gecersiz.")
+        raise ValueError("YAML flow_tasks list is empty or invalid.")
     normalized_tasks: list[dict[str, Any]] = []
     for idx, task in enumerate(tasks, start=1):
         if not isinstance(task, dict):
-            raise ValueError(f"flow_tasks[{idx-1}] dict olmalidir.")
+            raise ValueError(f"flow_tasks[{idx-1}] must be a dict.")
         partitioning = task.get("partitioning") or {}
         if not isinstance(partitioning, dict):
             partitioning = {}
@@ -1005,12 +1054,14 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         )
 
     first_task = normalized_tasks[0]
+    custom_tags = _normalize_custom_tags(raw.get("custom_tags"))
 
     payload = {
         "project": project,
         "domain": domain,
         "level": level,
         "flow": flow,
+        "custom_tags": custom_tags,
         "group_no": _extract_group_no(did, config_path),
         "task_group_id": first_task["task_group_id"],
         "source_conn_id": str(raw.get("source_db_var") or "").strip(),
@@ -1147,7 +1198,7 @@ def _import_airflow_model(candidates: list[tuple[str, str]]) -> type | None:
 def _cleanup_airflow_dag_metadata(dag_id: str) -> dict[str, Any]:
     did = str(dag_id or "").strip()
     if not did:
-        return {"ok": False, "details": {}, "warnings": ["dag_id bos oldugu icin metadata cleanup atlandi."]}
+        return {"ok": False, "details": {}, "warnings": ["Metadata cleanup skipped because dag_id is empty."]}
 
     try:
         from airflow.utils.session import create_session
@@ -1162,8 +1213,8 @@ def _cleanup_airflow_dag_metadata(dag_id: str) -> dict[str, Any]:
         ("task_instances", [("airflow.models.taskinstance", "TaskInstance")]),
         ("task_reschedules", [("airflow.models.taskreschedule", "TaskReschedule")]),
         ("task_fails", [("airflow.models.taskfail", "TaskFail")]),
-        # Airflow 3'te airflow.models.xcom.XCom alias'i BaseXCom olabilir.
-        # Metadata cleanup icin yalniz ORM model olan XComModel kullanilir.
+        # In Airflow 3, airflow.models.xcom.XCom can alias BaseXCom.
+        # For metadata cleanup we only use the ORM model XComModel.
         ("xcom", [("airflow.models.xcom", "XComModel")]),
         ("dag_runs", [("airflow.models.dagrun", "DagRun")]),
         ("dag_versions", [("airflow.models.dag_version", "DagVersion")]),
@@ -1196,12 +1247,12 @@ def _cleanup_airflow_dag_metadata(dag_id: str) -> dict[str, Any]:
                         continue
                     details[label] = int(query.delete(synchronize_session=False) or 0)
                 except Exception as exc:
-                    warnings.append(f"{label} temizligi basarisiz: {exc}")
+                    warnings.append(f"{label} cleanup failed: {exc}")
             try:
                 session.commit()
             except Exception as exc:
                 session.rollback()
-                warnings.append(f"Airflow metadata commit basarisiz: {exc}")
+                warnings.append(f"Airflow metadata commit failed: {exc}")
     except Exception as exc:
         warnings.append(f"Airflow metadata cleanup calisamadi: {exc}")
 
@@ -1227,14 +1278,14 @@ def _apply_bundle_to_active(
 
     parsed_cfg = yaml.safe_load(config_text) or {}
     if not isinstance(parsed_cfg, dict):
-        raise ValueError("Promote edilen config root dict olmalidir.")
+        raise ValueError("Promoted config root must be a dict.")
     required_rels = _auto_mapping_rel_paths_from_config_obj(parsed_cfg)
     mapping_texts = dict(bundle.get("mapping_texts") or {})
     new_auto_mapping_paths: set[Path] = set()
     for rel in required_rels:
         rel_norm = _normalize_relative_mapping_file(rel)
         if rel_norm not in mapping_texts:
-            raise ValueError(f"Revision icinde mapping dosyasi eksik: {rel_norm}")
+            raise ValueError(f"Revision mapping file is missing: {rel_norm}")
         target = _resolve_mapping_file_path(flow_dir, rel_norm)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(str(mapping_texts.get(rel_norm) or ""), encoding="utf-8")
@@ -1249,14 +1300,14 @@ def _apply_bundle_to_active(
 def get_dag_revisions(dag_id: str) -> dict[str, Any]:
     did = (dag_id or "").strip()
     if not did:
-        raise ValueError("dag_id zorunludur.")
+        raise ValueError("dag_id is required.")
 
     dag_path = _find_studio_dag_file_by_id(did)
     if dag_path is None:
-        raise FileNotFoundError(f"DAG bulunamadi: {did}")
+        raise FileNotFoundError(f"DAG not found: {did}")
     config_path = _extract_config_path_from_dag_source(dag_path)
     if not config_path.is_file():
-        raise ValueError("DAG bulundu ancak bagli YAML dosyasi bulunamadi.")
+        raise ValueError("DAG was found but linked YAML file was not found.")
 
     flow_dir = config_path.resolve().parent
     history_root = _revision_history_root(flow_dir, did)
@@ -1287,25 +1338,25 @@ def promote_dag_revision(
     did = (dag_id or "").strip()
     rid = (revision_id or "").strip()
     if not did:
-        raise ValueError("dag_id zorunludur.")
+        raise ValueError("dag_id is required.")
     if not rid:
-        raise ValueError("revision_id zorunludur.")
+        raise ValueError("revision_id is required.")
     if not _REVISION_DIR_RE.fullmatch(rid):
-        raise ValueError("revision_id formati gecersiz.")
+        raise ValueError("revision_id format is invalid.")
 
     with _dag_operation_lock(did):
         dag_path = _find_studio_dag_file_by_id(did)
         if dag_path is None:
-            raise FileNotFoundError(f"DAG bulunamadi: {did}")
+            raise FileNotFoundError(f"DAG not found: {did}")
         config_path = _extract_config_path_from_dag_source(dag_path)
         if not config_path.is_file():
-            raise ValueError("DAG bulundu ancak bagli YAML dosyasi bulunamadi.")
+            raise ValueError("DAG was found but linked YAML file was not found.")
 
         flow_dir = config_path.resolve().parent
         history_root = _revision_history_root(flow_dir, did)
         revision_dir = history_root / rid
         if not revision_dir.is_dir():
-            raise FileNotFoundError(f"Revision bulunamadi: {rid}")
+            raise FileNotFoundError(f"Revision not found: {rid}")
 
         rollback_bundle = _read_active_bundle(dag_path, config_path, flow_dir)
         before_state = _airflow_parse_state(did)
@@ -1327,10 +1378,20 @@ def promote_dag_revision(
                 bundle=rollback_bundle,
             )
             raise ValueError(
-                "Revision promote basarisiz oldu; onceki aktif surume geri donuldu."
+                "Revision promote failed; rolled back to the previous active revision."
             ) from exc
 
         revision_state = get_dag_revisions(did)
+        auto_tags: list[str] = []
+        try:
+            rel = config_path.resolve().relative_to(_projects_root().resolve())
+            if len(rel.parts) >= 4:
+                auto_tags = _derive_tags(rel.parts[0], rel.parts[1], rel.parts[2], rel.parts[3])
+        except ValueError:
+            auto_tags = []
+        raw_cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        user_tags = _normalize_custom_tags(raw_cfg.get("custom_tags") if isinstance(raw_cfg, dict) else [])
+        tags = _merge_tags(auto_tags, user_tags)
         metadata = _load_studio_metadata(flow_dir) or {}
         metadata.update(
             {
@@ -1338,6 +1399,9 @@ def promote_dag_revision(
                 "config_path": config_path.as_posix(),
                 "dag_path": dag_path.as_posix(),
                 "dag_id": did,
+                "tags": tags,
+                "auto_tags": auto_tags,
+                "user_tags": user_tags,
                 "active_revision_id": revision_state.get("active_revision_id"),
                 "revision_count": revision_state.get("count", 0),
             }
@@ -1361,17 +1425,17 @@ def delete_dag_bundle(
     _ = str(actor or "").strip() or "flow_studio"
     did = str(dag_id or "").strip()
     if not did:
-        raise ValueError("dag_id zorunludur.")
+        raise ValueError("dag_id is required.")
 
     with _dag_operation_lock(did):
         dag_path = _find_studio_dag_file_by_id(did)
         if dag_path is None:
-            raise FileNotFoundError(f"DAG bulunamadi: {did}")
+            raise FileNotFoundError(f"DAG not found: {did}")
         dag_path = _ensure_path_under_root(dag_path, _generated_dag_root())
 
         config_path = _extract_config_path_from_dag_source(dag_path)
         if not config_path.is_file():
-            raise ValueError("DAG bulundu ancak bagli YAML dosyasi bulunamadi.")
+            raise ValueError("DAG was found but linked YAML file was not found.")
         config_path = _ensure_path_under_root(config_path, _projects_root())
 
         flow_dir = config_path.resolve().parent
@@ -1398,25 +1462,25 @@ def delete_dag_bundle(
             if _best_effort_unlink(mapping_path, retries=6, wait_seconds=0.05):
                 deleted_paths.append(mapping_path.as_posix())
             else:
-                warnings.append(f"Mapping dosyasi silinemedi: {mapping_path.as_posix()}")
+                warnings.append(f"Mapping file could not be deleted: {mapping_path.as_posix()}")
 
         if config_path.is_file():
             if _best_effort_unlink(config_path, retries=6, wait_seconds=0.05):
                 deleted_paths.append(config_path.as_posix())
             else:
-                warnings.append(f"YAML dosyasi silinemedi: {config_path.as_posix()}")
+                warnings.append(f"YAML file could not be deleted: {config_path.as_posix()}")
 
         if dag_path.is_file():
             if _best_effort_unlink(dag_path, retries=6, wait_seconds=0.05):
                 deleted_paths.append(dag_path.as_posix())
             else:
-                warnings.append(f"DAG dosyasi silinemedi: {dag_path.as_posix()}")
+                warnings.append(f"DAG file could not be deleted: {dag_path.as_posix()}")
 
         if history_root.exists():
             if _best_effort_rmtree(history_root):
                 deleted_paths.append(history_root.as_posix())
             else:
-                warnings.append(f"History dizini silinemedi: {history_root.as_posix()}")
+                warnings.append(f"History directory could not be deleted: {history_root.as_posix()}")
 
         history_parent = flow_dir / STUDIO_HISTORY_DIR_NAME
         if history_parent.is_dir() and not any(history_parent.iterdir()):
@@ -1435,7 +1499,7 @@ def delete_dag_bundle(
                 if _best_effort_unlink(metadata_path, retries=6, wait_seconds=0.05):
                     deleted_paths.append(metadata_path.as_posix())
                 else:
-                    warnings.append(f"Metadata dosyasi silinemedi: {metadata_path.as_posix()}")
+                    warnings.append(f"Metadata file could not be deleted: {metadata_path.as_posix()}")
 
         return {
             "dag_id": did,
@@ -1496,7 +1560,7 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
     if bindings:
         task["bindings"] = bindings
     if source_type == "sql" and task["column_mapping_mode"] != "mapping_file":
-        raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
+        raise ValueError("column_mapping_mode='mapping_file' is required when source_type='sql'.")
     if payload.get("column_mapping_mode") == "mapping_file":
         task["mapping_file"] = _auto_mapping_relative_file(1, str(task_group_id))
     return task
@@ -1556,14 +1620,14 @@ def build_task_dict_for_validation_from_task(
     if bindings:
         task["bindings"] = bindings
     if source_type == "sql" and task["column_mapping_mode"] != "mapping_file":
-        raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
+        raise ValueError("column_mapping_mode='mapping_file' is required when source_type='sql'.")
     if task["column_mapping_mode"] == "mapping_file":
         task["mapping_file"] = _auto_mapping_relative_file(task_index, task_group_id)
     return task
 
 
 def validate_pipeline_payload(payload: dict[str, Any]) -> None:
-    """Pipeline formu (T06): task kurallarini ConfigValidator ile dogrular."""
+    """Pipeline form (T06): validates task rules with ConfigValidator."""
     validator = ConfigValidator()
     task_items = payload.get("flow_tasks")
     if isinstance(task_items, list) and task_items:
@@ -1592,7 +1656,7 @@ def fetch_timeline_runs(
     dag_id: str | None = None,
     state: str | None = None,
 ) -> list[dict[str, Any]]:
-    """DagRun listesi (T10): filtreler opsiyonel."""
+    """DagRun list (T10): filters are optional."""
     from airflow.models import DagRun
     from airflow.utils.session import create_session
 
@@ -1618,7 +1682,7 @@ def fetch_timeline_runs(
 
 
 def discover_connections() -> list[dict[str, str]]:
-    """Airflow metadata'dan tanimli connection listesini dondurur."""
+    """Returns the configured connection list from Airflow metadata."""
     from airflow.models.connection import Connection
     from airflow.utils.session import create_session
 
@@ -1643,7 +1707,7 @@ def discover_airflow_variables(
     search: str | None = None,
     limit: int = 200,
 ) -> list[str]:
-    """Airflow metadata'dan Variable key listesini dondurur."""
+    """Returns the Variable key list from Airflow metadata."""
     from airflow.models import Variable
     from airflow.utils.session import create_session
 
@@ -1684,7 +1748,7 @@ def discover_hierarchy_options(
     source: str | None = None,
 ) -> dict[str, list[str]]:
     """
-    Flow Studio hiyerarsisi icin mevcut klasor seceneklerini dondurur.
+    Returns available folder options for Flow Studio hierarchy.
     Hem projects root hem dag root taranir ve union alinir.
     """
     project_val = (project or "").strip()
@@ -1699,7 +1763,7 @@ def discover_hierarchy_options(
     elif source_val == "union":
         roots = [_projects_root(), _generated_dag_root()]
     else:
-        raise ValueError("source yalnizca 'dag', 'projects' veya 'union' olabilir.")
+        raise ValueError("source must be one of: 'dag', 'projects', or 'union'.")
 
     projects: set[str] = set()
     domains: set[str] = set()
@@ -1747,7 +1811,7 @@ def discover_schemas(
 def _resolve_schema_name(available_schemas: list[str], requested_schema: str) -> str:
     requested = str(requested_schema or "").strip()
     if not requested:
-        raise ValueError("Schema degeri bos olamaz.")
+        raise ValueError("Schema value cannot be empty.")
     if requested in available_schemas:
         return requested
 
@@ -1764,7 +1828,7 @@ def _resolve_schema_name(available_schemas: list[str], requested_schema: str) ->
             f"Schema '{requested}' birden fazla eslesme verdi: {', '.join(prefix_matches[:5])}"
         )
 
-    raise ValueError(f"Schema bulunamadi: {requested}")
+    raise ValueError(f"Schema not found: {requested}")
 
 
 def discover_tables(
@@ -1823,7 +1887,7 @@ def generate_mapping_preview(payload: dict[str, Any]) -> dict[str, Any]:
     source_conn_id = str(payload.get("source_conn_id") or "").strip()
     target_conn_id = str(payload.get("target_conn_id") or "").strip()
     if not source_conn_id or not target_conn_id:
-        raise ValueError("source_conn_id ve target_conn_id zorunludur.")
+        raise ValueError("source_conn_id and target_conn_id are required.")
 
     src_params = AirflowConnectionAdapter.get_connection_params(source_conn_id)
     tgt_params = AirflowConnectionAdapter.get_connection_params(target_conn_id)
@@ -1844,7 +1908,7 @@ def generate_mapping_preview(payload: dict[str, Any]) -> dict[str, Any]:
         source_schema = str(payload.get("source_schema") or "").strip()
         source_table = str(payload.get("source_table") or "").strip()
         if not source_schema or not source_table:
-            raise ValueError("source_type=table|view icin source_schema ve source_table zorunludur.")
+            raise ValueError("source_schema and source_table are required when source_type=table|view.")
         with DBSession(src_params, src_dialect) as src_session:
             mapping_obj = MappingGenerator().generate(
                 src_session.conn,
@@ -1857,7 +1921,7 @@ def generate_mapping_preview(payload: dict[str, Any]) -> dict[str, Any]:
     elif source_type == "sql":
         inline_sql = str(payload.get("inline_sql") or "").strip()
         if not inline_sql:
-            raise ValueError("source_type='sql' icin inline_sql zorunludur.")
+            raise ValueError("inline_sql is required when source_type='sql'.")
         sql_cols = extract_sql_select_columns_for_conn(source_conn_id, inline_sql)
         mapping_obj, warnings = _build_mapping_from_columns(
             columns=sql_cols,
@@ -1866,7 +1930,7 @@ def generate_mapping_preview(payload: dict[str, Any]) -> dict[str, Any]:
             version=version,
         )
     else:
-        raise ValueError("source_type yalnizca table|view|sql olabilir.")
+        raise ValueError("source_type can only be table|view|sql.")
 
     mapping_text = _mapping_dump_text(mapping_obj)
     return {
@@ -1914,27 +1978,27 @@ def create_or_update_dag(
         if update:
             update_dag_id = str(dag_id or "").strip()
             if not update_dag_id:
-                raise ValueError("update-dag icin dag_id query param zorunludur.")
+                raise ValueError("dag_id query param is required for update-dag.")
             existing_studio_dag = _find_studio_dag_file_by_id(update_dag_id)
             if existing_studio_dag is None:
                 raise ValueError(
-                    f"Guncellenecek DAG bulunamadi: dag_id={update_dag_id}"
+                    f"DAG to update not found: dag_id={update_dag_id}"
                 )
             dag_path = existing_studio_dag
             _ensure_path_under_root(dag_path, gen_root)
             config_path = _extract_config_path_from_dag_source(dag_path)
             if not config_path.is_file():
-                raise ValueError("Guncellenecek YAML dosyasi bulunamadi.")
+                raise ValueError("YAML file to update was not found.")
             _ensure_path_under_root(config_path, root)
 
             config_resolved = config_path.resolve()
             rel = config_resolved.relative_to(root.resolve())
             if len(rel.parts) < 5:
-                raise ValueError("DAG'a bagli YAML path hiyerarsisi gecersiz.")
+                raise ValueError("Linked YAML path hierarchy in DAG is invalid.")
             cfg_project, cfg_domain, cfg_level, cfg_flow = rel.parts[:4]
             if (cfg_project, cfg_domain, cfg_level, cfg_flow) != (project, domain, level, flow):
                 raise ValueError(
-                    "dag_id ile payload hiyerarsisi uyusmuyor: "
+                    "dag_id and payload hierarchy do not match: "
                     f"dag=({cfg_project}/{cfg_domain}/{cfg_level}/{cfg_flow}) "
                     f"payload=({project}/{domain}/{level}/{flow})"
                 )
@@ -1947,7 +2011,9 @@ def create_or_update_dag(
             config_path = flow_dir / _build_yaml_filename(project, domain, level, flow, group_no)
 
         existing_auto_mapping_paths = _collect_existing_auto_mapping_paths(config_path, flow_dir)
-        tags = _derive_tags(project, domain, level, flow)
+        auto_tags = _derive_tags(project, domain, level, flow)
+        user_tags = _normalize_custom_tags(payload.get("custom_tags"))
+        tags = _merge_tags(auto_tags, user_tags)
         actor = str(os.getenv("FFENGINE_STUDIO_ACTOR", "flow_studio")).strip() or "flow_studio"
 
         task_cfgs: list[dict[str, Any]] = []
@@ -2003,7 +2069,7 @@ def create_or_update_dag(
             mode = task_cfg["column_mapping_mode"]
             mapping_content = str(item.get("mapping_content") or "")
             if source_type == "sql" and mode != "mapping_file":
-                raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
+                raise ValueError("column_mapping_mode='mapping_file' is required when source_type='sql'.")
             if mode == "mapping_file":
                 mapping_rel = _auto_mapping_relative_file(idx, task_group_id)
                 mapping_path = _resolve_mapping_file_path(flow_dir, mapping_rel)
@@ -2033,7 +2099,7 @@ def create_or_update_dag(
                 inline_sql = str(check.get("inline_sql") or "").strip()
                 if not inline_sql:
                     raise ValueError(
-                        f"source_type='sql' icin inline_sql zorunludur. task_group_id={check['task_group_id']}"
+                        f"inline_sql is required when source_type='sql'. task_group_id={check['task_group_id']}"
                     )
                 sql_columns = [
                     col["name"] for col in extract_sql_select_columns_for_conn(payload["source_conn_id"], inline_sql)
@@ -2049,7 +2115,7 @@ def create_or_update_dag(
                 mapping_columns = _mapping_yaml_to_source_columns(mapping_obj)
                 if sql_columns != mapping_columns:
                     raise ValueError(
-                        "SQL select kolonlari mapping ile uyumsuz: "
+                        "SQL select columns are incompatible with mapping: "
                         f"task_group_id={check['task_group_id']}; "
                         f"expected={sql_columns}; actual={mapping_columns}"
                     )
@@ -2089,6 +2155,7 @@ def create_or_update_dag(
                 "source_db_var": payload["source_conn_id"],
                 "target_db_var": payload["target_conn_id"],
                 "flow_tasks": task_cfgs,
+                "custom_tags": user_tags,
             }
             config_path.write_text(
                 yaml.safe_dump(config_obj, sort_keys=False, allow_unicode=False),
@@ -2151,8 +2218,8 @@ def create_or_update_dag(
             "task_count": len(task_cfgs),
             "group_no": group_no,
             "tags": tags,
-            "auto_tags": tags,
-            "user_tags": [],
+            "auto_tags": auto_tags,
+            "user_tags": user_tags,
             "active_revision_id": active_revision_id,
             "revision_count": len(revision_items),
         }

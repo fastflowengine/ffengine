@@ -1,4 +1,4 @@
-"""Airflow 3 FastAPI app for Flow Studio."""
+﻿"""Airflow 3 FastAPI app for Flow Studio."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ from ffengine.ui.studio_service import (
 
 
 def _raise_http_from_exception(exc: Exception) -> None:
-    """C10: domain exception normalize edip tutarlı HTTP yanıtı üretir."""
+    """C10: domain exception normalize edip tutarlÄ± HTTP yanÄ±tÄ± Ã¼retir."""
     if isinstance(exc, HTTPException):
         raise exc
     norm = normalize_exception(exc)
@@ -49,22 +49,23 @@ def _optional_api_key_dep(
     x_flow_studio_api_key: str | None = Header(
         None,
         alias="X-Flow-Studio-API-Key",
-        description="Flow Studio API anahtari (FLOW_STUDIO_API_KEY ortam degiskeni ayarliysa zorunlu)",
+        description="Flow Studio API key (required if FLOW_STUDIO_API_KEY environment variable is set)",
     ),
 ) -> None:
-    """T12: Mutasyon endpointleri icin opsiyonel API anahtari dogrulamasi."""
+    """T12: Optional API key validation for mutation endpoints."""
     expected = os.getenv("FLOW_STUDIO_API_KEY", "").strip()
     if not expected:
         return
     if not x_flow_studio_api_key or x_flow_studio_api_key.strip() != expected:
         raise HTTPException(
             status_code=401,
-            detail="Gecersiz veya eksik X-Flow-Studio-API-Key basligi.",
+            detail="Invalid or missing X-Flow-Studio-API-Key header.",
         )
 
 
 _BINDING_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WHERE_PARAM_RE = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+_CUSTOM_TAG_MAX_COUNT = 10
 
 
 def _extract_where_params(where_clause: str | None) -> set[str]:
@@ -79,7 +80,7 @@ def _validate_bindings_where_contract(
     items = list(bindings or [])
     if where_params and not items:
         raise ValueError(
-            "Where Clause icinde binding tanimi olmayan parametre(ler) var: "
+            "Where Clause contains parameter(s) without binding definition: "
             + ", ".join(sorted(where_params))
         )
     if not items:
@@ -89,12 +90,12 @@ def _validate_bindings_where_contract(
     unused = sorted(binding_names - where_params)
     if missing:
         raise ValueError(
-            "Where Clause icinde binding tanimi olmayan parametre(ler) var: "
+            "Where Clause contains parameter(s) without binding definition: "
             + ", ".join(missing)
         )
     if unused:
         raise ValueError(
-            "Binding tanimi var ama Where Clause icinde kullanilmayan parametre(ler) var: "
+            "Binding definition exists but parameter(s) are unused in Where Clause: "
             + ", ".join(unused)
         )
 
@@ -113,7 +114,7 @@ class BindingPayload(BaseModel):
     def _v_variable_name(cls, v: str) -> str:
         name = str(v or "").strip()
         if not _BINDING_VAR_RE.fullmatch(name):
-            raise ValueError("variable_name formati gecersiz.")
+            raise ValueError("Invalid variable_name format.")
         return name
 
     @field_validator("binding_source")
@@ -121,17 +122,17 @@ class BindingPayload(BaseModel):
     def _v_binding_source(cls, v: str) -> str:
         allowed = {"source", "target", "default", "airflow_variable"}
         if v not in allowed:
-            raise ValueError(f"binding_source gecersiz: {v!r}")
+            raise ValueError(f"Invalid binding_source: {v!r}")
         return v
 
     @model_validator(mode="after")
     def _v_source_specific_fields(self) -> "BindingPayload":
         if self.binding_source == "default" and not (self.default_value or "").strip():
-            raise ValueError("binding_source='default' icin default_value zorunludur.")
+            raise ValueError("default_value is required when binding_source='default'.")
         if self.binding_source in {"source", "target"} and not (self.sql or "").strip():
-            raise ValueError("binding_source='source|target' icin sql zorunludur.")
+            raise ValueError("sql is required when binding_source='source|target'.")
         if self.binding_source == "airflow_variable" and not (self.airflow_variable_key or "").strip():
-            raise ValueError("binding_source='airflow_variable' icin airflow_variable_key zorunludur.")
+            raise ValueError("airflow_variable_key is required when binding_source='airflow_variable'.")
         return self
 
 
@@ -163,45 +164,45 @@ class FlowTaskPayload(BaseModel):
     @classmethod
     def _v_source_type(cls, v: str) -> str:
         if v not in {"table", "view", "sql"}:
-            raise ValueError("source_type yalnizca 'table', 'view' veya 'sql' olabilir.")
+            raise ValueError("source_type must be one of: 'table', 'view', or 'sql'.")
         if v not in VALID_SOURCE_TYPES:
-            raise ValueError(f"source_type gecersiz: {v!r}")
+            raise ValueError(f"Invalid source_type: {v!r}")
         return v
 
     @field_validator("load_method")
     @classmethod
     def _v_load_method(cls, v: str) -> str:
         if v not in VALID_LOAD_METHODS:
-            raise ValueError(f"load_method gecersiz: {v!r}")
+            raise ValueError(f"Invalid load_method: {v!r}")
         return v
 
     @field_validator("column_mapping_mode")
     @classmethod
     def _v_col_map(cls, v: str) -> str:
         if v not in VALID_COLUMN_MAPPING_MODES:
-            raise ValueError(f"column_mapping_mode gecersiz: {v!r}")
+            raise ValueError(f"Invalid column_mapping_mode: {v!r}")
         return v
 
     @field_validator("partitioning_mode")
     @classmethod
     def _v_part_mode(cls, v: str) -> str:
         if v not in VALID_PARTITION_MODES:
-            raise ValueError(f"partitioning.mode gecersiz: {v!r}")
+            raise ValueError(f"Invalid partitioning.mode: {v!r}")
         return v
 
     @model_validator(mode="after")
     def _v_mapping(self) -> FlowTaskPayload:
         if self.source_type == "sql" and self.column_mapping_mode != "mapping_file":
-            raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
+            raise ValueError("column_mapping_mode='mapping_file' is required when source_type='sql'.")
         if self.source_type in {"table", "view"}:
             if not (self.source_schema or "").strip() or not (self.source_table or "").strip():
-                raise ValueError("source_type=table|view icin source_schema ve source_table zorunludur.")
+                raise ValueError("source_schema and source_table are required when source_type=table|view.")
         if self.source_type == "sql" and not (self.inline_sql or "").strip():
-            raise ValueError("source_type='sql' icin inline_sql zorunludur.")
+            raise ValueError("inline_sql is required when source_type='sql'.")
         items = list(self.bindings or [])
         names = [item.variable_name for item in items]
         if len(names) != len(set(names)):
-            raise ValueError("bindings.variable_name task icinde unique olmalidir.")
+            raise ValueError("bindings.variable_name must be unique within a task.")
         _validate_bindings_where_contract(self.where, items)
         return self
 
@@ -236,35 +237,45 @@ class DagUpsertPayload(BaseModel):
     bindings: list[BindingPayload] | None = None
     task_group_id: str | None = Field(default=None, min_length=1)
     flow_tasks: list[FlowTaskPayload] | None = None
+    custom_tags: list[str] | None = None
 
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
         if v not in {"table", "view", "sql"}:
-            raise ValueError("source_type yalnizca 'table', 'view' veya 'sql' olabilir.")
+            raise ValueError("source_type must be one of: 'table', 'view', or 'sql'.")
         if v not in VALID_SOURCE_TYPES:
-            raise ValueError(f"source_type gecersiz: {v!r}")
+            raise ValueError(f"Invalid source_type: {v!r}")
         return v
 
     @field_validator("load_method")
     @classmethod
     def _v_load_method(cls, v: str) -> str:
         if v not in VALID_LOAD_METHODS:
-            raise ValueError(f"load_method gecersiz: {v!r}")
+            raise ValueError(f"Invalid load_method: {v!r}")
         return v
 
     @field_validator("column_mapping_mode")
     @classmethod
     def _v_col_map(cls, v: str) -> str:
         if v not in VALID_COLUMN_MAPPING_MODES:
-            raise ValueError(f"column_mapping_mode gecersiz: {v!r}")
+            raise ValueError(f"Invalid column_mapping_mode: {v!r}")
         return v
 
     @field_validator("partitioning_mode")
     @classmethod
     def _v_part_mode(cls, v: str) -> str:
         if v not in VALID_PARTITION_MODES:
-            raise ValueError(f"partitioning.mode gecersiz: {v!r}")
+            raise ValueError(f"Invalid partitioning.mode: {v!r}")
+        return v
+
+    @field_validator("custom_tags")
+    @classmethod
+    def _v_custom_tags(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        if len(v) > _CUSTOM_TAG_MAX_COUNT:
+            raise ValueError(f"custom_tags can contain at most {_CUSTOM_TAG_MAX_COUNT} items.")
         return v
 
     @model_validator(mode="after")
@@ -277,20 +288,20 @@ class DagUpsertPayload(BaseModel):
             source_required_ok = all([(self.source_schema or "").strip(), (self.source_table or "").strip()])
             if not (source_required_ok and target_required_ok):
                 raise ValueError(
-                    "flow_tasks verilmediyse source_type=table|view icin source_schema/source_table/target_schema/target_table zorunludur."
+                    "When flow_tasks is not provided and source_type=table|view, source_schema/source_table/target_schema/target_table are required."
                 )
         elif not target_required_ok:
             raise ValueError(
-                "flow_tasks verilmediyse target_schema/target_table zorunludur."
+                "When flow_tasks is not provided, target_schema/target_table are required."
             )
         if self.source_type == "sql" and self.column_mapping_mode != "mapping_file":
-            raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
+            raise ValueError("column_mapping_mode='mapping_file' is required when source_type='sql'.")
         if self.source_type == "sql" and not (self.inline_sql or "").strip():
-            raise ValueError("source_type='sql' icin inline_sql zorunludur.")
+            raise ValueError("inline_sql is required when source_type='sql'.")
         items = list(self.bindings or [])
         names = [item.variable_name for item in items]
         if len(names) != len(set(names)):
-            raise ValueError("bindings.variable_name task icinde unique olmalidir.")
+            raise ValueError("bindings.variable_name must be unique within a task.")
         _validate_bindings_where_contract(self.where, items)
         return self
 
@@ -316,18 +327,18 @@ class MappingGeneratePayload(BaseModel):
     @classmethod
     def _v_source_type(cls, v: str) -> str:
         if v not in {"table", "view", "sql"}:
-            raise ValueError("source_type yalnizca 'table', 'view' veya 'sql' olabilir.")
+            raise ValueError("source_type must be one of: 'table', 'view', or 'sql'.")
         if v not in VALID_SOURCE_TYPES:
-            raise ValueError(f"source_type gecersiz: {v!r}")
+            raise ValueError(f"Invalid source_type: {v!r}")
         return v
 
     @model_validator(mode="after")
     def _v_required_fields(self) -> "MappingGeneratePayload":
         if self.source_type in {"table", "view"}:
             if not (self.source_schema or "").strip() or not (self.source_table or "").strip():
-                raise ValueError("source_type=table|view icin source_schema ve source_table zorunludur.")
+                raise ValueError("source_schema and source_table are required when source_type=table|view.")
         if self.source_type == "sql" and not (self.inline_sql or "").strip():
-            raise ValueError("source_type='sql' icin inline_sql zorunludur.")
+            raise ValueError("inline_sql is required when source_type='sql'.")
         return self
 
 
@@ -421,7 +432,7 @@ def api_tables(
     if q and len(q.strip()) < 2:
         raise HTTPException(
             status_code=400,
-            detail="Typeahead icin en az 2 karakter girin.",
+            detail="Enter at least 2 characters for typeahead.",
         )
     try:
         data = discover_tables(
@@ -450,7 +461,7 @@ def api_columns(
 
 
 def _payload_to_service_dict(payload: DagUpsertPayload) -> dict[str, Any]:
-    """Pydantic modelden servis katmanina dict donustur."""
+    """Convert Pydantic model to service-layer dict."""
     return payload.model_dump(exclude_none=True)
 
 
@@ -471,7 +482,7 @@ def api_create_dag(
 @flow_studio_app.post("/api/update-dag")
 def api_update_dag(
     payload: DagUpsertPayload,
-    dag_id: str = Query(..., min_length=1, description="Guncellenecek DAG id"),
+    dag_id: str = Query(..., min_length=1, description="DAG id to update"),
     _: None = Depends(_optional_api_key_dep),
 ) -> dict[str, Any]:
     try:
@@ -566,3 +577,4 @@ def api_delete_dag(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         _raise_http_from_exception(exc)
+

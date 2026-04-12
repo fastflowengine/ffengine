@@ -1,5 +1,5 @@
-"""
-C08_T13 â€” Flow Studio FastAPI endpoint unit/API testleri.
+﻿"""
+C08_T13 - Flow Studio FastAPI endpoint unit/API tests.
 """
 
 from __future__ import annotations
@@ -102,18 +102,21 @@ def test_index_html_ok(client):
     assert "folder_picker_modal" in r.text
     assert "Group No" not in r.text
     assert "Filter & Bindings" in r.text
-    assert "Task Group ID (Opsiyonel)" not in r.text
+    assert "Task Group ID (Optional)" not in r.text
     assert "task-group-id-readonly" in r.text
     assert "Expand All" in r.text
     assert "Collapse All" in r.text
     assert "Save Configuration" in r.text
     assert "+ Add New Task" in r.text
+    assert "Custom Tags" in r.text
+    assert "custom_tags_input" in r.text
+    assert "Scheduler (coming in 15.6)" in r.text
     assert "Delete DAG" in r.text
     assert "delete_dag_modal" in r.text
     assert "Update DAG + YAML" not in r.text
     assert "Load Timeline" not in r.text
-    assert "Timeline DAG ID (opsiyonel)" not in r.text
-    assert "Timeline State (opsiyonel)" not in r.text
+    assert "Timeline DAG ID (optional)" not in r.text
+    assert "Timeline State (optional)" not in r.text
     assert "Timeline Limit" not in r.text
 
 
@@ -415,7 +418,7 @@ def test_create_dag_rejects_full_scan_partitioning_mode(client, studio_paths):
     )
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 422
-    assert "partitioning.mode gecersiz" in r.text
+    assert "Invalid partitioning.mode" in r.text
 
 
 def test_create_dag_sql_source_persists_inline_sql(client, studio_paths):
@@ -509,7 +512,7 @@ def test_create_dag_sql_source_rejects_column_count_mismatch(client, studio_path
     ):
         r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 422
-    assert "SQL select kolonlari mapping ile uyumsuz" in r.text
+    assert "SQL select columns are incompatible with mapping" in r.text
 
 
 def test_create_dag_sql_source_rejects_column_order_mismatch(client, studio_paths):
@@ -534,7 +537,7 @@ def test_create_dag_sql_source_rejects_column_order_mismatch(client, studio_path
     ):
         r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 422
-    assert "SQL select kolonlari mapping ile uyumsuz" in r.text
+    assert "SQL select columns are incompatible with mapping" in r.text
 
 
 def test_create_dag_with_bindings_persists_yaml(client, studio_paths):
@@ -575,7 +578,7 @@ def test_create_dag_rejects_missing_binding_for_where_param(client, studio_paths
     )
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 422
-    assert "binding tanimi olmayan" in r.text
+    assert "without binding definition" in r.text
 
 
 def test_create_dag_rejects_unused_binding(client, studio_paths):
@@ -594,7 +597,7 @@ def test_create_dag_rejects_unused_binding(client, studio_paths):
     )
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 422
-    assert "kullanilmayan" in r.text
+    assert "unused" in r.text
 
 
 def test_create_dag_rejects_removed_fields(client, studio_paths):
@@ -616,6 +619,49 @@ def test_create_dag_rejects_removed_tags_field(client, studio_paths):
     p["tags"] = ["prod", "nightly"]
     r = client.post("/api/create-dag", json=p)
     assert r.status_code == 422
+
+
+def test_create_dag_custom_tags_normalized_and_merged(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["custom_tags"] = [" Team-A ", "LEVEL1", "nightly", "team-a", "odd !! tag "]
+
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    flow = Path(body["flow_dir"])
+
+    cfg = yaml.safe_load((flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8"))
+    assert cfg["custom_tags"] == ["team-a", "level1", "nightly", "odd_tag"]
+    assert cfg["flow_tasks"][0]["tags"] == [
+        "webhook",
+        "whk",
+        "level1",
+        "src_to_stg",
+        "team-a",
+        "nightly",
+        "odd_tag",
+    ]
+
+    meta = json.loads((flow / ss.STUDIO_METADATA_NAME).read_text(encoding="utf-8"))
+    assert meta["auto_tags"] == ["webhook", "whk", "level1", "src_to_stg"]
+    assert meta["user_tags"] == ["team-a", "level1", "nightly", "odd_tag"]
+    assert meta["tags"] == ["webhook", "whk", "level1", "src_to_stg", "team-a", "nightly", "odd_tag"]
+
+
+def test_create_dag_rejects_custom_tags_count_over_limit(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["custom_tags"] = [f"t{i}" for i in range(1, 23)]
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "custom_tags" in r.text
+
+
+def test_create_dag_rejects_custom_tag_length_over_limit(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["custom_tags"] = ["x" * 33]
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "length must be at most 32" in r.text
 
 
 def test_create_dag_requires_new_hierarchy_fields(client, studio_paths):
@@ -875,21 +921,21 @@ def test_delete_dag_removes_flow_studio_bundle_files(client, studio_paths):
     if dag_deleted:
         assert not dag_path.exists()
     else:
-        assert any("DAG dosyasi silinemedi" in w for w in warnings)
+        assert any("DAG file could not be deleted" in w for w in warnings)
     if cfg_deleted:
         assert not cfg_path.exists()
     else:
-        assert any("YAML dosyasi silinemedi" in w for w in warnings)
+        assert any("YAML file could not be deleted" in w for w in warnings)
     if mapping_deleted:
         assert not mapping_path.exists()
     else:
-        assert any("Mapping dosyasi silinemedi" in w for w in warnings)
+        assert any("Mapping file could not be deleted" in w for w in warnings)
     if history_path.exists() and not history_deleted:
-        assert any("History dizini silinemedi" in w for w in warnings)
+        assert any("History directory could not be deleted" in w for w in warnings)
     if metadata_deleted:
         assert not metadata_path.exists()
     elif metadata_path.exists():
-        assert any("Metadata dosyasi silinemedi" in w for w in warnings)
+        assert any("Metadata file could not be deleted" in w for w in warnings)
 
 
 def test_delete_dag_rejects_non_studio_marker_dag(client, studio_paths):
@@ -940,9 +986,9 @@ def test_delete_dag_continues_when_airflow_cleanup_fails(client, studio_paths):
     assert body["airflow_cleanup"]["ok"] is False
     assert any("cleanup exception" in str(x).lower() for x in body.get("warnings", []))
     if dag_path.exists():
-        assert any("DAG dosyasi silinemedi" in str(x) for x in body.get("warnings", []))
+        assert any("DAG file could not be deleted" in str(x) for x in body.get("warnings", []))
     if cfg_path.exists():
-        assert any("YAML dosyasi silinemedi" in str(x) for x in body.get("warnings", []))
+        assert any("YAML file could not be deleted" in str(x) for x in body.get("warnings", []))
 
 
 def test_revision_retention_keeps_last_20_snapshots(client, studio_paths, monkeypatch):
@@ -989,7 +1035,7 @@ def test_promote_rolls_back_when_parse_verification_fails(client, studio_paths, 
             json={},
         )
     assert r_promote.status_code == 422
-    assert "geri donuldu" in r_promote.text
+    assert "rolled back" in r_promote.text
     assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
 
 
@@ -1002,7 +1048,7 @@ def test_update_dag_rejects_dag_id_payload_flow_mismatch(client, studio_paths):
     payload["flow"] = "src_to_dwh"
     r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 422
-    assert "hiyerarsisi uyusmuyor" in r2.text
+    assert "hierarchy do not match" in r2.text
 
 
 def test_update_dag_rejects_full_scan_partitioning_mode(client, studio_paths):
@@ -1014,7 +1060,7 @@ def test_update_dag_rejects_full_scan_partitioning_mode(client, studio_paths):
     payload["partitioning_mode"] = "full_scan"
     r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 422
-    assert "partitioning.mode gecersiz" in r2.text
+    assert "Invalid partitioning.mode" in r2.text
 
 
 def test_resolve_task_dependencies_depends_on_and_default_order():
@@ -1033,7 +1079,7 @@ def test_resolve_task_dependencies_invalid_upstream():
         {"task_group_id": "t1"},
         {"task_group_id": "t2", "depends_on": ["missing"]},
     ]
-    with pytest.raises(ValueError, match="depends_on gecersiz"):
+    with pytest.raises(ValueError, match="depends_on contains invalid"):
         ss.resolve_task_dependencies(tasks)
 
 
@@ -1100,7 +1146,7 @@ def test_dag_config_not_found_returns_404(client):
     with patch.object(
         api_app_module,
         "resolve_dag_config_for_update",
-        side_effect=FileNotFoundError("DAG bulunamadi: missing_dag"),
+        side_effect=FileNotFoundError("DAG not found: missing_dag"),
     ):
         r = client.get("/api/dag-config?dag_id=missing_dag")
     assert r.status_code == 404
@@ -1109,6 +1155,7 @@ def test_dag_config_not_found_returns_404(client):
 
 def test_resolve_dag_config_for_update_roundtrip(client, studio_paths):
     payload = _minimal_table_payload()
+    payload["custom_tags"] = ["ops", "nightly"]
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 201, r.text
     dag_id = Path(r.json()["dag_path"]).stem
@@ -1123,6 +1170,22 @@ def test_resolve_dag_config_for_update_roundtrip(client, studio_paths):
     assert resolved["payload"]["target_conn_id"] == "tgt_c"
     assert resolved["payload"]["source_table"] == "orders"
     assert resolved["payload"]["target_table"] == "orders_stg"
+    assert resolved["payload"]["custom_tags"] == ["ops", "nightly"]
+
+
+def test_resolve_dag_config_returns_empty_custom_tags_when_yaml_missing_field(client, studio_paths):
+    payload = _minimal_table_payload()
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    dag_id = Path(r.json()["dag_path"]).stem
+    flow = Path(r.json()["flow_dir"])
+    yaml_path = flow / "webhook_whk_level1_src_to_stg_group_1.yaml"
+    cfg = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    cfg.pop("custom_tags", None)
+    yaml_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=False), encoding="utf-8")
+
+    resolved = ss.resolve_dag_config_for_update(dag_id)
+    assert resolved["payload"]["custom_tags"] == []
 
 
 def test_resolve_dag_config_for_update_roundtrip_sql_inline_sql(client, studio_paths):
@@ -1249,7 +1312,7 @@ def test_resolve_dag_config_for_update_roundtrip_bindings(client, studio_paths):
 
 def test_resolve_dag_config_for_update_not_found_raises_file_not_found():
     dag_id = "ffengine_config_group_12_public_ff_test_data_to_dbo_ff_test_data_psql_v12"
-    with pytest.raises(FileNotFoundError, match="DAG bulunamadi"):
+    with pytest.raises(FileNotFoundError, match="DAG not found"):
         ss.resolve_dag_config_for_update(dag_id)
 
 
@@ -1368,4 +1431,5 @@ def test_api_key_required_when_env_set(client, studio_paths, monkeypatch):
         headers={"X-Flow-Studio-API-Key": "secret123"},
     )
     assert r4.status_code == 200
+
 

@@ -1,4 +1,4 @@
-"""Airflow 3-native Flow Studio plugin registration."""
+﻿"""Airflow 3-native Flow Studio plugin registration."""
 
 from airflow.plugins_manager import AirflowPlugin
 
@@ -14,8 +14,9 @@ class FlowStudioPlugin(AirflowPlugin):
             "url_prefix": "/flow-studio",
         }
     ]
-    # category: "browse" | "docs" | "admin" | "user" ile eşleşenler ilgili menünün İÇİNE konur.
-    # Bunların dışında benzersiz bir değer verilirse Airflow yeni bir üst menü öğesi oluşturur (Yönetici altında değil).
+    # Categories matching "browse" | "docs" | "admin" | "user"
+    # are rendered inside the corresponding Airflow menu section.
+    # Any unique custom value creates a new top-level menu section.
     external_views = [
         {
             "name": "Flow Studio",

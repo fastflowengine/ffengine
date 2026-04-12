@@ -1,10 +1,10 @@
-<!doctype html>
-<html lang="tr">
+﻿<!doctype html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flow Studio</title>
-  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=21">
+  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=23">
 </head>
 <body class="flow-studio-root" data-ui-variant="current">
   <div id="operation_progress" class="operation-progress hidden" role="status" aria-live="polite" aria-busy="false">
@@ -49,6 +49,25 @@
             <option value="">Select Target DB Connection</option>
           </select>
         </label>
+      </div>
+      <div class="panel-body global-controls-row">
+        <label class="global-control tags-control">
+          Custom Tags
+          <div class="tag-chip-input" id="custom_tags_control">
+            <div id="custom_tags_chips" class="tag-chips"></div>
+            <input
+              id="custom_tags_input"
+              type="text"
+              autocomplete="off"
+              placeholder="Add tag and press Enter"
+              maxlength="32"
+            >
+          </div>
+        </label>
+        <div class="global-control scheduler-placeholder" aria-disabled="true">
+          <div class="scheduler-title">Scheduler (coming in 15.6)</div>
+          <div class="scheduler-body">Scheduling controls will be added in C15.6.</div>
+        </div>
       </div>
       <input id="project" value="webhook" class="hidden">
       <input id="domain" value="whk" class="hidden">
@@ -204,7 +223,7 @@
             <div class="tab-panel active" data-tab-panel="filter">
               <label>
                 Where Clause
-                <textarea class="where" rows="4" placeholder="ornek: updated_at >= :last_sync"></textarea>
+                <textarea class="where" rows="4" placeholder="example: updated_at >= :last_sync"></textarea>
               </label>
               <div class="bindings-block">
                 <div class="bindings-head">
@@ -257,7 +276,7 @@
                 <input class="batch-size" type="number" min="1" value="10000">
               </label>
               <div class="muted-note">
-                Community engine tek-is parcacikli calisir; worker/extraction ayarlari v2 formdan kaldirildi.
+                Community engine runs single-threaded; worker/extraction settings were removed from the v2 form.
               </div>
             </div>
             <div class="tab-panel" data-tab-panel="mapping">
@@ -315,11 +334,11 @@
         <h3 id="delete_dag_title">Delete DAG</h3>
       </div>
       <div class="confirm-body">
-        <p>Bu islem geri alinamaz. Silmek icin DAG ID degerini aynen yazin.</p>
+        <p>This action cannot be undone. To delete, type the DAG ID exactly.</p>
         <p class="muted-note">DAG ID: <strong id="delete_dag_expected">-</strong></p>
         <label>
           Confirm DAG ID
-          <input id="delete_dag_confirm_input" placeholder="DAG ID yazin">
+          <input id="delete_dag_confirm_input" placeholder="Type DAG ID">
         </label>
       </div>
       <div class="confirm-actions">
@@ -329,8 +348,9 @@
     </div>
   </div>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=30"></script>
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=33"></script>
 </body>
 </html>
+
 
 
