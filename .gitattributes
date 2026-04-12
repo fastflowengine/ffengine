@@ -1,0 +1,7 @@
+# Text normalization
+*.md text eol=lf
+*.txt text eol=lf
+
+# Handbook strict normalization
+handbook/**/*.md text eol=lf
+handbook/**/*.txt text eol=lf
