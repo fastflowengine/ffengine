@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flow Studio</title>
-  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=23">
+  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=38">
 </head>
 <body class="flow-studio-root" data-ui-variant="current">
   <div id="operation_progress" class="operation-progress hidden" role="status" aria-live="polite" aria-busy="false">
@@ -22,37 +22,37 @@
     <div id="theme_notice" class="status-note warn hidden"></div>
     <div id="theme_source_debug" class="muted-note"></div>
 
-    <section class="panel">
+    <section class="panel dag-settings-panel">
       <div class="panel-title panel-title-row">
-        <span>Global Settings (Project & DB)</span>
+        <span>DAG Settings</span>
         <div class="panel-title-actions hidden" id="update_actions_top">
-          <button class="btn btn-primary" id="btn_update_top" type="button">Update</button>
+          <button class="btn btn-primary" id="btn_update_top" type="button" title="Update the current DAG">Update</button>
         </div>
       </div>
       <div class="panel-body grid-3">
         <label>
-          Folder Path
+          <span class="global-control-label">Folder Path</span>
           <div class="path-picker-row">
-            <input id="folder_path_display" value="webhook/whk/level1/src_to_stg" readonly>
-            <button class="btn btn-secondary" id="btn_open_folder_picker" type="button">Select / Create Folder</button>
+            <input id="folder_path_display" value="webhook/whk/level1/src_to_stg" readonly title="Flow path (project/domain/level/flow)">
+            <button class="btn btn-secondary btn-folder-picker" id="btn_open_folder_picker" type="button" title="Select or create project/domain/level/flow path">Select / Create Folder</button>
           </div>
         </label>
         <label>
-          Source DB Connection
-          <select id="source_conn_id">
+          <span class="global-control-label">Source DB Connection</span>
+          <select id="source_conn_id" title="Choose the source database connection">
             <option value="">Select Source DB Connection</option>
           </select>
         </label>
         <label>
-          Target DB Connection
-          <select id="target_conn_id">
+          <span class="global-control-label">Target DB Connection</span>
+          <select id="target_conn_id" title="Choose the target database connection">
             <option value="">Select Target DB Connection</option>
           </select>
         </label>
       </div>
       <div class="panel-body global-controls-row">
         <label class="global-control tags-control">
-          Custom Tags
+          <span class="global-control-label">Custom Tags</span>
           <div class="tag-chip-input" id="custom_tags_control">
             <div id="custom_tags_chips" class="tag-chips"></div>
             <input
@@ -61,12 +61,22 @@
               autocomplete="off"
               placeholder="Add tag and press Enter"
               maxlength="32"
+              title="Add a custom tag and press Enter"
             >
           </div>
         </label>
-        <div class="global-control scheduler-placeholder" aria-disabled="true">
-          <div class="scheduler-title">Scheduler (coming in 15.6)</div>
-          <div class="scheduler-body">Scheduling controls will be added in C15.6.</div>
+        <div class="global-control scheduler-control-wrap">
+          <div class="global-control-label">Scheduler</div>
+          <div
+            class="scheduler-compact"
+            id="scheduler_compact_panel"
+            role="button"
+            tabindex="0"
+            aria-label="Configure Scheduler"
+            title="Open Scheduler Configuration"
+          >
+            <div id="scheduler_compact_summary" class="muted-note">Manual run only</div>
+          </div>
         </div>
       </div>
       <input id="project" value="webhook" class="hidden">
@@ -128,8 +138,8 @@
       <div class="panel-body">
         <div id="update_mode_status" class="status-note hidden"></div>
         <div class="task-toolbar">
-          <button class="btn btn-secondary" id="btn_expand_all_tasks" type="button">Expand All</button>
-          <button class="btn btn-secondary" id="btn_collapse_all_tasks" type="button">Collapse All</button>
+          <button class="btn btn-secondary" id="btn_expand_all_tasks" type="button" title="Expand all task cards">Expand All</button>
+          <button class="btn btn-secondary" id="btn_collapse_all_tasks" type="button" title="Collapse all task cards">Collapse All</button>
         </div>
         <div id="tasks_container"></div>
         <datalist id="source_schema_options"></datalist>
@@ -140,10 +150,10 @@
 
         <div class="actions actions-inline" id="bottom_actions_row">
           <div id="task_actions_shared">
-            <button class="btn btn-success" id="btn_add_task" type="button">+ Add New Task</button>
+            <button class="btn btn-success" id="btn_add_task" type="button" title="Add a new task card">+ Add New Task</button>
           </div>
           <div id="create_actions_bottom">
-            <button class="btn btn-primary btn-create-dag" type="button">Save Configuration</button>
+            <button class="btn btn-primary btn-create-dag" type="button" title="Create or update DAG from current form">Save Configuration</button>
           </div>
         </div>
       </div>
@@ -161,38 +171,38 @@
         <div class="task-content">
           <div class="task-layout">
             <div class="sub-card source-card">
-            <h4>Source Configuration</h4>
+            <h4>Source</h4>
             <label>
-              Source Type
-              <select class="source-type">
+              <span class="global-control-label">Source Type</span>
+              <select class="source-type" title="Choose table data or a custom SQL query.">
                 <option value="table">Table</option>
                 <option value="sql">SQL Query</option>
               </select>
             </label>
             <label class="source-sql-wrap hidden">
-              Source SQL Content (sql.sql)
+              SQL Query
               <textarea
                 class="source-inline-sql"
                 rows="6"
-                placeholder="SELECT * FROM ..."
+                placeholder="SELECT col1, col2 FROM source_table"
               ></textarea>
             </label>
             <div class="row-2 source-table-wrap">
               <label>
-                Source Schema
-                <input class="source-schema" list="source_schema_options" value="public" placeholder="Type 3+ chars">
+                <span class="global-control-label">Source Schema</span>
+                <input class="source-schema" list="source_schema_options" value="public" placeholder="Search schema" title="Type at least 3 characters to search.">
               </label>
               <label>
-                Source Table (Type to Search, 3+ chars)
-                <input class="source-table" list="source_table_options" value="orders" placeholder="Type 3+ chars">
+                <span class="global-control-label">Source Table</span>
+                <input class="source-table" list="source_table_options" value="orders" placeholder="Search table" title="Type at least 3 characters to search.">
               </label>
             </div>
             </div>
             <div class="sub-card target-card">
-            <h4>Target Configuration</h4>
+            <h4>Target</h4>
             <label>
-              Load Method
-              <select class="load-method">
+              <span class="global-control-label">Load Method</span>
+              <select class="load-method" title="Select how data is written to the target.">
                 <option value="create_if_not_exists_or_truncate">create_if_not_exists_or_truncate</option>
                 <option value="append">append</option>
                 <option value="replace">replace</option>
@@ -204,12 +214,12 @@
             </label>
             <div class="row-2">
               <label>
-                Target Schema
-                <input class="target-schema" list="target_schema_options" value="dwh" placeholder="Type 3+ chars">
+                <span class="global-control-label">Target Schema</span>
+                <input class="target-schema" list="target_schema_options" value="dwh" placeholder="Search schema" title="Type at least 3 characters to search.">
               </label>
               <label>
-                Target Table
-                <input class="target-table" list="target_table_options" value="orders_stg" placeholder="Type 3+ chars">
+                <span class="global-control-label">Target Table</span>
+                <input class="target-table" list="target_table_options" value="orders_stg" placeholder="Search table" title="Type at least 3 characters to search.">
               </label>
             </div>
             </div>
@@ -310,19 +320,159 @@
       <div class="revision-head">
         <strong>Revision History</strong>
         <div class="revision-actions">
-          <button class="btn btn-secondary" id="btn_refresh_revisions" type="button">Refresh</button>
-          <button class="btn btn-primary" id="btn_promote_revision" type="button">Activate Selected</button>
+          <button class="btn btn-secondary" id="btn_refresh_revisions" type="button" title="Reload revision list">Refresh</button>
+          <button class="btn btn-primary" id="btn_promote_revision" type="button" title="Activate selected revision">Activate Selected</button>
         </div>
       </div>
       <label>
         Available Revisions
-        <select id="revision_select">
+        <select id="revision_select" title="Select a saved revision to activate">
           <option value="">No revision</option>
         </select>
       </label>
       <div id="revision_meta" class="muted-note"></div>
       <div class="revision-danger-actions">
-        <button class="btn btn-danger" id="btn_delete_dag" type="button">Delete DAG</button>
+        <button class="btn btn-danger" id="btn_delete_dag" type="button" title="Delete DAG and related Flow Studio files">Delete DAG</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="scheduler_modal" class="scheduler-modal" aria-hidden="true">
+    <div class="scheduler-backdrop" id="scheduler_modal_backdrop"></div>
+    <div class="scheduler-dialog" role="dialog" aria-modal="true" aria-labelledby="scheduler_modal_title">
+      <div class="scheduler-dialog-head">
+        <h3 id="scheduler_modal_title">Configure Scheduler</h3>
+      </div>
+      <div class="scheduler-dialog-body">
+        <div class="scheduler-control" id="scheduler_control_panel">
+          <div class="scheduler-tabs" role="tablist" aria-label="Scheduler mode">
+            <button class="scheduler-tab-btn active" type="button" data-scheduler-tab="manual">Manual</button>
+            <button class="scheduler-tab-btn" type="button" data-scheduler-tab="minutely">Minutely</button>
+            <button class="scheduler-tab-btn" type="button" data-scheduler-tab="hourly">Hourly</button>
+            <button class="scheduler-tab-btn" type="button" data-scheduler-tab="daily">Daily</button>
+            <button class="scheduler-tab-btn" type="button" data-scheduler-tab="weekly">Weekly</button>
+            <button class="scheduler-tab-btn" type="button" data-scheduler-tab="monthly">Monthly</button>
+            <button class="scheduler-tab-btn" type="button" data-scheduler-tab="advanced">Advanced</button>
+          </div>
+          <div class="scheduler-panel active" data-scheduler-panel="manual">
+            <div class="muted-note">No automatic schedule. Trigger runs manually.</div>
+          </div>
+          <div class="scheduler-panel" data-scheduler-panel="minutely">
+            <label>
+              Every N Minutes
+              <select id="scheduler_minutely_step" class="scheduler-control-input"></select>
+            </label>
+          </div>
+          <div class="scheduler-panel" data-scheduler-panel="hourly">
+            <label>
+              Minute
+              <select id="scheduler_hourly_minute" class="scheduler-control-input"></select>
+            </label>
+          </div>
+          <div class="scheduler-panel" data-scheduler-panel="daily">
+            <div class="row-2">
+              <label>
+                Hour
+                <select id="scheduler_daily_hour" class="scheduler-control-input"></select>
+              </label>
+              <label>
+                Minute
+                <select id="scheduler_daily_minute" class="scheduler-control-input"></select>
+              </label>
+            </div>
+          </div>
+          <div class="scheduler-panel" data-scheduler-panel="weekly">
+            <div class="row-3 scheduler-row-compact">
+              <label>
+                Weekday
+                <select id="scheduler_weekly_day" class="scheduler-control-input">
+                  <option value="0">Sunday</option>
+                  <option value="1">Monday</option>
+                  <option value="2">Tuesday</option>
+                  <option value="3">Wednesday</option>
+                  <option value="4">Thursday</option>
+                  <option value="5">Friday</option>
+                  <option value="6">Saturday</option>
+                </select>
+              </label>
+              <label>
+                Hour
+                <select id="scheduler_weekly_hour" class="scheduler-control-input"></select>
+              </label>
+              <label>
+                Minute
+                <select id="scheduler_weekly_minute" class="scheduler-control-input"></select>
+              </label>
+            </div>
+          </div>
+          <div class="scheduler-panel" data-scheduler-panel="monthly">
+            <div class="row-3 scheduler-row-compact">
+              <label>
+                Day
+                <select id="scheduler_monthly_day" class="scheduler-control-input"></select>
+              </label>
+              <label>
+                Hour
+                <select id="scheduler_monthly_hour" class="scheduler-control-input"></select>
+              </label>
+              <label>
+                Minute
+                <select id="scheduler_monthly_minute" class="scheduler-control-input"></select>
+              </label>
+            </div>
+          </div>
+          <div class="scheduler-panel" data-scheduler-panel="advanced">
+            <label>
+              Cron Expression (5 fields)
+              <input
+                id="scheduler_advanced_cron"
+                class="scheduler-control-input"
+                type="text"
+                placeholder="0 3 * * *"
+                spellcheck="false"
+              >
+            </label>
+          </div>
+          <div class="scheduler-shared-fields">
+            <div class="row-2">
+              <label>
+                Timezone
+                <input
+                  id="scheduler_timezone"
+                  class="scheduler-control-input"
+                  list="scheduler_timezone_options"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="UTC"
+                >
+              </label>
+              <label>
+                Start Date
+                <input
+                  id="scheduler_start_date"
+                  class="scheduler-control-input"
+                  type="datetime-local"
+                >
+              </label>
+            </div>
+            <div class="scheduler-toggles">
+              <label class="scheduler-toggle-item">
+                <input id="scheduler_active" class="scheduler-control-input" type="checkbox" checked>
+                Active
+              </label>
+            </div>
+            <label>
+              Cron Preview
+              <input id="scheduler_cron_preview" type="text" readonly>
+            </label>
+            <div id="scheduler_summary" class="muted-note"></div>
+          </div>
+          <datalist id="scheduler_timezone_options"></datalist>
+        </div>
+      </div>
+      <div class="scheduler-dialog-actions">
+        <button class="btn btn-secondary" id="btn_cancel_scheduler_modal" type="button" title="Close without saving scheduler changes">Cancel</button>
+        <button class="btn btn-primary" id="btn_apply_scheduler_modal" type="button" title="Apply scheduler settings to form">Apply</button>
       </div>
     </div>
   </div>
@@ -348,7 +498,7 @@
     </div>
   </div>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=33"></script>
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=46"></script>
 </body>
 </html>
 

@@ -393,7 +393,21 @@ async function studioFetch(path, options) {
     let isBusy = false;
     const CUSTOM_TAG_MAX_COUNT = 10;
     const CUSTOM_TAG_MAX_LENGTH = 32;
+    const SCHEDULER_FALLBACK_START_DATE = "2023-01-01T00:00:00";
+    const SCHEDULER_DEFAULT_TIMEZONE = "UTC";
+    const SCHEDULER_MODES = ["manual", "minutely", "hourly", "daily", "weekly", "monthly", "advanced"];
+    const LOAD_METHOD_LABELS = Object.freeze({
+      create_if_not_exists_or_truncate: "Create if missing, then truncate",
+      append: "Append rows",
+      replace: "Replace table data",
+      upsert: "Upsert (insert/update)",
+      delete_from_table: "Delete from table",
+      drop_if_exists_and_create: "Drop and recreate",
+      script: "Run script",
+    });
     let customTagsState = [];
+    let schedulerModeState = "manual";
+    let schedulerAppliedState = null;
 
     function el(id) { return document.getElementById(id); }
 
@@ -482,6 +496,456 @@ async function studioFetch(path, options) {
       input.value = "";
     }
 
+    function pad2(value) {
+      return String(value).padStart(2, "0");
+    }
+
+    function nowDateTimeLocalValue() {
+      const now = new Date();
+      return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}T${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+    }
+
+    function nowDateTimeIsoSecondsLocal() {
+      const now = new Date();
+      return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}T${pad2(now.getHours())}:${pad2(now.getMinutes())}:${pad2(now.getSeconds())}`;
+    }
+
+    function toDateTimeLocalValue(rawValue) {
+      const text = String(rawValue || "").trim();
+      if (!text) return nowDateTimeLocalValue();
+      const normalized = text.replace(" ", "T");
+      let parsed = new Date(normalized);
+      if (Number.isNaN(parsed.getTime())) {
+        parsed = new Date(`${normalized}Z`);
+      }
+      if (Number.isNaN(parsed.getTime())) {
+        const fallback = normalized.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/);
+        if (fallback) return `${fallback[1]}T${fallback[2]}:${fallback[3]}`;
+        return nowDateTimeLocalValue();
+      }
+      return [
+        `${parsed.getFullYear()}-${pad2(parsed.getMonth() + 1)}-${pad2(parsed.getDate())}`,
+        `${pad2(parsed.getHours())}:${pad2(parsed.getMinutes())}`,
+      ].join("T");
+    }
+
+    function normalizeStartDateForPayload(rawValue) {
+      const text = String(rawValue || "").trim();
+      if (!text) return SCHEDULER_FALLBACK_START_DATE;
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(text)) return `${text}:00`;
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(text)) return text;
+      return SCHEDULER_FALLBACK_START_DATE;
+    }
+
+    function isValidTimezone(value) {
+      const tz = String(value || "").trim();
+      if (!tz) return false;
+      try {
+        Intl.DateTimeFormat("en-US", { timeZone: tz });
+        return true;
+      } catch (_err) {
+        return false;
+      }
+    }
+
+    function resolveBrowserTimezone() {
+      try {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        return isValidTimezone(tz) ? String(tz).trim() : "";
+      } catch (_err) {
+        return "";
+      }
+    }
+
+    function fillNumericSelect(selectId, min, max, selectedValue) {
+      const select = el(selectId);
+      if (!select) return;
+      const selected = Number.isFinite(Number(selectedValue)) ? Number(selectedValue) : min;
+      select.innerHTML = "";
+      for (let i = min; i <= max; i += 1) {
+        const opt = document.createElement("option");
+        opt.value = String(i);
+        opt.textContent = pad2(i);
+        if (i === selected) opt.selected = true;
+        select.appendChild(opt);
+      }
+    }
+
+    function resolveSchedulerModeFromCron(cronExpression) {
+      const cron = String(cronExpression || "").trim();
+      if (!cron) return "manual";
+      const fields = cron.split(/\s+/g);
+      if (fields.length !== 5) return "advanced";
+      const [minute, hour, dayOfMonth, month, dayOfWeek] = fields;
+      if (hour === "*" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+        if (minute === "*") return "minutely";
+        const minutelyMatch = minute.match(/^\*\/([1-9]\d?)$/);
+        if (minutelyMatch) {
+          const step = Number(minutelyMatch[1]);
+          if (step >= 1 && step <= 59) return "minutely";
+        }
+      }
+      if (hour === "*" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") return "hourly";
+      if (dayOfMonth === "*" && month === "*" && dayOfWeek === "*" && hour !== "*") return "daily";
+      if (dayOfMonth === "*" && month === "*" && dayOfWeek !== "*" && hour !== "*") return "weekly";
+      if (dayOfMonth !== "*" && month === "*" && dayOfWeek === "*" && hour !== "*") return "monthly";
+      return "advanced";
+    }
+
+    function setSchedulerMode(mode) {
+      const next = SCHEDULER_MODES.includes(mode) ? mode : "manual";
+      schedulerModeState = next;
+      for (const btn of document.querySelectorAll(".scheduler-tab-btn")) {
+        btn.classList.toggle("active", btn.getAttribute("data-scheduler-tab") === next);
+      }
+      for (const panel of document.querySelectorAll(".scheduler-panel")) {
+        panel.classList.toggle("active", panel.getAttribute("data-scheduler-panel") === next);
+      }
+      syncSchedulerPreview();
+    }
+
+    function buildCronFromSchedulerControls() {
+      if (schedulerModeState === "manual") {
+        return null;
+      }
+      if (schedulerModeState === "minutely") {
+        const step = Number(el("scheduler_minutely_step")?.value || 1);
+        const safe = Math.max(1, Math.min(59, step));
+        return safe === 1 ? "* * * * *" : `*/${safe} * * * *`;
+      }
+      if (schedulerModeState === "hourly") {
+        const minute = Number(el("scheduler_hourly_minute")?.value || 0);
+        return `${Math.max(0, Math.min(59, minute))} * * * *`;
+      }
+      if (schedulerModeState === "daily") {
+        const hour = Number(el("scheduler_daily_hour")?.value || 0);
+        const minute = Number(el("scheduler_daily_minute")?.value || 0);
+        return `${Math.max(0, Math.min(59, minute))} ${Math.max(0, Math.min(23, hour))} * * *`;
+      }
+      if (schedulerModeState === "weekly") {
+        const day = Number(el("scheduler_weekly_day")?.value || 0);
+        const hour = Number(el("scheduler_weekly_hour")?.value || 0);
+        const minute = Number(el("scheduler_weekly_minute")?.value || 0);
+        return `${Math.max(0, Math.min(59, minute))} ${Math.max(0, Math.min(23, hour))} * * ${Math.max(0, Math.min(6, day))}`;
+      }
+      if (schedulerModeState === "monthly") {
+        const day = Number(el("scheduler_monthly_day")?.value || 1);
+        const hour = Number(el("scheduler_monthly_hour")?.value || 0);
+        const minute = Number(el("scheduler_monthly_minute")?.value || 0);
+        return `${Math.max(0, Math.min(59, minute))} ${Math.max(0, Math.min(23, hour))} ${Math.max(1, Math.min(31, day))} * *`;
+      }
+      const advanced = String(el("scheduler_advanced_cron")?.value || "").trim();
+      return advanced || null;
+    }
+
+    function applyFriendlyLoadMethodLabels(scopeNode) {
+      const scope = scopeNode && typeof scopeNode.querySelectorAll === "function" ? scopeNode : document;
+      for (const select of scope.querySelectorAll("select.load-method")) {
+        for (const option of Array.from(select.options || [])) {
+          const friendly = LOAD_METHOD_LABELS[String(option.value || "").trim()];
+          if (friendly) option.textContent = friendly;
+        }
+      }
+    }
+
+    function normalizeSchedulerState(rawScheduler) {
+      const scheduler = (rawScheduler && typeof rawScheduler === "object") ? rawScheduler : {};
+      const cronExpression = String(scheduler.cron_expression || "").trim() || null;
+      const timezoneValue = String(scheduler.timezone || "").trim();
+      const timezone = isValidTimezone(timezoneValue) ? timezoneValue : SCHEDULER_DEFAULT_TIMEZONE;
+      const active = typeof scheduler.active === "boolean" ? scheduler.active : true;
+      const startDate = normalizeStartDateForPayload(String(scheduler.start_date || "").trim());
+      return {
+        cron_expression: cronExpression,
+        timezone,
+        active,
+        start_date: startDate,
+      };
+    }
+
+    function cloneSchedulerState(state) {
+      return {
+        cron_expression: state && state.cron_expression ? String(state.cron_expression) : null,
+        timezone: String((state && state.timezone) || SCHEDULER_DEFAULT_TIMEZONE),
+        active: !!(state && state.active),
+        start_date: String((state && state.start_date) || SCHEDULER_FALLBACK_START_DATE),
+      };
+    }
+
+    function schedulerDetailedSummaryTextFromState(state) {
+      const scheduler = cloneSchedulerState(state || {});
+      const cron = String(scheduler.cron_expression || "").trim();
+      if (!cron) {
+        return `Manual mode. Timezone: ${scheduler.timezone}. Active: ${scheduler.active ? "on" : "off"}. Start: ${scheduler.start_date}.`;
+      }
+      return `Cron: ${cron}. Timezone: ${scheduler.timezone}. Active: ${scheduler.active ? "on" : "off"}. Start: ${scheduler.start_date}.`;
+    }
+
+    function isSimpleCronNumber(value, minValue, maxValue) {
+      const text = String(value || "").trim();
+      if (!/^\d+$/.test(text)) return false;
+      const numeric = Number(text);
+      return Number.isInteger(numeric) && numeric >= minValue && numeric <= maxValue;
+    }
+
+    function schedulerWeekdayName(weekday) {
+      const names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+      const numeric = Number(weekday);
+      if (!Number.isInteger(numeric) || numeric < 0 || numeric > 6) return "";
+      return names[numeric];
+    }
+
+    function schedulerCompactBaseSummaryFromState(state) {
+      const scheduler = cloneSchedulerState(state || {});
+      const cron = String(scheduler.cron_expression || "").trim();
+      if (!cron) {
+        return "Manual run only";
+      }
+      const fields = cron.split(/\s+/g);
+      if (fields.length !== 5) {
+        return "Runs on a custom schedule";
+      }
+      const [minute, hour, dayOfMonth, month, dayOfWeek] = fields;
+
+      const everyMinutesMatch = minute.match(/^\*\/([1-9]\d?)$/);
+      if (everyMinutesMatch && hour === "*" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+        const step = Number(everyMinutesMatch[1]);
+        if (step >= 1 && step <= 59) {
+          return `Runs every ${step} minute${step === 1 ? "" : "s"}`;
+        }
+      }
+      if (minute === "*" && hour === "*" && dayOfMonth === "*" && month === "*" && dayOfWeek === "*") {
+        return "Runs every minute";
+      }
+
+      const mode = resolveSchedulerModeFromCron(cron);
+      if (mode === "minutely") {
+        const minutelyMatch = minute.match(/^\*\/([1-9]\d?)$/);
+        if (minute === "*") return "Runs every minute";
+        if (!minutelyMatch) return "Runs on a custom schedule";
+        const step = Number(minutelyMatch[1]);
+        if (step < 1 || step > 59) return "Runs on a custom schedule";
+        return `Runs every ${step} minute${step === 1 ? "" : "s"}`;
+      }
+      if (mode === "hourly") {
+        if (!isSimpleCronNumber(minute, 0, 59)) return "Runs on a custom schedule";
+        return `Runs every hour at minute ${pad2(Number(minute))}`;
+      }
+      if (mode === "daily") {
+        if (!isSimpleCronNumber(hour, 0, 23) || !isSimpleCronNumber(minute, 0, 59)) return "Runs on a custom schedule";
+        return `Runs daily at ${pad2(Number(hour))}:${pad2(Number(minute))}`;
+      }
+      if (mode === "weekly") {
+        if (!isSimpleCronNumber(hour, 0, 23) || !isSimpleCronNumber(minute, 0, 59) || !isSimpleCronNumber(dayOfWeek, 0, 6)) {
+          return "Runs on a custom schedule";
+        }
+        const dayName = schedulerWeekdayName(dayOfWeek);
+        if (!dayName) return "Runs on a custom schedule";
+        return `Runs weekly on ${dayName} at ${pad2(Number(hour))}:${pad2(Number(minute))}`;
+      }
+      if (mode === "monthly") {
+        if (!isSimpleCronNumber(hour, 0, 23) || !isSimpleCronNumber(minute, 0, 59) || !isSimpleCronNumber(dayOfMonth, 1, 31)) {
+          return "Runs on a custom schedule";
+        }
+        return `Runs monthly on day ${Number(dayOfMonth)} at ${pad2(Number(hour))}:${pad2(Number(minute))}`;
+      }
+      return "Runs on a custom schedule";
+    }
+
+    function schedulerCompactSummaryTextFromState(state) {
+      const scheduler = cloneSchedulerState(state || {});
+      const baseSummary = schedulerCompactBaseSummaryFromState(scheduler);
+      if (!scheduler.active) {
+        return `Paused - ${baseSummary}`;
+      }
+      return baseSummary;
+    }
+
+    function renderSchedulerCompactSummary() {
+      const box = el("scheduler_compact_summary");
+      if (!box) return;
+      const summary = schedulerCompactSummaryTextFromState(schedulerAppliedState || {});
+      box.textContent = summary;
+      const panel = el("scheduler_compact_panel");
+      if (panel) {
+        panel.title = `Scheduler: ${summary}. Click to configure.`;
+      }
+    }
+
+    function syncSchedulerPreview() {
+      const cron = buildCronFromSchedulerControls();
+      const preview = el("scheduler_cron_preview");
+      const summary = el("scheduler_summary");
+      const draft = {
+        cron_expression: cron,
+        timezone: String(el("scheduler_timezone")?.value || "").trim() || SCHEDULER_DEFAULT_TIMEZONE,
+        active: !!el("scheduler_active")?.checked,
+        start_date: normalizeStartDateForPayload(el("scheduler_start_date")?.value || ""),
+      };
+      if (preview) {
+        preview.value = cron || "Manual";
+      }
+      if (summary) {
+        summary.textContent = schedulerDetailedSummaryTextFromState(draft);
+      }
+    }
+
+    async function loadTimezoneOptions(queryText = "", limit = 200) {
+      const q = String(queryText || "").trim();
+      const endpoint = `/api/timezones?q=${encodeURIComponent(q)}&limit=${encodeURIComponent(limit)}`;
+      const r = await studioFetch(endpoint);
+      const data = await parseJsonSafe(r);
+      if (!r.ok || !data || !data.ok) return { default_timezone: "" };
+      const items = Array.isArray(data.items) ? data.items : [];
+      const datalist = el("scheduler_timezone_options");
+      if (!datalist) return { default_timezone: String(data.default_timezone || "").trim() };
+      datalist.innerHTML = "";
+      for (const item of items) {
+        const value = String(item || "").trim();
+        if (!value) continue;
+        const option = document.createElement("option");
+        option.value = value;
+        datalist.appendChild(option);
+      }
+      return { default_timezone: String(data.default_timezone || "").trim() };
+    }
+
+    function collectSchedulerFormPayload() {
+      return normalizeSchedulerState({
+        cron_expression: buildCronFromSchedulerControls(),
+        timezone: String(el("scheduler_timezone")?.value || "").trim() || SCHEDULER_DEFAULT_TIMEZONE,
+        active: !!el("scheduler_active")?.checked,
+        start_date: normalizeStartDateForPayload(el("scheduler_start_date")?.value || ""),
+      });
+    }
+
+    function setSchedulerFormFromState(rawScheduler) {
+      const scheduler = normalizeSchedulerState(rawScheduler);
+      const cronExpression = String(scheduler.cron_expression || "").trim();
+      const mode = resolveSchedulerModeFromCron(cronExpression);
+
+      el("scheduler_timezone").value = scheduler.timezone;
+      el("scheduler_active").checked = !!scheduler.active;
+      el("scheduler_start_date").value = toDateTimeLocalValue(scheduler.start_date || nowDateTimeIsoSecondsLocal());
+      el("scheduler_advanced_cron").value = cronExpression;
+
+      const fields = cronExpression ? cronExpression.split(/\s+/g) : [];
+      if (fields.length === 5) {
+        const [minute, hour, dayOfMonth, _month, dayOfWeek] = fields;
+        if (mode === "minutely") {
+          if (minute === "*") {
+            el("scheduler_minutely_step").value = "1";
+          } else {
+            const minutelyMatch = minute.match(/^\*\/([1-9]\d?)$/);
+            el("scheduler_minutely_step").value = String(Number((minutelyMatch && minutelyMatch[1]) || 1));
+          }
+        } else if (mode === "hourly") {
+          el("scheduler_hourly_minute").value = String(Number(minute) || 0);
+        } else if (mode === "daily") {
+          el("scheduler_daily_hour").value = String(Number(hour) || 0);
+          el("scheduler_daily_minute").value = String(Number(minute) || 0);
+        } else if (mode === "weekly") {
+          el("scheduler_weekly_day").value = String(Number(dayOfWeek) || 0);
+          el("scheduler_weekly_hour").value = String(Number(hour) || 0);
+          el("scheduler_weekly_minute").value = String(Number(minute) || 0);
+        } else if (mode === "monthly") {
+          el("scheduler_monthly_day").value = String(Number(dayOfMonth) || 1);
+          el("scheduler_monthly_hour").value = String(Number(hour) || 0);
+          el("scheduler_monthly_minute").value = String(Number(minute) || 0);
+        }
+      }
+      setSchedulerMode(mode);
+      syncSchedulerPreview();
+    }
+
+    function setSchedulerAppliedState(rawScheduler) {
+      schedulerAppliedState = normalizeSchedulerState(rawScheduler);
+      renderSchedulerCompactSummary();
+    }
+
+    function openSchedulerModal() {
+      if (isBusy) return;
+      const modal = el("scheduler_modal");
+      if (!modal) return;
+      setSchedulerFormFromState(schedulerAppliedState || {
+        cron_expression: null,
+        timezone: SCHEDULER_DEFAULT_TIMEZONE,
+        active: true,
+        start_date: nowDateTimeIsoSecondsLocal(),
+      });
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+      document.body.classList.add("scheduler-modal-open");
+      loadTimezoneOptions(el("scheduler_timezone").value || "", 300);
+      el("scheduler_timezone").focus();
+    }
+
+    function closeSchedulerModal() {
+      const modal = el("scheduler_modal");
+      if (!modal) return;
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("scheduler-modal-open");
+    }
+
+    function applySchedulerModal() {
+      const next = collectSchedulerFormPayload();
+      setSchedulerAppliedState(next);
+      closeSchedulerModal();
+    }
+
+    async function initializeSchedulerDefaultsForCreate() {
+      const browserTimezone = resolveBrowserTimezone();
+      const initialTimezone = browserTimezone || SCHEDULER_DEFAULT_TIMEZONE;
+      setSchedulerAppliedState({
+        cron_expression: null,
+        timezone: initialTimezone,
+        active: true,
+        start_date: nowDateTimeIsoSecondsLocal(),
+      });
+      setSchedulerFormFromState(schedulerAppliedState);
+      const tzData = await loadTimezoneOptions("", 300);
+      const backendDefault = String((tzData && tzData.default_timezone) || "").trim();
+      if (!browserTimezone && isValidTimezone(backendDefault)) {
+        setSchedulerAppliedState({
+          ...schedulerAppliedState,
+          timezone: backendDefault,
+        });
+        setSchedulerFormFromState(schedulerAppliedState);
+      }
+    }
+
+    function bindSchedulerControls() {
+      fillNumericSelect("scheduler_minutely_step", 1, 59, 1);
+      fillNumericSelect("scheduler_hourly_minute", 0, 59, 0);
+      fillNumericSelect("scheduler_daily_hour", 0, 23, 0);
+      fillNumericSelect("scheduler_daily_minute", 0, 59, 0);
+      fillNumericSelect("scheduler_weekly_hour", 0, 23, 0);
+      fillNumericSelect("scheduler_weekly_minute", 0, 59, 0);
+      fillNumericSelect("scheduler_monthly_day", 1, 31, 1);
+      fillNumericSelect("scheduler_monthly_hour", 0, 23, 0);
+      fillNumericSelect("scheduler_monthly_minute", 0, 59, 0);
+      for (const tab of document.querySelectorAll(".scheduler-tab-btn")) {
+        tab.addEventListener("click", () => setSchedulerMode(tab.getAttribute("data-scheduler-tab") || "manual"));
+      }
+      for (const node of document.querySelectorAll(
+        "#scheduler_minutely_step,#scheduler_hourly_minute,#scheduler_daily_hour,#scheduler_daily_minute,#scheduler_weekly_day,#scheduler_weekly_hour,#scheduler_weekly_minute,#scheduler_monthly_day,#scheduler_monthly_hour,#scheduler_monthly_minute,#scheduler_advanced_cron,#scheduler_timezone,#scheduler_start_date,#scheduler_active"
+      )) {
+        node.addEventListener("change", syncSchedulerPreview);
+        node.addEventListener("input", syncSchedulerPreview);
+      }
+      const timezoneInput = el("scheduler_timezone");
+      if (timezoneInput) {
+        timezoneInput.addEventListener("focus", () => loadTimezoneOptions("", 300));
+        timezoneInput.addEventListener("input", () => {
+          clearTimeout(timezoneInput._ffTimezoneTimer);
+          timezoneInput._ffTimezoneTimer = setTimeout(() => {
+            loadTimezoneOptions(timezoneInput.value || "", 300);
+          }, 180);
+        });
+      }
+    }
+
     function pushToast(message, variant = "success", persistent = false) {
       const container = el("toast_container");
       if (!container || !message) return;
@@ -515,12 +979,20 @@ async function studioFetch(path, options) {
       if (progressLabel) {
         progressLabel.textContent = active ? (label || "Operation in progress") : "";
       }
-      for (const btn of document.querySelectorAll(".btn-create-dag, #btn_update_top, #btn_promote_revision, #btn_add_task, #btn_refresh_revisions, #btn_delete_dag, #btn_cancel_delete_dag, #btn_confirm_delete_dag")) {
+      for (const btn of document.querySelectorAll(".btn-create-dag, #btn_update_top, #btn_promote_revision, #btn_add_task, #btn_refresh_revisions, #btn_delete_dag, #btn_cancel_delete_dag, #btn_confirm_delete_dag, #btn_cancel_scheduler_modal, #btn_apply_scheduler_modal")) {
         btn.disabled = !!active;
+      }
+      const schedulerCompactPanel = el("scheduler_compact_panel");
+      if (schedulerCompactPanel) {
+        schedulerCompactPanel.classList.toggle("disabled", !!active);
+        schedulerCompactPanel.setAttribute("aria-disabled", active ? "true" : "false");
       }
       const customTagInput = el("custom_tags_input");
       if (customTagInput) {
         customTagInput.disabled = !!active;
+      }
+      for (const node of document.querySelectorAll(".scheduler-control-input, .scheduler-tab-btn")) {
+        node.disabled = !!active;
       }
       renderCustomTags();
       syncDeleteDagConfirmState();
@@ -576,6 +1048,14 @@ async function studioFetch(path, options) {
     function resetStudioAfterDelete() {
       currentUpdateDagId = "";
       setCustomTags([]);
+      setSchedulerAppliedState({
+        cron_expression: null,
+        timezone: resolveBrowserTimezone() || SCHEDULER_DEFAULT_TIMEZONE,
+        active: true,
+        start_date: nowDateTimeIsoSecondsLocal(),
+      });
+      setSchedulerFormFromState(schedulerAppliedState);
+      closeSchedulerModal();
       clearAndLoadTasks([{}]);
       setUpdateMode(false);
       try {
@@ -689,15 +1169,18 @@ async function studioFetch(path, options) {
         meta.textContent = currentActiveRevisionId
           ? `Active revision: ${currentActiveRevisionId}`
           : "Active revision snapshot not found in history.";
+        meta.title = meta.textContent;
         return;
       }
       const item = currentRevisionItems.find((x) => String(x.revision_id || "") === revisionId);
       if (!item) {
         meta.textContent = "";
+        meta.title = "";
         return;
       }
       const activeMark = currentActiveRevisionId && currentActiveRevisionId === revisionId ? " (active)" : "";
       meta.textContent = `${item.revision_id}${activeMark} - ${item.source || "unknown"} - ${item.created_at || "-"}`;
+      meta.title = meta.textContent;
     }
 
     function renderRevisionOptions(items, activeRevisionId) {
@@ -756,7 +1239,7 @@ async function studioFetch(path, options) {
         return;
       }
 
-      if (!beginOperation("Revision aktive ediliyor...")) {
+      if (!beginOperation("Activating revision...")) {
         return;
       }
       try {
@@ -769,8 +1252,8 @@ async function studioFetch(path, options) {
           pushToast(data && data.detail ? data.detail : "Revision promote failed.", "error", true);
           return;
         }
-        setUpdateModeStatus(`Revision aktive edildi: ${revisionId}`, "ok");
-        pushToast(`Revision aktive edildi: ${revisionId}`, "success", false);
+        setUpdateModeStatus(`Revision activated: ${revisionId}`, "ok");
+        pushToast(`Revision activated: ${revisionId}`, "success", false);
         await preloadByDagId(dagId);
       } catch (err) {
         logDebug("revision promote error", err);
@@ -1005,12 +1488,15 @@ async function studioFetch(path, options) {
     }
 
     function syncFolderPathDisplay() {
-      el("folder_path_display").value = getFolderPathText({
+      const folderPathValue = getFolderPathText({
         project: el("project").value,
         domain: el("domain").value,
         level: el("level").value,
         flow: el("flow").value,
       });
+      const folderPathInput = el("folder_path_display");
+      folderPathInput.value = folderPathValue;
+      folderPathInput.title = folderPathValue === "-" ? "Flow path (project/domain/level/flow)" : folderPathValue;
       for (const card of getTaskCards()) {
         syncMappingState(card);
       }
@@ -1460,7 +1946,7 @@ async function studioFetch(path, options) {
         sourceSchemaInput.value = "";
         sourceTableInput.value = "";
       }
-      sourceTableInput.placeholder = "Type 3+ chars";
+      sourceTableInput.placeholder = "Search table";
     }
 
     function buildTaskGroupFormula(card, fallbackIndex) {
@@ -1765,6 +2251,7 @@ async function studioFetch(path, options) {
       const template = el("task_card_template");
       const node = template.content.firstElementChild.cloneNode(true);
       const fallbackIndex = getTaskCards().length + 1;
+      applyFriendlyLoadMethodLabels(node);
       bindBindingsSection(node);
       bindTaskCollapse(node);
       setTaskCardValues(node, values, fallbackIndex);
@@ -1804,6 +2291,8 @@ async function studioFetch(path, options) {
       el("level").value = payload.level || "";
       el("flow").value = payload.flow || "";
       setCustomTags(payload.custom_tags || []);
+      setSchedulerAppliedState(payload.scheduler || null);
+      setSchedulerFormFromState(schedulerAppliedState);
       syncFolderPathDisplay();
       setConnectionValue("source_conn_id", payload.source_conn_id || "");
       setConnectionValue("target_conn_id", payload.target_conn_id || "");
@@ -1905,8 +2394,8 @@ async function studioFetch(path, options) {
         }
         currentUpdateDagId = String(data.dag_id || dagId || "").trim();
         await loadRevisions(currentUpdateDagId);
-        setUpdateModeStatus(`Update tamamlandi: ${currentUpdateDagId}`, "ok");
-        pushToast(`Update tamamlandi: ${currentUpdateDagId}`, "success", false);
+        setUpdateModeStatus(`Update completed: ${currentUpdateDagId}`, "ok");
+        pushToast(`Update completed: ${currentUpdateDagId}`, "success", false);
       } catch (err) {
         logDebug("submit update error", err);
         setUpdateModeStatus("Unexpected error occurred during update.", "warn");
@@ -1925,7 +2414,7 @@ async function studioFetch(path, options) {
     }
 
     async function submitCreate() {
-      if (!beginOperation("Yeni DAG olusturuluyor...")) {
+      if (!beginOperation("Creating DAG...")) {
         return;
       }
       try {
@@ -1942,8 +2431,8 @@ async function studioFetch(path, options) {
         }
         currentUpdateDagId = dagId;
         setUpdateMode(true);
-        setUpdateModeStatus(`Create tamamlandi, update mode aktif: ${dagId}`, "ok");
-        pushToast(`Create tamamlandi: ${dagId}`, "success", false);
+        setUpdateModeStatus(`Create completed, update mode active: ${dagId}`, "ok");
+        pushToast(`Create completed: ${dagId}`, "success", false);
         await loadRevisions(dagId);
         try {
           const url = new URL(window.location.href);
@@ -2044,6 +2533,7 @@ async function studioFetch(path, options) {
         level: levelVal,
         flow: flowVal,
         custom_tags: customTagsState.slice(),
+        scheduler: cloneSchedulerState(schedulerAppliedState || collectSchedulerFormPayload()),
         source_conn_id: el("source_conn_id").value,
         target_conn_id: el("target_conn_id").value,
         task_group_id: firstTask.task_group_id,
@@ -2080,6 +2570,19 @@ async function studioFetch(path, options) {
     el("btn_delete_dag").onclick = () => openDeleteDagModal();
     el("btn_cancel_delete_dag").onclick = () => closeDeleteDagModal();
     el("btn_confirm_delete_dag").onclick = () => deleteCurrentDag();
+    const schedulerCompactPanel = el("scheduler_compact_panel");
+    if (schedulerCompactPanel) {
+      schedulerCompactPanel.addEventListener("click", () => openSchedulerModal());
+      schedulerCompactPanel.addEventListener("keydown", (evt) => {
+        if (evt.key === "Enter" || evt.key === " ") {
+          evt.preventDefault();
+          openSchedulerModal();
+        }
+      });
+    }
+    el("btn_cancel_scheduler_modal").onclick = () => closeSchedulerModal();
+    el("btn_apply_scheduler_modal").onclick = () => applySchedulerModal();
+    el("scheduler_modal_backdrop").onclick = () => closeSchedulerModal();
     el("delete_dag_confirm_input").addEventListener("input", () => syncDeleteDagConfirmState());
     el("delete_dag_backdrop").onclick = () => closeDeleteDagModal();
     el("revision_select").addEventListener("change", () => renderRevisionMeta());
@@ -2113,6 +2616,10 @@ async function studioFetch(path, options) {
     }
     document.addEventListener("keydown", (evt) => {
       if (evt.key !== "Escape") return;
+      if (el("scheduler_modal").classList.contains("open")) {
+        closeSchedulerModal();
+        return;
+      }
       if (el("folder_picker_modal").classList.contains("open")) {
         closeFolderPicker();
         return;
@@ -2124,8 +2631,10 @@ async function studioFetch(path, options) {
 
     async function initPage() {
       await applyAirflowThemeAssets();
+      bindSchedulerControls();
       setUpdateMode(false);
       setCustomTags([]);
+      await initializeSchedulerDefaultsForCreate();
       syncFolderPathDisplay();
       clearAndLoadTasks([{}]);
       // Connection list must be loaded first for main form usage.
