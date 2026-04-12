@@ -23,7 +23,7 @@ class ConfigLoader:
 
         task_config = ConfigLoader().load("path/to/config.yaml", "my_task")
 
-    Dönen dict, ETLManager.run_etl_task() için doğrudan kullanılabilir.
+    Dönen dict, FlowManager.run_flow_task() için doğrudan kullanılabilir.
     """
 
     def load(self, config_path: str, task_group_id: str) -> dict:
@@ -44,7 +44,7 @@ class ConfigLoader:
         """
         raw = self._read_yaml(config_path)
         self._validate_root(raw)
-        task = self._find_task(raw["etl_tasks"], task_group_id)
+        task = self._find_task(raw["flow_tasks"], task_group_id)
         normalized = self._apply_defaults(task)
         self._resolve_mapping_file_path(normalized, config_path)
         ConfigValidator().validate(normalized)
@@ -77,10 +77,10 @@ class ConfigLoader:
             if field not in raw or raw[field] is None:
                 raise ConfigError(f"Root alanı eksik veya boş: '{field}'")
 
-    def _find_task(self, etl_tasks: list, task_group_id: str) -> dict:
-        if not isinstance(etl_tasks, list):
-            raise ConfigError("'etl_tasks' bir liste olmalıdır.")
-        for task in etl_tasks:
+    def _find_task(self, flow_tasks: list, task_group_id: str) -> dict:
+        if not isinstance(flow_tasks, list):
+            raise ConfigError("'flow_tasks' bir liste olmalıdır.")
+        for task in flow_tasks:
             if isinstance(task, dict) and task.get("task_group_id") == task_group_id:
                 return task
         raise ConfigError(

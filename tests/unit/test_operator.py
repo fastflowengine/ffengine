@@ -14,7 +14,7 @@ from ffengine.airflow.operator import (
     aggregate_results,
     FFEngineOperator,
 )
-from ffengine.core.base_engine import ETLResult
+from ffengine.core.base_engine import FlowResult
 from ffengine.errors.exceptions import ConfigError, EngineError
 
 
@@ -29,7 +29,7 @@ _P_DBSESS = "ffengine.db.session.DBSession"
 _P_MAPPING = "ffengine.mapping.MappingResolver"
 _P_PART = "ffengine.partition.Partitioner"
 _P_WRITER = "ffengine.pipeline.target_writer.TargetWriter"
-_P_ETL = "ffengine.core.etl_manager.ETLManager"
+_P_FLOW = "ffengine.core.flow_manager.FlowManager"
 
 
 # ---------------------------------------------------------------------------
@@ -99,15 +99,15 @@ class TestAggregateResults:
         assert r.errors == []
 
     def test_single_result(self):
-        r = aggregate_results([ETLResult(100, 2.0, 50.0, 1)])
+        r = aggregate_results([FlowResult(100, 2.0, 50.0, 1)])
         assert r.rows == 100
         assert r.duration_seconds == 2.0
         assert r.partitions_completed == 1
 
     def test_multiple_results(self):
         results = [
-            ETLResult(100, 2.0, 50.0, 1),
-            ETLResult(200, 3.0, 66.67, 1),
+            FlowResult(100, 2.0, 50.0, 1),
+            FlowResult(200, 3.0, 66.67, 1),
         ]
         r = aggregate_results(results)
         assert r.rows == 300
@@ -117,8 +117,8 @@ class TestAggregateResults:
 
     def test_errors_collected(self):
         results = [
-            ETLResult(50, 1.0, 50.0, 1, errors=["err1"]),
-            ETLResult(0, 0.5, 0.0, 1, errors=["err2", "err3"]),
+            FlowResult(50, 1.0, 50.0, 1, errors=["err1"]),
+            FlowResult(0, 0.5, 0.0, 1, errors=["err2", "err3"]),
         ]
         r = aggregate_results(results)
         assert r.errors == ["err1", "err2", "err3"]
@@ -203,7 +203,7 @@ class TestFFEngineOperatorExecute:
             patch(_P_MAPPING) as mock_mapping,
             patch(_P_PART) as mock_part,
             patch(_P_WRITER) as mock_writer,
-            patch(_P_ETL) as mock_etl,
+            patch(_P_FLOW) as mock_etl,
         ):
             mock_adapter.get_connection_params.return_value = {
                 "host": "localhost", "port": 5432,
@@ -235,7 +235,7 @@ class TestFFEngineOperatorExecute:
 
             mock_writer.return_value.prepare.return_value = None
 
-            mock_etl.return_value.run_etl_task.return_value = ETLResult(
+            mock_etl.return_value.run_flow_task.return_value = FlowResult(
                 rows=100, duration_seconds=1.5, throughput=66.67,
                 partitions_completed=1, errors=[],
             )
@@ -264,22 +264,22 @@ class TestFFEngineOperatorExecute:
             {"part_id": 0, "where": "id < 500"},
             {"part_id": 1, "where": "id >= 500"},
         ]
-        self.mock_etl.return_value.run_etl_task.side_effect = [
-            ETLResult(50, 1.0, 50.0, 1),
-            ETLResult(50, 1.2, 41.67, 1),
+        self.mock_etl.return_value.run_flow_task.side_effect = [
+            FlowResult(50, 1.0, 50.0, 1),
+            FlowResult(50, 1.2, 41.67, 1),
         ]
         op = _make_operator()
         result = op.execute()
         assert result["rows"] == 100
         assert result["partitions_completed"] == 2
-        assert self.mock_etl.return_value.run_etl_task.call_count == 2
+        assert self.mock_etl.return_value.run_flow_task.call_count == 2
 
     def test_prepare_called_once(self):
         self.mock_part.return_value.plan.return_value = [
             {"part_id": 0, "where": None},
             {"part_id": 1, "where": None},
         ]
-        self.mock_etl.return_value.run_etl_task.return_value = ETLResult(
+        self.mock_etl.return_value.run_flow_task.return_value = FlowResult(
             50, 1.0, 50.0, 1,
         )
         op = _make_operator()
@@ -289,7 +289,7 @@ class TestFFEngineOperatorExecute:
     def test_skip_prepare_used(self):
         op = _make_operator()
         op.execute()
-        call_kwargs = self.mock_etl.return_value.run_etl_task.call_args
+        call_kwargs = self.mock_etl.return_value.run_flow_task.call_args
         assert call_kwargs.kwargs.get("skip_prepare") is True
 
     def test_where_combination(self):
@@ -303,7 +303,7 @@ class TestFFEngineOperatorExecute:
         op = _make_operator()
         op.execute()
 
-        call_kwargs = self.mock_etl.return_value.run_etl_task.call_args
+        call_kwargs = self.mock_etl.return_value.run_flow_task.call_args
         effective = call_kwargs.kwargs["task_config"]
         assert effective["_resolved_where"] == "(status = 'ACTIVE') AND (id < 500)"
 
@@ -312,7 +312,7 @@ class TestFFEngineOperatorExecute:
         op = _make_operator()
         op.execute()
 
-        call_kwargs = self.mock_etl.return_value.run_etl_task.call_args
+        call_kwargs = self.mock_etl.return_value.run_flow_task.call_args
         effective = call_kwargs.kwargs["task_config"]
         assert effective["source_columns"] == ["id", "name"]
         assert effective["target_columns"] == ["id", "name"]
@@ -341,7 +341,7 @@ class TestFFEngineOperatorExecute:
         op.execute()
 
         self.mock_binder.return_value.resolve_sql_bindings.assert_called_once()
-        call_kwargs = self.mock_etl.return_value.run_etl_task.call_args
+        call_kwargs = self.mock_etl.return_value.run_flow_task.call_args
         effective = call_kwargs.kwargs["task_config"]
         assert effective["_resolved_where"] == "id > 100"
 
@@ -417,7 +417,7 @@ class TestFFEngineOperatorErrors:
             patch(_P_MAPPING) as mock_mapping,
             patch(_P_PART) as mock_part,
             patch(_P_WRITER),
-            patch(_P_ETL) as mock_etl,
+            patch(_P_FLOW) as mock_etl,
         ):
             mock_adapter.get_connection_params.return_value = {
                 "conn_type": "postgres", "host": "h", "database": "d",
@@ -435,13 +435,13 @@ class TestFFEngineOperatorErrors:
             mock_part.return_value.plan.return_value = [
                 {"part_id": 0, "where": None},
             ]
-            mock_etl.return_value.run_etl_task.return_value = ETLResult(
+            mock_etl.return_value.run_flow_task.return_value = FlowResult(
                 10, 0.1, 100.0, 1,
             )
 
             op = _make_operator()
             op.execute()
 
-            call_kwargs = mock_etl.return_value.run_etl_task.call_args
+            call_kwargs = mock_etl.return_value.run_flow_task.call_args
             effective = call_kwargs.kwargs["task_config"]
             assert effective["_resolved_where"] == "year = 2026"

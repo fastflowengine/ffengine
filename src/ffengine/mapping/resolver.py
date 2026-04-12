@@ -1,4 +1,4 @@
-﻿"""
+"""
 C09 - Column mapping resolver.
 
 MappingResolver.resolve(task_config, src_conn, src_dialect, tgt_dialect)
@@ -26,7 +26,7 @@ _TYPE_PATTERN = re.compile(r"^([A-Z][A-Z0-9_ ]*?)(?:\((.+)\))?$")
 
 @dataclass
 class MappingResult:
-    """MappingResolver output - column lists ready for ETLManager."""
+    """MappingResolver output - column lists ready for FlowManager."""
 
     source_columns: list[str]
     target_columns: list[str]

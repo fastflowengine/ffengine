@@ -1,5 +1,5 @@
 """
-BaseEngine ABC ve ETLResult dataclass — Community + Enterprise ortak kontrat.
+BaseEngine ABC ve FlowResult dataclass — Community + Enterprise ortak kontrat.
 """
 
 from abc import ABC, abstractmethod
@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 
 @dataclass
-class ETLResult:
+class FlowResult:
     rows: int
     duration_seconds: float
     throughput: float          # rows / second
@@ -17,7 +17,7 @@ class ETLResult:
 
 class BaseEngine(ABC):
     @abstractmethod
-    def run(self, config_path: str, task_group_id: str) -> ETLResult: ...
+    def run(self, config_path: str, task_group_id: str) -> FlowResult: ...
 
     @abstractmethod
     def is_available(self) -> bool: ...
@@ -32,7 +32,7 @@ class BaseEngine(ABC):
 
         C04 scope'unda yalnızca PythonEngine döner.
         """
-        from ffengine.core.etl_manager import PythonEngine
+        from ffengine.core.flow_manager import PythonEngine
 
         if preference == "community":
             return PythonEngine()

@@ -183,12 +183,12 @@ def setup_target_tables(all_sessions):
 
 
 # ------------------------------------------------------------------
-# Ortak ETL çalıştırıcı
+# Ortak Flow çalıştırıcı
 # ------------------------------------------------------------------
 
 
 def _run_cross_etl(src_name: str, tgt_name: str, all_sessions):
-    from ffengine.core.etl_manager import ETLManager
+    from ffengine.core.flow_manager import FlowManager
     from ffengine.db.session import DBSession
 
     src_session, src_dialect = all_sessions[src_name]
@@ -206,13 +206,13 @@ def _run_cross_etl(src_name: str, tgt_name: str, all_sessions):
         "batch_size": 1000,
     }
 
-    manager = ETLManager()
+    manager = FlowManager()
     # Aynı DB self-transfer: kaynak cursor ile hedef write çatışmaması için ayrı bağlantı
     if src_name == tgt_name:
         tgt_alt = DBSession(_DB_PARAMS[tgt_name](), type(tgt_dialect)())
         tgt_alt.__enter__()
         try:
-            return manager.run_etl_task(
+            return manager.run_flow_task(
                 src_session=src_session,
                 tgt_session=tgt_alt,
                 src_dialect=src_dialect,
@@ -222,7 +222,7 @@ def _run_cross_etl(src_name: str, tgt_name: str, all_sessions):
         finally:
             tgt_alt.__exit__(None, None, None)
 
-    return manager.run_etl_task(
+    return manager.run_flow_task(
         src_session=src_session,
         tgt_session=tgt_session,
         src_dialect=src_dialect,

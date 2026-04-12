@@ -60,7 +60,7 @@ def generate_dags(
             _log.warning("Geçersiz YAML yapısı, atlanıyor: %s", yaml_file.name)
             continue
 
-        tasks = raw.get("etl_tasks", [])
+        tasks = raw.get("flow_tasks", [])
         if not isinstance(tasks, list):
             continue
 

@@ -1,0 +1,21 @@
+{
+  "flow_dir": "/opt/airflow/projects/webhook/whk/level1/test3",
+  "config_path": "/opt/airflow/projects/webhook/whk/level1/test3/webhook_whk_level1_test3_group_1.yaml",
+  "dag_path": "/opt/airflow/dags/webhook/whk/level1/test3/whk_to_test3_level1_group_1_dag.py",
+  "task_group_id": "1_test_mssql_dbo_ff_test_data_to_test_oracle_create_if_not_exists_or_truncate_ffengine_test3_1",
+  "task_count": 1,
+  "group_no": 1,
+  "tags": [
+    "webhook",
+    "whk",
+    "level1",
+    "test3"
+  ],
+  "auto_tags": [
+    "webhook",
+    "whk",
+    "level1",
+    "test3"
+  ],
+  "user_tags": []
+}

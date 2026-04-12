@@ -32,7 +32,7 @@
       font-family: var(--font-family-base, "Segoe UI", Arial, sans-serif);
     }
 
-    body.etl-studio-root {
+    body.flow-studio-root {
       opacity: 1 !important;
       filter: none !important;
       mix-blend-mode: normal !important;

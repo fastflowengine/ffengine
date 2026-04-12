@@ -3,20 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ETL Studio</title>
-  <link rel="stylesheet" href="/etl-studio/static/etl_studio/css/style.css?v=20">
+  <title>Flow Studio</title>
+  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=21">
 </head>
-<body class="etl-studio-root" data-ui-variant="current">
+<body class="flow-studio-root" data-ui-variant="current">
   <div id="operation_progress" class="operation-progress hidden" role="status" aria-live="polite" aria-busy="false">
     <div class="operation-progress-bar"></div>
     <span id="operation_progress_label" class="operation-progress-label"></span>
   </div>
   <div id="toast_container" class="toast-container" aria-live="polite" aria-atomic="false"></div>
-  <div class="page etl-studio">
+  <div class="page flow-studio">
     <header class="page-header">
-      <h1>ETL Configuration Studio</h1>
+      <h1>Flow Studio</h1>
       <p>
-        Airflow 3 native ETL Studio: generate/update YAML + DAG automatically from a single form.
+        Airflow 3 native Flow Studio: generate/update YAML + DAG automatically from a single form.
       </p>
     </header>
     <div id="theme_notice" class="status-note warn hidden"></div>
@@ -26,7 +26,7 @@
       <div class="panel-title panel-title-row">
         <span>Global Settings (Project & DB)</span>
         <div class="panel-title-actions hidden" id="update_actions_top">
-          <button class="btn btn-primary" id="btn_update_top" type="button">Guncelle</button>
+          <button class="btn btn-primary" id="btn_update_top" type="button">Update</button>
         </div>
       </div>
       <div class="panel-body grid-3">
@@ -109,8 +109,8 @@
       <div class="panel-body">
         <div id="update_mode_status" class="status-note hidden"></div>
         <div class="task-toolbar">
-          <button class="btn btn-secondary" id="btn_expand_all_tasks" type="button">Tumunu Ac</button>
-          <button class="btn btn-secondary" id="btn_collapse_all_tasks" type="button">Tumunu Kapat</button>
+          <button class="btn btn-secondary" id="btn_expand_all_tasks" type="button">Expand All</button>
+          <button class="btn btn-secondary" id="btn_collapse_all_tasks" type="button">Collapse All</button>
         </div>
         <div id="tasks_container"></div>
         <datalist id="source_schema_options"></datalist>
@@ -329,7 +329,7 @@
     </div>
   </div>
 
-  <script src="/etl-studio/static/etl_studio/js/app.js?v=29"></script>
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=30"></script>
 </body>
 </html>
 

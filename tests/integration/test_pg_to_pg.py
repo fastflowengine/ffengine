@@ -117,10 +117,10 @@ _TASK_CONFIG = {
 
 def test_pg_to_pg_row_count(src_session, tgt_session, pg_dialect):
     """ff_test_data → ff_test_target: 100 satır aktarılmalı."""
-    from ffengine.core.etl_manager import ETLManager
+    from ffengine.core.flow_manager import FlowManager
 
-    manager = ETLManager()
-    result = manager.run_etl_task(
+    manager = FlowManager()
+    result = manager.run_flow_task(
         src_session=src_session,
         tgt_session=tgt_session,
         src_dialect=pg_dialect,
@@ -140,9 +140,9 @@ def test_pg_to_pg_row_count(src_session, tgt_session, pg_dialect):
 
 def test_pg_to_pg_data_integrity(src_session, tgt_session, pg_dialect):
     """İlk 5 satır id/name/created_date doğru sırayla aktarılmalı."""
-    from ffengine.core.etl_manager import ETLManager
+    from ffengine.core.flow_manager import FlowManager
 
-    ETLManager().run_etl_task(
+    FlowManager().run_flow_task(
         src_session=src_session,
         tgt_session=tgt_session,
         src_dialect=pg_dialect,
@@ -163,11 +163,11 @@ def test_pg_to_pg_data_integrity(src_session, tgt_session, pg_dialect):
 
 
 def test_pg_to_pg_etl_result_fields(src_session, tgt_session, pg_dialect):
-    """ETLResult alanları geçerli değerler içermeli."""
-    from ffengine.core.etl_manager import ETLManager
-    from ffengine.core.base_engine import ETLResult
+    """FlowResult alanları geçerli değerler içermeli."""
+    from ffengine.core.flow_manager import FlowManager
+    from ffengine.core.base_engine import FlowResult
 
-    result = ETLManager().run_etl_task(
+    result = FlowManager().run_flow_task(
         src_session=src_session,
         tgt_session=tgt_session,
         src_dialect=pg_dialect,
@@ -175,7 +175,7 @@ def test_pg_to_pg_etl_result_fields(src_session, tgt_session, pg_dialect):
         task_config=_TASK_CONFIG,
     )
 
-    assert isinstance(result, ETLResult)
+    assert isinstance(result, FlowResult)
     assert result.rows == 100
     assert result.partitions_completed == 1
     assert result.duration_seconds >= 0
@@ -184,10 +184,10 @@ def test_pg_to_pg_etl_result_fields(src_session, tgt_session, pg_dialect):
 
 def test_pg_to_pg_date_column_transferred(src_session, tgt_session, pg_dialect):
     """created_date kolonu DATE türünde doğru aktarılmalı."""
-    from ffengine.core.etl_manager import ETLManager
+    from ffengine.core.flow_manager import FlowManager
     import datetime
 
-    ETLManager().run_etl_task(
+    FlowManager().run_flow_task(
         src_session=src_session,
         tgt_session=tgt_session,
         src_dialect=pg_dialect,

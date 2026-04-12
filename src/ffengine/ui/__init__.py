@@ -1,4 +1,4 @@
-"""ETL Studio UI package."""
+"""Flow Studio UI package."""
 
 from ffengine.ui import studio_service
 

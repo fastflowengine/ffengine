@@ -1,16 +1,16 @@
 const STUDIO_BASE_CANDIDATES = (() => {
   const pathname = (window.location.pathname || "").toLowerCase();
   const candidates = [];
-  if (pathname.startsWith("/plugin/etl-studio")) {
-    candidates.push("/plugin/etl-studio");
+  if (pathname.startsWith("/plugin/flow-studio")) {
+    candidates.push("/plugin/flow-studio");
   }
-  if (pathname.startsWith("/etl-studio")) {
-    candidates.push("/etl-studio");
+  if (pathname.startsWith("/flow-studio")) {
+    candidates.push("/flow-studio");
   }
-  candidates.push("/etl-studio", "/plugin/etl-studio");
+  candidates.push("/flow-studio", "/plugin/flow-studio");
   return Array.from(new Set(candidates));
 })();
-let studioBase = STUDIO_BASE_CANDIDATES[0] || "/etl-studio";
+let studioBase = STUDIO_BASE_CANDIDATES[0] || "/flow-studio";
 
 function studioUrl(path) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
@@ -38,7 +38,7 @@ async function studioFetch(path, options) {
   }
   return lastResponse || fetch(studioUrl(normalizedPath), options);
 }
-    const THEME_CACHE_KEY = "etl_studio_airflow_theme_css_v1";
+    const THEME_CACHE_KEY = "flow_studio_airflow_theme_css_v1";
 
     function setThemeSource(source) {
       document.documentElement.setAttribute("data-theme-source", source);
@@ -291,7 +291,7 @@ async function studioFetch(path, options) {
       if (cached && injectPluginCssText(cached, "plugin-script-cache")) {
         return "plugin-script-cache";
       }
-      const shellResp = await fetch("/plugin/etl_studio");
+      const shellResp = await fetch("/plugin/flow_studio");
       if (!shellResp.ok) {
         throw new Error(`plugin_shell_${shellResp.status}`);
       }
@@ -358,7 +358,7 @@ async function studioFetch(path, options) {
       if (parentSynced || copied > 0) {
         if (!parentSynced) syncThemeTokensFromDocument(document);
         setThemeSource("parent");
-        console.info(`[etl-studio-theme] source=parent copied_assets=${copied} direct_sync=${parentSynced}`);
+        console.info(`[flow-studio-theme] source=parent copied_assets=${copied} direct_sync=${parentSynced}`);
         return;
       }
       diagnostics.push("parent_assets=0");
@@ -367,7 +367,7 @@ async function studioFetch(path, options) {
         const source = await loadThemeFromPluginEntryScript();
         syncThemeTokensFromDocument(document);
         setThemeSource(source);
-        console.info(`[etl-studio-theme] source=${source}`);
+        console.info(`[flow-studio-theme] source=${source}`);
         return;
       } catch (err) {
         diagnostics.push(`plugin_script=${String(err && err.message || err)}`);
@@ -377,14 +377,14 @@ async function studioFetch(path, options) {
       if (linked) {
         syncThemeTokensFromDocument(document);
         setThemeSource("known-static-link");
-        console.info("[etl-studio-theme] source=known-static-link");
+        console.info("[flow-studio-theme] source=known-static-link");
         return;
       }
       diagnostics.push("known_static_link=0");
 
       setThemeSource("fallback");
       showThemeNotice("Airflow tema assetleri yuklenemedi, fallback tema kullaniliyor.");
-      console.warn(`[etl-studio-theme] source=fallback ${diagnostics.join(" | ")}`);
+      console.warn(`[flow-studio-theme] source=fallback ${diagnostics.join(" | ")}`);
     }
 
     let currentUpdateDagId = "";
@@ -396,10 +396,10 @@ async function studioFetch(path, options) {
 
     function logDebug(message, payload) {
       if (typeof payload === "undefined") {
-        console.debug(`[etl-studio] ${message}`);
+        console.debug(`[flow-studio] ${message}`);
         return;
       }
-      console.debug(`[etl-studio] ${message}`, payload);
+      console.debug(`[flow-studio] ${message}`, payload);
     }
 
     function pushToast(message, variant = "success", persistent = false) {
@@ -501,6 +501,23 @@ async function studioFetch(path, options) {
       }
     }
 
+    function redirectToDagListAfterDelete(deletedDagId) {
+      const dagId = String(deletedDagId || "").trim();
+      try {
+        const current = new URL(window.location.href);
+        const marker = "/dags/";
+        const path = current.pathname || "";
+        const idx = path.indexOf(marker);
+        const basePrefix = idx >= 0 ? path.slice(0, idx) : "";
+        const target = new URL(`${basePrefix}/dags`, current.origin);
+        target.searchParams.set("_ts", String(Date.now()));
+        if (dagId) target.searchParams.set("deleted_dag_id", dagId);
+        window.location.assign(target.toString());
+      } catch (_err) {
+        window.location.assign("/dags");
+      }
+    }
+
     function syncDeleteDagConfirmState() {
       const input = el("delete_dag_confirm_input");
       const expected = String(currentUpdateDagId || "").trim();
@@ -565,9 +582,10 @@ async function studioFetch(path, options) {
         const warnings = Array.isArray(data.warnings) ? data.warnings : [];
         for (const warning of warnings) {
           if (!warning) continue;
-          pushToast(String(warning), "error", true);
+          logDebug("delete warning", warning);
         }
         resetStudioAfterDelete();
+        redirectToDagListAfterDelete(dagId);
       } catch (err) {
         logDebug("delete dag error", err);
         pushToast("DAG silme sirasinda beklenmeyen hata olustu.", "error", true);
@@ -1121,7 +1139,7 @@ async function studioFetch(path, options) {
           const studioData = await parseJsonSafe(studioResp);
           items = Array.isArray(studioData.items) ? studioData.items : [];
         } else {
-          // Backward compatibility for running containers that do not yet expose /etl-studio/api/connections.
+          // Backward compatibility for running containers that do not yet expose /flow-studio/api/connections.
           const airflowResp = await fetch("/api/v2/connections?limit=1000&offset=0&order_by=connection_id");
           const airflowData = await parseJsonSafe(airflowResp);
           if (!airflowResp.ok) {
@@ -1702,7 +1720,7 @@ async function studioFetch(path, options) {
       syncFolderPathDisplay();
       setConnectionValue("source_conn_id", payload.source_conn_id || "");
       setConnectionValue("target_conn_id", payload.target_conn_id || "");
-      clearAndLoadTasks(payload.etl_tasks || [payload]);
+      clearAndLoadTasks(payload.flow_tasks || [payload]);
     }
 
     async function preloadByDagId(rawDagId) {
@@ -1727,7 +1745,7 @@ async function studioFetch(path, options) {
       await loadFolderOptions();
       renderRevisionOptions([], data.active_revision_id || "");
       await loadRevisions(dagId);
-      setUpdateModeStatus(`Update mode loaded: ${dagId}. Yeni task ekleyip Guncelle ile kaydedin.`, "ok");
+      setUpdateModeStatus(`Update mode loaded: ${dagId}. Add a new task and save with Update.`, "ok");
       setUpdateMode(true);
     }
 
@@ -1957,7 +1975,7 @@ async function studioFetch(path, options) {
         partitioning_parts: firstTask.partitioning_parts,
         partitioning_distinct_limit: firstTask.partitioning_distinct_limit,
         partitioning_ranges: firstTask.partitioning_ranges,
-        etl_tasks: etlTasks,
+        flow_tasks: etlTasks,
       };
       return payload;
     }

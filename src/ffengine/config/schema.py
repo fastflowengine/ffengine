@@ -33,7 +33,7 @@ VALID_PARTITION_MODES: frozenset[str] = frozenset({
 })
 
 # Root seviyesinde zorunlu alanlar
-REQUIRED_ROOT_FIELDS: tuple[str, ...] = ("source_db_var", "target_db_var", "etl_tasks")
+REQUIRED_ROOT_FIELDS: tuple[str, ...] = ("source_db_var", "target_db_var", "flow_tasks")
 
 # Task seviyesinde zorunlu alanlar
 REQUIRED_TASK_FIELDS: tuple[str, ...] = (

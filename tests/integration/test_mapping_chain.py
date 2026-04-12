@@ -97,12 +97,12 @@ def test_mapping_to_dag_to_run_chain(pg_session, tmp_path):
     )
     MappingGenerator().save(mapping, str(mapping_path))
 
-    # ETL YAML config
+    # Flow YAML config
     config_path = tmp_path / "ff_chain.yaml"
     config = {
         "source_db_var": "src_pg",
         "target_db_var": "tgt_pg",
-        "etl_tasks": [
+        "flow_tasks": [
             {
                 "task_group_id": "chain_task",
                 "source_schema": schema,

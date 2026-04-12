@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch, call
-from ffengine.core.etl_manager import ETLManager, PythonEngine
-from ffengine.core.base_engine import ETLResult
+from ffengine.core.flow_manager import FlowManager, PythonEngine
+from ffengine.core.base_engine import FlowResult
 from ffengine.errors import EngineError
 
 
@@ -87,7 +87,7 @@ def test_python_engine_run_raises_config_error_for_missing_sessions(tmp_path):
     cfg.write_text(textwrap.dedent("""\
         source_db_var: src_conn
         target_db_var: tgt_conn
-        etl_tasks:
+        flow_tasks:
           - task_group_id: t1
             source_schema: public
             source_table: orders
@@ -102,28 +102,28 @@ def test_python_engine_run_raises_config_error_for_missing_sessions(tmp_path):
 
 
 # ------------------------------------------------------------------
-# ETLManager.run_etl_task() — başarılı akış
+# FlowManager.run_flow_task() — başarılı akış
 # ------------------------------------------------------------------
 
 
-def test_run_etl_task_returns_etl_result(src_session, tgt_session, dialect, task_config):
-    manager = ETLManager()
-    result = manager.run_etl_task(
+def test_run_flow_task_returns_etl_result(src_session, tgt_session, dialect, task_config):
+    manager = FlowManager()
+    result = manager.run_flow_task(
         src_session=src_session,
         tgt_session=tgt_session,
         src_dialect=dialect,
         tgt_dialect=dialect,
         task_config=task_config,
     )
-    assert isinstance(result, ETLResult)
+    assert isinstance(result, FlowResult)
     assert result.rows == 2
     assert result.partitions_completed == 1
     assert result.errors == []
 
 
-def test_run_etl_task_duration_positive(src_session, tgt_session, dialect, task_config):
-    manager = ETLManager()
-    result = manager.run_etl_task(
+def test_run_flow_task_duration_positive(src_session, tgt_session, dialect, task_config):
+    manager = FlowManager()
+    result = manager.run_flow_task(
         src_session=src_session,
         tgt_session=tgt_session,
         src_dialect=dialect,
@@ -133,9 +133,9 @@ def test_run_etl_task_duration_positive(src_session, tgt_session, dialect, task_
     assert result.duration_seconds >= 0
 
 
-def test_run_etl_task_throughput_non_negative(src_session, tgt_session, dialect, task_config):
-    manager = ETLManager()
-    result = manager.run_etl_task(
+def test_run_flow_task_throughput_non_negative(src_session, tgt_session, dialect, task_config):
+    manager = FlowManager()
+    result = manager.run_flow_task(
         src_session=src_session,
         tgt_session=tgt_session,
         src_dialect=dialect,
@@ -150,14 +150,14 @@ def test_run_etl_task_throughput_non_negative(src_session, tgt_session, dialect,
 # ------------------------------------------------------------------
 
 
-def test_run_etl_task_partition_spec_injects_where(src_session, tgt_session, dialect, task_config):
-    with patch("ffengine.core.etl_manager.SourceReader") as MockReader:
+def test_run_flow_task_partition_spec_injects_where(src_session, tgt_session, dialect, task_config):
+    with patch("ffengine.core.flow_manager.SourceReader") as MockReader:
         mock_reader_instance = MagicMock()
         mock_reader_instance.read.return_value = iter([])
         MockReader.return_value = mock_reader_instance
 
-        manager = ETLManager()
-        manager.run_etl_task(
+        manager = FlowManager()
+        manager.run_flow_task(
             src_session=src_session,
             tgt_session=tgt_session,
             src_dialect=dialect,
@@ -175,15 +175,15 @@ def test_run_etl_task_partition_spec_injects_where(src_session, tgt_session, dia
 # ------------------------------------------------------------------
 
 
-def test_run_etl_task_rollback_on_write_error(src_session, tgt_session, dialect, task_config):
-    with patch("ffengine.core.etl_manager.TargetWriter") as MockWriter:
+def test_run_flow_task_rollback_on_write_error(src_session, tgt_session, dialect, task_config):
+    with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
         mock_writer = MagicMock()
         mock_writer.write_batch.side_effect = RuntimeError("insert failed")
         MockWriter.return_value = mock_writer
 
-        manager = ETLManager()
+        manager = FlowManager()
         with pytest.raises(EngineError, match="insert failed"):
-            manager.run_etl_task(
+            manager.run_flow_task(
                 src_session=src_session,
                 tgt_session=tgt_session,
                 src_dialect=dialect,
@@ -194,15 +194,15 @@ def test_run_etl_task_rollback_on_write_error(src_session, tgt_session, dialect,
         mock_writer.rollback_batch.assert_called()
 
 
-def test_run_etl_task_rollback_called_once_on_error(src_session, tgt_session, dialect, task_config):
-    with patch("ffengine.core.etl_manager.TargetWriter") as MockWriter:
+def test_run_flow_task_rollback_called_once_on_error(src_session, tgt_session, dialect, task_config):
+    with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
         mock_writer = MagicMock()
         mock_writer.write_batch.side_effect = Exception("fail")
         MockWriter.return_value = mock_writer
 
-        manager = ETLManager()
+        manager = FlowManager()
         with pytest.raises(EngineError):
-            manager.run_etl_task(
+            manager.run_flow_task(
                 src_session=src_session,
                 tgt_session=tgt_session,
                 src_dialect=dialect,
@@ -224,13 +224,13 @@ def test_run_etl_task_rollback_called_once_on_error(src_session, tgt_session, di
 
 
 def test_skip_prepare_true_skips_writer_prepare(src_session, tgt_session, dialect, task_config):
-    with patch("ffengine.core.etl_manager.TargetWriter") as MockWriter:
+    with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
         mock_writer = MagicMock()
         mock_writer.write_batch.return_value = 0
         MockWriter.return_value = mock_writer
 
-        manager = ETLManager()
-        manager.run_etl_task(
+        manager = FlowManager()
+        manager.run_flow_task(
             src_session=src_session,
             tgt_session=tgt_session,
             src_dialect=dialect,
@@ -243,13 +243,13 @@ def test_skip_prepare_true_skips_writer_prepare(src_session, tgt_session, dialec
 
 
 def test_skip_prepare_false_calls_writer_prepare(src_session, tgt_session, dialect, task_config):
-    with patch("ffengine.core.etl_manager.TargetWriter") as MockWriter:
+    with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
         mock_writer = MagicMock()
         mock_writer.write_batch.return_value = 0
         MockWriter.return_value = mock_writer
 
-        manager = ETLManager()
-        manager.run_etl_task(
+        manager = FlowManager()
+        manager.run_flow_task(
             src_session=src_session,
             tgt_session=tgt_session,
             src_dialect=dialect,
@@ -262,13 +262,13 @@ def test_skip_prepare_false_calls_writer_prepare(src_session, tgt_session, diale
 
 
 def test_skip_prepare_default_is_false(src_session, tgt_session, dialect, task_config):
-    with patch("ffengine.core.etl_manager.TargetWriter") as MockWriter:
+    with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
         mock_writer = MagicMock()
         mock_writer.write_batch.return_value = 0
         MockWriter.return_value = mock_writer
 
-        manager = ETLManager()
-        manager.run_etl_task(
+        manager = FlowManager()
+        manager.run_flow_task(
             src_session=src_session,
             tgt_session=tgt_session,
             src_dialect=dialect,

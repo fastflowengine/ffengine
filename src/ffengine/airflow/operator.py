@@ -1,7 +1,7 @@
 """
 C07 — FFEngineOperator + yardımcı fonksiyonlar.
 
-FFEngineOperator, Airflow ortamında FFEngine ETL pipeline'ını orkestre eder:
+FFEngineOperator, Airflow ortamında FFEngine Flow pipeline'ını orkestre eder:
   plan → prepare → run (3-fazlı iç orkestrasyon).
 """
 
@@ -20,7 +20,7 @@ except Exception:  # pragma: no cover - airflow olmayan ortamlarda import fallba
             def __init__(self, *args, **kwargs):
                 self.task_id = kwargs.get("task_id")
 
-from ffengine.core.base_engine import ETLResult
+from ffengine.core.base_engine import FlowResult
 from ffengine.errors import error_payload, normalize_exception
 from ffengine.errors.exceptions import ConfigError
 
@@ -120,14 +120,14 @@ def combine_where(base_where: str | None, partition_where: str | None) -> str | 
 # ---------------------------------------------------------------------------
 
 
-def aggregate_results(results: list[ETLResult]) -> ETLResult:
+def aggregate_results(results: list[FlowResult]) -> FlowResult:
     """
-    Birden fazla partition sonucunu tek bir ETLResult'a birleştirir.
+    Birden fazla partition sonucunu tek bir FlowResult'a birleştirir.
 
     duration_seconds en uzun partition süresidir (wall-clock).
     """
     if not results:
-        return ETLResult(
+        return FlowResult(
             rows=0,
             duration_seconds=0.0,
             throughput=0.0,
@@ -140,7 +140,7 @@ def aggregate_results(results: list[ETLResult]) -> ETLResult:
     throughput = total_rows / max_duration if max_duration > 0 else 0.0
     all_errors = [e for r in results for e in r.errors]
 
-    return ETLResult(
+    return FlowResult(
         rows=total_rows,
         duration_seconds=round(max_duration, 3),
         throughput=round(throughput, 2),
@@ -190,12 +190,12 @@ def build_airflow_variable_context() -> dict:
 
 class FFEngineOperator(BaseOperator):
     """
-    FFEngine ETL pipeline'ını Airflow ortamında orkestre eden operatör.
+    FFEngine Flow pipeline'ını Airflow ortamında orkestre eden operatör.
 
     3-fazlı iç orkestrasyon:
       1. plan   — config yükle, binding çöz, mapping çöz, partition planla
       2. prepare — TargetWriter.prepare() (bir kez)
-      3. run    — her partition için ETLManager.run_etl_task(skip_prepare=True)
+      3. run    — her partition için FlowManager.run_flow_task(skip_prepare=True)
 
     Parameters
     ----------
@@ -251,7 +251,7 @@ class FFEngineOperator(BaseOperator):
         from ffengine.mapping import MappingResolver
         from ffengine.partition import Partitioner
         from ffengine.pipeline.target_writer import TargetWriter
-        from ffengine.core.etl_manager import ETLManager
+        from ffengine.core.flow_manager import FlowManager
 
         context = context or {}
 
@@ -342,8 +342,8 @@ class FFEngineOperator(BaseOperator):
                         partition_id=len(specs),
                     )
                     base_where = task_config.get("_resolved_where")
-                    results: list[ETLResult] = []
-                    manager = ETLManager()
+                    results: list[FlowResult] = []
+                    manager = FlowManager()
 
                     for spec in specs:
                         effective = dict(task_config)
@@ -351,7 +351,7 @@ class FFEngineOperator(BaseOperator):
                             base_where, spec.get("where")
                         )
 
-                        result = manager.run_etl_task(
+                        result = manager.run_flow_task(
                             src_session=src_session,
                             tgt_session=tgt_session,
                             src_dialect=src_dialect,

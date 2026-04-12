@@ -1,0 +1,54 @@
+session_id: "sess_20260411_c15_001"
+epic_id: C15
+wave: 8
+scope: Community
+started_at: "2026-04-11T00:00:00Z"
+last_updated_at: "2026-04-11T00:00:00Z"
+status: IN_PROGRESS
+
+completed_tasks:
+  - task_id: "C15_T01"
+    description: "Snapshot repository + revision API + minimal UI integrate edildi"
+    files_created:
+      - handbook/context/C15_DAG_SNAPSHOT_VERSIONING.md
+      - projects/webhook/checkpoints/C15_checkpoint.yaml
+    files_modified:
+      - src/ffengine/ui/studio_service.py
+      - src/ffengine/ui/api_app.py
+      - src/ffengine/ui/static/etl_studio/js/app.js
+      - src/ffengine/ui/templates/etl_studio/index.html
+      - tests/unit/test_etl_studio_api.py
+    tests_passed:
+      - tests/unit/test_etl_studio_api.py
+    completed_at: "2026-04-11T00:00:00Z"
+
+pending_tasks:
+  - task_id: "C15_T02"
+    description: "UAT ortaminda promote + parse verification surelerini dogrula"
+    priority: 1
+
+created_files:
+  - handbook/context/C15_DAG_SNAPSHOT_VERSIONING.md
+  - projects/webhook/checkpoints/C15_checkpoint.yaml
+
+modified_files:
+  - src/ffengine/ui/studio_service.py
+  - src/ffengine/ui/api_app.py
+  - src/ffengine/ui/static/etl_studio/js/app.js
+  - src/ffengine/ui/static/etl_studio/css/style.css
+  - src/ffengine/ui/templates/etl_studio/index.html
+  - tests/unit/test_etl_studio_api.py
+  - handbook/wbs/WBS_COMMUNITY.md
+  - handbook/context/C08_ETL_STUDIO.md
+  - handbook/context/C12_ETL_STUDIO_EVOLUTION.md
+
+test_results:
+  passed:
+    - tests/unit/test_etl_studio_api.py
+  failed: []
+
+open_risks:
+  - "Windows test ortaminda revision klasoru fiziksel temizligi ACL nedeniyle gecikmeli olabilir; API seviyesi last-20 gorunurlugu korunuyor."
+
+blocked_reason: null
+next_action: "C15_T02 icin gerçek scheduler/webserver ortamında promote parse verification timeout tuning dogrulamalarini tamamla."

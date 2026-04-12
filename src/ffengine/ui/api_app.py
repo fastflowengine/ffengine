@@ -1,4 +1,4 @@
-"""Airflow 3 FastAPI app for ETL Studio."""
+"""Airflow 3 FastAPI app for Flow Studio."""
 
 from __future__ import annotations
 
@@ -46,20 +46,20 @@ def _raise_http_from_exception(exc: Exception) -> None:
 
 
 def _optional_api_key_dep(
-    x_etl_studio_api_key: str | None = Header(
+    x_flow_studio_api_key: str | None = Header(
         None,
-        alias="X-ETL-Studio-API-Key",
-        description="ETL Studio API anahtari (ETL_STUDIO_API_KEY ortam degiskeni ayarliysa zorunlu)",
+        alias="X-Flow-Studio-API-Key",
+        description="Flow Studio API anahtari (FLOW_STUDIO_API_KEY ortam degiskeni ayarliysa zorunlu)",
     ),
 ) -> None:
     """T12: Mutasyon endpointleri icin opsiyonel API anahtari dogrulamasi."""
-    expected = os.getenv("ETL_STUDIO_API_KEY", "").strip()
+    expected = os.getenv("FLOW_STUDIO_API_KEY", "").strip()
     if not expected:
         return
-    if not x_etl_studio_api_key or x_etl_studio_api_key.strip() != expected:
+    if not x_flow_studio_api_key or x_flow_studio_api_key.strip() != expected:
         raise HTTPException(
             status_code=401,
-            detail="Gecersiz veya eksik X-ETL-Studio-API-Key basligi.",
+            detail="Gecersiz veya eksik X-Flow-Studio-API-Key basligi.",
         )
 
 
@@ -135,7 +135,7 @@ class BindingPayload(BaseModel):
         return self
 
 
-class EtlTaskPayload(BaseModel):
+class FlowTaskPayload(BaseModel):
     model_config = {"extra": "forbid"}
 
     task_group_id: str | None = Field(default=None, min_length=1)
@@ -190,7 +190,7 @@ class EtlTaskPayload(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _v_mapping(self) -> EtlTaskPayload:
+    def _v_mapping(self) -> FlowTaskPayload:
         if self.source_type == "sql" and self.column_mapping_mode != "mapping_file":
             raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
         if self.source_type in {"table", "view"}:
@@ -235,7 +235,7 @@ class DagUpsertPayload(BaseModel):
     partitioning_ranges: list[Any] | None = None
     bindings: list[BindingPayload] | None = None
     task_group_id: str | None = Field(default=None, min_length=1)
-    etl_tasks: list[EtlTaskPayload] | None = None
+    flow_tasks: list[FlowTaskPayload] | None = None
 
     @field_validator("source_type")
     @classmethod
@@ -269,7 +269,7 @@ class DagUpsertPayload(BaseModel):
 
     @model_validator(mode="after")
     def _v_mapping(self) -> DagUpsertPayload:
-        has_task_list = isinstance(self.etl_tasks, list) and len(self.etl_tasks) > 0
+        has_task_list = isinstance(self.flow_tasks, list) and len(self.flow_tasks) > 0
         if has_task_list:
             return self
         target_required_ok = all([(self.target_schema or "").strip(), (self.target_table or "").strip()])
@@ -277,11 +277,11 @@ class DagUpsertPayload(BaseModel):
             source_required_ok = all([(self.source_schema or "").strip(), (self.source_table or "").strip()])
             if not (source_required_ok and target_required_ok):
                 raise ValueError(
-                    "etl_tasks verilmediyse source_type=table|view icin source_schema/source_table/target_schema/target_table zorunludur."
+                    "flow_tasks verilmediyse source_type=table|view icin source_schema/source_table/target_schema/target_table zorunludur."
                 )
         elif not target_required_ok:
             raise ValueError(
-                "etl_tasks verilmediyse target_schema/target_table zorunludur."
+                "flow_tasks verilmediyse target_schema/target_table zorunludur."
             )
         if self.source_type == "sql" and self.column_mapping_mode != "mapping_file":
             raise ValueError("source_type='sql' icin column_mapping_mode='mapping_file' zorunludur.")
@@ -331,8 +331,8 @@ class MappingGeneratePayload(BaseModel):
         return self
 
 
-etl_studio_app = FastAPI(title="ETL Studio", version="1.1.0")
-etl_studio_app.mount(
+flow_studio_app = FastAPI(title="Flow Studio", version="1.1.0")
+flow_studio_app.mount(
     "/static",
     StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
     name="static"
@@ -341,23 +341,23 @@ etl_studio_app.mount(
 
 def _load_index_html() -> str:
     template_path = (
-        Path(__file__).resolve().parent / "templates" / "etl_studio" / "index.html"
+        Path(__file__).resolve().parent / "templates" / "flow_studio" / "index.html"
     )
     return template_path.read_text(encoding="utf-8")
 
 
-@etl_studio_app.get("/", response_class=HTMLResponse)
+@flow_studio_app.get("/", response_class=HTMLResponse)
 def studio_index(response: Response) -> str:
     response.headers["Cache-Control"] = "no-store"
     return _load_index_html()
 
 
-@etl_studio_app.get("/health")
+@flow_studio_app.get("/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "service": "etl-studio", "dag_marker": STUDIO_DAG_MARKER}
+    return {"ok": True, "service": "flow-studio", "dag_marker": STUDIO_DAG_MARKER}
 
 
-@etl_studio_app.get("/api/schemas")
+@flow_studio_app.get("/api/schemas")
 def api_schemas(
     conn_id: str = Query(..., min_length=1),
     q: str | None = Query(None),
@@ -370,7 +370,7 @@ def api_schemas(
         _raise_http_from_exception(exc)
 
 
-@etl_studio_app.get("/api/connections")
+@flow_studio_app.get("/api/connections")
 def api_connections() -> dict[str, Any]:
     try:
         items = discover_connections()
@@ -379,7 +379,7 @@ def api_connections() -> dict[str, Any]:
         _raise_http_from_exception(exc)
 
 
-@etl_studio_app.get("/api/airflow-variables")
+@flow_studio_app.get("/api/airflow-variables")
 def api_airflow_variables(
     q: str | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
@@ -391,7 +391,7 @@ def api_airflow_variables(
         _raise_http_from_exception(exc)
 
 
-@etl_studio_app.get("/api/folder-options")
+@flow_studio_app.get("/api/folder-options")
 def api_folder_options(
     project: str | None = Query(None),
     domain: str | None = Query(None),
@@ -410,7 +410,7 @@ def api_folder_options(
         _raise_http_from_exception(exc)
 
 
-@etl_studio_app.get("/api/tables")
+@flow_studio_app.get("/api/tables")
 def api_tables(
     conn_id: str = Query(..., min_length=1),
     schema: str = Query(..., min_length=1),
@@ -436,7 +436,7 @@ def api_tables(
         _raise_http_from_exception(exc)
 
 
-@etl_studio_app.get("/api/columns")
+@flow_studio_app.get("/api/columns")
 def api_columns(
     conn_id: str = Query(..., min_length=1),
     schema: str = Query(..., min_length=1),
@@ -454,7 +454,7 @@ def _payload_to_service_dict(payload: DagUpsertPayload) -> dict[str, Any]:
     return payload.model_dump(exclude_none=True)
 
 
-@etl_studio_app.post("/api/create-dag", status_code=201)
+@flow_studio_app.post("/api/create-dag", status_code=201)
 def api_create_dag(
     payload: DagUpsertPayload,
     _: None = Depends(_optional_api_key_dep),
@@ -468,7 +468,7 @@ def api_create_dag(
         _raise_http_from_exception(exc)
 
 
-@etl_studio_app.post("/api/update-dag")
+@flow_studio_app.post("/api/update-dag")
 def api_update_dag(
     payload: DagUpsertPayload,
     dag_id: str = Query(..., min_length=1, description="Guncellenecek DAG id"),
@@ -487,7 +487,7 @@ def api_update_dag(
         _raise_http_from_exception(exc)
 
 
-@etl_studio_app.post("/api/mapping/generate")
+@flow_studio_app.post("/api/mapping/generate")
 def api_mapping_generate(payload: MappingGeneratePayload) -> dict[str, Any]:
     try:
         result = generate_mapping_preview(payload.model_dump(exclude_none=True))
@@ -498,7 +498,7 @@ def api_mapping_generate(payload: MappingGeneratePayload) -> dict[str, Any]:
         _raise_http_from_exception(exc)
 
 
-@etl_studio_app.get("/api/timeline")
+@flow_studio_app.get("/api/timeline")
 def api_timeline(
     limit: int = Query(50, ge=1, le=200),
     dag_id: str | None = Query(None, description="DagRun dag_id filtresi"),
@@ -511,7 +511,7 @@ def api_timeline(
         _raise_http_from_exception(exc)
 
 
-@etl_studio_app.get("/api/dag-config")
+@flow_studio_app.get("/api/dag-config")
 def api_dag_config(dag_id: str = Query(..., min_length=1)) -> dict[str, Any]:
     try:
         result = resolve_dag_config_for_update(dag_id=dag_id)
@@ -522,7 +522,7 @@ def api_dag_config(dag_id: str = Query(..., min_length=1)) -> dict[str, Any]:
         _raise_http_from_exception(exc)
 
 
-@etl_studio_app.get("/api/dag-revisions")
+@flow_studio_app.get("/api/dag-revisions")
 def api_dag_revisions(dag_id: str = Query(..., min_length=1)) -> dict[str, Any]:
     try:
         result = get_dag_revisions(dag_id=dag_id)
@@ -535,7 +535,7 @@ def api_dag_revisions(dag_id: str = Query(..., min_length=1)) -> dict[str, Any]:
         _raise_http_from_exception(exc)
 
 
-@etl_studio_app.post("/api/dag-revisions/promote")
+@flow_studio_app.post("/api/dag-revisions/promote")
 def api_promote_dag_revision(
     dag_id: str = Query(..., min_length=1),
     revision_id: str = Query(..., min_length=1),
@@ -552,7 +552,7 @@ def api_promote_dag_revision(
         _raise_http_from_exception(exc)
 
 
-@etl_studio_app.delete("/api/delete-dag")
+@flow_studio_app.delete("/api/delete-dag")
 def api_delete_dag(
     dag_id: str = Query(..., min_length=1),
     _: None = Depends(_optional_api_key_dep),

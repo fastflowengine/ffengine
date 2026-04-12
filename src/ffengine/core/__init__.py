@@ -1,14 +1,14 @@
 """
 FFEngine Core Layer
-BaseEngine, ETLResult, ETLManager / PythonEngine.
+BaseEngine, FlowResult, FlowManager / PythonEngine.
 """
 
-from ffengine.core.base_engine import BaseEngine, ETLResult
-from ffengine.core.etl_manager import ETLManager, PythonEngine
+from ffengine.core.base_engine import BaseEngine, FlowResult
+from ffengine.core.flow_manager import FlowManager, PythonEngine
 
 __all__ = [
     "BaseEngine",
-    "ETLResult",
-    "ETLManager",
+    "FlowResult",
+    "FlowManager",
     "PythonEngine",
 ]

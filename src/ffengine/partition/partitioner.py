@@ -31,7 +31,7 @@ class Partitioner:
         specs = Partitioner().plan(task_config, src_conn, src_dialect)
         # specs: [{"part_id": 0, "where": "id >= 1 AND id <= 250"}, ...]
 
-    ETLManager.run_etl_task() her spec için ayrı çağrılır.
+    FlowManager.run_flow_task() her spec için ayrı çağrılır.
     """
 
     def plan(self, task_config: dict, src_conn, src_dialect) -> list[dict]:

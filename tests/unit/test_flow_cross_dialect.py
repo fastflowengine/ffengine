@@ -1,5 +1,5 @@
 """
-Cross-Dialect ETL Unit Testleri
+Cross-Dialect Flow Unit Testleri
 
 9 kombinasyonun tümünü gerçek dialect nesneleri + mock session ile test eder:
   PG→PG  PG→MSSQL  PG→Oracle
@@ -7,10 +7,10 @@ Cross-Dialect ETL Unit Testleri
   Oracle→PG  Oracle→MSSQL  Oracle→Oracle
 
 Her kombinasyon için doğrulananlar:
-  1. ETLResult.rows doğru döner
+  1. FlowResult.rows doğru döner
   2. INSERT SQL'inde hedef dialect'ın quoting kuralı uygulanmış
   3. SELECT SQL'inde kaynak dialect'ın quoting kuralı uygulanmış
-  4. ETLResult alanları geçerli (duration >= 0, throughput >= 0, errors == [])
+  4. FlowResult alanları geçerli (duration >= 0, throughput >= 0, errors == [])
   5. Aynı DB üzerine self-transfer (PG→PG, MSSQL→MSSQL, Oracle→Oracle)
   6. Rollback doğru dialect session'ına iletilir
 """
@@ -18,8 +18,8 @@ Her kombinasyon için doğrulananlar:
 import pytest
 from unittest.mock import MagicMock, call
 
-from ffengine.core.etl_manager import ETLManager
-from ffengine.core.base_engine import ETLResult
+from ffengine.core.flow_manager import FlowManager
+from ffengine.core.base_engine import FlowResult
 from ffengine.dialects import PostgresDialect, MSSQLDialect, OracleDialect
 from ffengine.errors.exceptions import FFEngineError
 
@@ -92,7 +92,7 @@ def _make_tgt_session():
 
 
 def _run(src_name, tgt_name, task_config=None, src_rows=None):
-    """Verilen dialect çifti için ETLManager.run_etl_task() çalıştır."""
+    """Verilen dialect çifti için FlowManager.run_flow_task() çalıştır."""
     src_dialect = _DIALECT_CLASSES[src_name]()
     tgt_dialect = _DIALECT_CLASSES[tgt_name]()
     src_session = _make_src_session(src_rows)
@@ -111,8 +111,8 @@ def _run(src_name, tgt_name, task_config=None, src_rows=None):
             "batch_size": 100,
         }
 
-    manager = ETLManager()
-    result = manager.run_etl_task(
+    manager = FlowManager()
+    result = manager.run_flow_task(
         src_session=src_session,
         tgt_session=tgt_session,
         src_dialect=src_dialect,
@@ -183,14 +183,14 @@ def test_cross_dialect_source_table_quoting(src_name, tgt_name):
 
 
 # ------------------------------------------------------------------
-# 4. ETLResult alanları geçerli — tüm 9 kombinasyon
+# 4. FlowResult alanları geçerli — tüm 9 kombinasyon
 # ------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("src_name,tgt_name", CROSS_PAIRS)
 def test_cross_dialect_etl_result_type(src_name, tgt_name):
     result, _, _ = _run(src_name, tgt_name)
-    assert isinstance(result, ETLResult)
+    assert isinstance(result, FlowResult)
 
 
 @pytest.mark.parametrize("src_name,tgt_name", CROSS_PAIRS)
@@ -269,9 +269,9 @@ def test_cross_dialect_rollback_on_write_error(src_name, tgt_name):
         "target_columns_meta": [],
     }
 
-    manager = ETLManager()
+    manager = FlowManager()
     with pytest.raises(FFEngineError):
-        manager.run_etl_task(
+        manager.run_flow_task(
             src_session=src_session,
             tgt_session=tgt_session,
             src_dialect=src_dialect,
@@ -289,7 +289,7 @@ def test_cross_dialect_rollback_on_write_error(src_name, tgt_name):
 
 @pytest.mark.parametrize("src_name,tgt_name", CROSS_PAIRS)
 def test_cross_dialect_empty_source(src_name, tgt_name):
-    """Kaynak tablo boşsa ETLResult.rows == 0, INSERT çağrılmamalı."""
+    """Kaynak tablo boşsa FlowResult.rows == 0, INSERT çağrılmamalı."""
     result, _, tgt_session = _run(src_name, tgt_name, src_rows=[])
     assert result.rows == 0
     tgt_session.cursor.return_value.executemany.assert_not_called()

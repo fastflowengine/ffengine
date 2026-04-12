@@ -1,5 +1,5 @@
-﻿"""
-C08_T13 â€” ETL Studio FastAPI endpoint unit/API testleri.
+"""
+C08_T13 â€” Flow Studio FastAPI endpoint unit/API testleri.
 """
 
 from __future__ import annotations
@@ -17,19 +17,19 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 import ffengine.ui.api_app as api_app_module
-from ffengine.ui.api_app import DagUpsertPayload, etl_studio_app
+from ffengine.ui.api_app import DagUpsertPayload, flow_studio_app
 from ffengine.errors import ConnectionError
 from ffengine.ui import studio_service as ss
 
 
 @pytest.fixture
 def client():
-    return TestClient(etl_studio_app)
+    return TestClient(flow_studio_app)
 
 
 @pytest.fixture
 def studio_paths(monkeypatch):
-    base = Path("logs") / "etl_studio_test_tmp" / f"case_{uuid.uuid4().hex}"
+    base = Path("logs") / "flow_studio_test_tmp" / f"case_{uuid.uuid4().hex}"
     proj = base / "projects"
     gen = base / "dags"
     proj.mkdir(parents=True, exist_ok=True)
@@ -80,19 +80,19 @@ def test_health_ok(client):
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
-    assert data["service"] == "etl-studio"
+    assert data["service"] == "flow-studio"
     assert ss.STUDIO_DAG_MARKER in data.get("dag_marker", "")
 
 
 def test_index_html_ok(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert "ETL Configuration Studio" in r.text
-    assert "/etl-studio/static/etl_studio/css/style.css" in r.text
-    assert "/etl-studio/static/etl_studio/js/app.js" in r.text
+    assert "Flow Studio" in r.text
+    assert "/flow-studio/static/flow_studio/css/style.css" in r.text
+    assert "/flow-studio/static/flow_studio/js/app.js" in r.text
     assert "theme_notice" in r.text
     assert "theme_source_debug" in r.text
-    assert 'class="etl-studio-root"' in r.text
+    assert 'class="flow-studio-root"' in r.text
     assert "preload_dag_id" not in r.text
     assert "Load DAG Context" not in r.text
     assert "folder_path_display" in r.text
@@ -104,8 +104,8 @@ def test_index_html_ok(client):
     assert "Filter & Bindings" in r.text
     assert "Task Group ID (Opsiyonel)" not in r.text
     assert "task-group-id-readonly" in r.text
-    assert "Tumunu Ac" in r.text
-    assert "Tumunu Kapat" in r.text
+    assert "Expand All" in r.text
+    assert "Collapse All" in r.text
     assert "Save Configuration" in r.text
     assert "+ Add New Task" in r.text
     assert "Delete DAG" in r.text
@@ -366,7 +366,7 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
     cfg = yaml.safe_load(
         (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
     )
-    task = cfg["etl_tasks"][0]
+    task = cfg["flow_tasks"][0]
 
     assert task["source_type"] == "view"
     assert task["column_mapping_mode"] == "mapping_file"
@@ -399,7 +399,7 @@ def test_create_dag_distinct_mode_persists_distinct_limit(client, studio_paths):
     cfg = yaml.safe_load(
         (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
     )
-    task = cfg["etl_tasks"][0]
+    task = cfg["flow_tasks"][0]
     assert task["partitioning"]["mode"] == "distinct"
     assert task["partitioning"]["column"] == "country_code"
     assert task["partitioning"]["distinct_limit"] == 9
@@ -445,7 +445,7 @@ def test_create_dag_sql_source_persists_inline_sql(client, studio_paths):
     cfg = yaml.safe_load(
         (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
     )
-    task = cfg["etl_tasks"][0]
+    task = cfg["flow_tasks"][0]
 
     assert task["source_type"] == "sql"
     assert task["inline_sql"] == "SELECT id, amount FROM public.orders WHERE amount > 0"
@@ -558,7 +558,7 @@ def test_create_dag_with_bindings_persists_yaml(client, studio_paths):
     cfg = yaml.safe_load(
         (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
     )
-    task = cfg["etl_tasks"][0]
+    task = cfg["flow_tasks"][0]
     assert task["where"] == "updated_at >= :last_sync"
     assert task["bindings"][0]["variable_name"] == "last_sync"
     assert task["bindings"][0]["binding_source"] == "airflow_variable"
@@ -681,7 +681,7 @@ def test_update_dag_requires_studio_marker(client, studio_paths):
     dag_path.write_text("# manual dag\n", encoding="utf-8")
     r = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r.status_code == 422
-    assert "ETL Studio" in r.json()["detail"]
+    assert "Flow Studio" in r.json()["detail"]
 
 
 def test_update_dag_ok(client, studio_paths):
@@ -707,7 +707,7 @@ def test_update_dag_allows_adding_new_task(client, studio_paths):
     cfg_path = Path(r1.json()["config_path"])
 
     update_payload = _minimal_table_payload()
-    update_payload["etl_tasks"] = [
+    update_payload["flow_tasks"] = [
         {
             "source_type": "table",
             "source_schema": "public",
@@ -732,7 +732,7 @@ def test_update_dag_allows_adding_new_task(client, studio_paths):
     assert r2.json()["dag_path"] == dag_path
 
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    tasks = cfg.get("etl_tasks") or []
+    tasks = cfg.get("flow_tasks") or []
     assert len(tasks) == 2
     assert tasks[0]["target_table"] == "orders_stg"
     assert tasks[1]["target_table"] == "customers_stg"
@@ -761,8 +761,8 @@ def test_update_dag_targets_selected_dag_when_same_flow_has_multiple_groups(clie
     cfg2 = Path(r2.json()["config_path"])
     c1 = yaml.safe_load(cfg1.read_text(encoding="utf-8"))
     c2 = yaml.safe_load(cfg2.read_text(encoding="utf-8"))
-    assert c1["etl_tasks"][0]["load_method"] == "replace"
-    assert c2["etl_tasks"][0]["load_method"] == "append"
+    assert c1["flow_tasks"][0]["load_method"] == "replace"
+    assert c2["flow_tasks"][0]["load_method"] == "append"
 
 
 def test_dag_revisions_promote_roundtrip(client, studio_paths):
@@ -775,7 +775,7 @@ def test_dag_revisions_promote_roundtrip(client, studio_paths):
     payload["load_method"] = "replace"
     r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 200, r2.text
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["etl_tasks"][0]["load_method"] == "replace"
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
 
     r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
     assert r_rev.status_code == 200, r_rev.text
@@ -793,7 +793,7 @@ def test_dag_revisions_promote_roundtrip(client, studio_paths):
         json={},
     )
     assert r_promote_old.status_code == 200, r_promote_old.text
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["etl_tasks"][0]["load_method"] == "append"
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "append"
 
     r_rev_after = client.get(f"/api/dag-revisions?dag_id={dag_id}")
     assert r_rev_after.status_code == 200, r_rev_after.text
@@ -806,7 +806,7 @@ def test_dag_revisions_promote_roundtrip(client, studio_paths):
         json={},
     )
     assert r_promote_new.status_code == 200, r_promote_new.text
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["etl_tasks"][0]["load_method"] == "replace"
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
 
 
 def test_promote_rejects_invalid_revision_id_format(client, studio_paths):
@@ -833,7 +833,7 @@ def test_delete_dag_requires_dag_id_query(client, studio_paths):
     assert r.status_code == 422
 
 
-def test_delete_dag_removes_etl_studio_bundle_files(client, studio_paths):
+def test_delete_dag_removes_flow_studio_bundle_files(client, studio_paths):
     payload = _minimal_table_payload()
     payload["column_mapping_mode"] = "mapping_file"
     payload["mapping_content"] = _sql_mapping_yaml(["id"])
@@ -846,7 +846,7 @@ def test_delete_dag_removes_etl_studio_bundle_files(client, studio_paths):
     dag_id = dag_path.stem
 
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    mapping_rel = str(cfg["etl_tasks"][0].get("mapping_file") or "")
+    mapping_rel = str(cfg["flow_tasks"][0].get("mapping_file") or "")
     assert mapping_rel
     mapping_path = cfg_path.parent / mapping_rel
     history_path = cfg_path.parent / ss.STUDIO_HISTORY_DIR_NAME / dag_id
@@ -900,7 +900,7 @@ def test_delete_dag_rejects_non_studio_marker_dag(client, studio_paths):
 
     r = client.delete("/api/delete-dag?dag_id=manual_non_studio_dag")
     assert r.status_code == 422
-    assert "ETL Studio" in r.text
+    assert "Flow Studio" in r.text
 
 
 def test_delete_dag_reports_airflow_cleanup_success(client, studio_paths):
@@ -976,7 +976,7 @@ def test_promote_rolls_back_when_parse_verification_fails(client, studio_paths, 
     payload["load_method"] = "replace"
     r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 200, r2.text
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["etl_tasks"][0]["load_method"] == "replace"
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
 
     r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
     assert r_rev.status_code == 200, r_rev.text
@@ -990,7 +990,7 @@ def test_promote_rolls_back_when_parse_verification_fails(client, studio_paths, 
         )
     assert r_promote.status_code == 422
     assert "geri donuldu" in r_promote.text
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["etl_tasks"][0]["load_method"] == "replace"
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
 
 
 def test_update_dag_rejects_dag_id_payload_flow_mismatch(client, studio_paths):
@@ -1147,7 +1147,7 @@ def test_resolve_dag_config_for_update_roundtrip_sql_inline_sql(client, studio_p
     dag_id = Path(r.json()["dag_path"]).stem
 
     resolved = ss.resolve_dag_config_for_update(dag_id)
-    task = resolved["payload"]["etl_tasks"][0]
+    task = resolved["payload"]["flow_tasks"][0]
     assert task["source_type"] == "sql"
     assert task["inline_sql"] == "SELECT 1 AS id"
 
@@ -1219,7 +1219,7 @@ def test_update_dag_sql_mapping_task_group_change_moves_active_path_to_new_file(
     new_path = flow / "mapping" / "1_custom_sql_orders_task.yaml"
     assert new_path.is_file()
     cfg = yaml.safe_load((flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8"))
-    assert cfg["etl_tasks"][0]["mapping_file"] == "mapping/1_custom_sql_orders_task.yaml"
+    assert cfg["flow_tasks"][0]["mapping_file"] == "mapping/1_custom_sql_orders_task.yaml"
 
 
 def test_resolve_dag_config_for_update_roundtrip_bindings(client, studio_paths):
@@ -1241,7 +1241,7 @@ def test_resolve_dag_config_for_update_roundtrip_bindings(client, studio_paths):
     dag_id = Path(r.json()["dag_path"]).stem
 
     resolved = ss.resolve_dag_config_for_update(dag_id)
-    task = resolved["payload"]["etl_tasks"][0]
+    task = resolved["payload"]["flow_tasks"][0]
     assert task["bindings"][0]["variable_name"] == "min_id"
     assert task["bindings"][0]["binding_source"] == "default"
     assert task["bindings"][0]["default_value"] == "100"
@@ -1265,7 +1265,7 @@ def test_resolve_dag_config_for_update_with_nonstandard_dag_id_when_studio_dag_e
             {
                 "source_db_var": "src_c",
                 "target_db_var": "tgt_c",
-                "etl_tasks": [
+                "flow_tasks": [
                     {
                         "task_group_id": "public_ff_test_data_to_dbo_ff_test_data_psql_v12",
                         "source_schema": "public",
@@ -1349,14 +1349,14 @@ def test_dag_payload_rejects_full_scan_partitioning_mode():
 
 
 def test_api_key_required_when_env_set(client, studio_paths, monkeypatch):
-    monkeypatch.setenv("ETL_STUDIO_API_KEY", "secret123")
+    monkeypatch.setenv("FLOW_STUDIO_API_KEY", "secret123")
     payload = _minimal_table_payload()
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 401
     r2 = client.post(
         "/api/create-dag",
         json=payload,
-        headers={"X-ETL-Studio-API-Key": "secret123"},
+        headers={"X-Flow-Studio-API-Key": "secret123"},
     )
     assert r2.status_code == 201
     dag_id = Path(r2.json()["dag_path"]).stem
@@ -1365,7 +1365,7 @@ def test_api_key_required_when_env_set(client, studio_paths, monkeypatch):
     assert r3.status_code == 401
     r4 = client.delete(
         f"/api/delete-dag?dag_id={dag_id}",
-        headers={"X-ETL-Studio-API-Key": "secret123"},
+        headers={"X-Flow-Studio-API-Key": "secret123"},
     )
     assert r4.status_code == 200
 

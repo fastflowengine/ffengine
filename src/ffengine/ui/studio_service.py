@@ -1,5 +1,5 @@
 """
-ETL Studio MVP servis katmani.
+Flow Studio MVP servis katmani.
 
 Faz 1 (T01-T04, T07, T11) ve Faz 2 (T05-T10, T08-T09, T12) endpoint'leri bu modulu kullanir.
 """
@@ -29,9 +29,9 @@ from ffengine.dialects.type_mapper import TypeMapper, UnsupportedTypeError
 from ffengine.mapping.generator import MappingGenerator
 from ffengine.mapping.resolver import VALID_MAPPING_VERSIONS, _dialect_name
 
-STUDIO_METADATA_NAME = ".etl_studio.json"
-STUDIO_DAG_MARKER = "# generated_by: etl_studio"
-STUDIO_HISTORY_DIR_NAME = ".etl_studio_history"
+STUDIO_METADATA_NAME = ".flow_studio.json"
+STUDIO_DAG_MARKER = "# generated_by: flow_studio"
+STUDIO_HISTORY_DIR_NAME = ".flow_studio_history"
 STUDIO_HISTORY_KEEP_LIMIT = 20
 REVISION_SOURCE_CREATE_INITIAL = "create_initial"
 REVISION_SOURCE_UPDATE = "update"
@@ -160,21 +160,21 @@ def _generated_dag_root() -> Path:
 
 def resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str, str]]:
     """
-    etl_tasks icin bagimlilik kenarlarini uretir.
+    flow_tasks icin bagimlilik kenarlarini uretir.
     - depends_on varsa onu kullanir.
     - depends_on yoksa YAML sirasina gore zincirler.
     """
     if not isinstance(task_defs, list):
-        raise ValueError("etl_tasks bir liste olmalidir.")
+        raise ValueError("flow_tasks bir liste olmalidir.")
 
     task_ids: list[str] = []
     id_set: set[str] = set()
     for task in task_defs:
         if not isinstance(task, dict):
-            raise ValueError("Her etl_task bir dict olmalidir.")
+            raise ValueError("Her flow_task bir dict olmalidir.")
         task_id = str(task.get("task_group_id") or "").strip()
         if not task_id:
-            raise ValueError("Her etl_task icin task_group_id zorunludur.")
+            raise ValueError("Her flow_task icin task_group_id zorunludur.")
         if task_id in id_set:
             raise ValueError(f"Ayni task_group_id birden fazla kez kullanildi: {task_id}")
         task_ids.append(task_id)
@@ -256,10 +256,10 @@ def _resolve_task_dependencies(task_defs):
     id_set = set()
     for task in task_defs:
         if not isinstance(task, dict):
-            raise ValueError("Her etl_task bir dict olmalidir.")
+            raise ValueError("Her flow_task bir dict olmalidir.")
         task_id = str(task.get("task_group_id") or "").strip()
         if not task_id:
-            raise ValueError("Her etl_task icin task_group_id zorunludur.")
+            raise ValueError("Her flow_task icin task_group_id zorunludur.")
         if task_id in id_set:
             raise ValueError(f"Ayni task_group_id birden fazla kez kullanildi: {{task_id}}")
         task_ids.append(task_id)
@@ -313,12 +313,12 @@ if not isinstance(raw, dict):
 
 source_conn_id = str(raw.get("source_db_var") or "").strip()
 target_conn_id = str(raw.get("target_db_var") or "").strip()
-task_defs = raw.get("etl_tasks") or []
+task_defs = raw.get("flow_tasks") or []
 
 if not source_conn_id or not target_conn_id:
     raise ValueError("source_db_var ve target_db_var zorunludur.")
 if not isinstance(task_defs, list) or not task_defs:
-    raise ValueError("etl_tasks en az bir task iceren list olmalidir.")
+    raise ValueError("flow_tasks en az bir task iceren list olmalidir.")
 
 edges = _resolve_task_dependencies(task_defs)
 
@@ -543,7 +543,7 @@ def _collect_existing_auto_mapping_paths(config_path: Path, flow_dir: Path) -> s
         cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     except Exception:
         return set()
-    tasks = cfg.get("etl_tasks")
+    tasks = cfg.get("flow_tasks")
     if not isinstance(tasks, list):
         return set()
     out: set[Path] = set()
@@ -710,7 +710,7 @@ def _sha256_text(text: str) -> str:
 
 def _auto_mapping_rel_paths_from_config_obj(config_obj: dict[str, Any]) -> list[str]:
     out: list[str] = []
-    tasks = config_obj.get("etl_tasks") if isinstance(config_obj, dict) else None
+    tasks = config_obj.get("flow_tasks") if isinstance(config_obj, dict) else None
     if not isinstance(tasks, list):
         return out
     for task in tasks:
@@ -908,7 +908,7 @@ def _extract_group_no(dag_id: str, config_path: Path) -> int:
 def _extract_config_path_from_dag_source(dag_path: Path) -> Path:
     source = dag_path.read_text(encoding="utf-8")
     if STUDIO_DAG_MARKER not in source:
-        raise ValueError("Bu DAG ETL Studio tarafindan uretilmemis.")
+        raise ValueError("Bu DAG Flow Studio tarafindan uretilmemis.")
     match = re.search(
         r"CONFIG_PATH\s*=\s*Path\((['\"])(?P<path>.+?)\1\)",
         source,
@@ -956,7 +956,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
     try:
         rel = config_resolved.relative_to(projects_root)
     except ValueError as exc:
-        raise ValueError("YAML path ETL Studio projects root altinda degil.") from exc
+        raise ValueError("YAML path Flow Studio projects root altinda degil.") from exc
     if len(rel.parts) < 5:
         raise ValueError("YAML path hiyerarsisi gecersiz.")
     project, domain, level, flow = rel.parts[:4]
@@ -964,13 +964,13 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise ValueError("YAML root dict olmalidir.")
-    tasks = raw.get("etl_tasks") or []
+    tasks = raw.get("flow_tasks") or []
     if not isinstance(tasks, list) or not tasks:
-        raise ValueError("YAML etl_tasks listesi bos veya gecersiz.")
+        raise ValueError("YAML flow_tasks listesi bos veya gecersiz.")
     normalized_tasks: list[dict[str, Any]] = []
     for idx, task in enumerate(tasks, start=1):
         if not isinstance(task, dict):
-            raise ValueError(f"etl_tasks[{idx-1}] dict olmalidir.")
+            raise ValueError(f"flow_tasks[{idx-1}] dict olmalidir.")
         partitioning = task.get("partitioning") or {}
         if not isinstance(partitioning, dict):
             partitioning = {}
@@ -1034,7 +1034,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "partitioning_distinct_limit": first_task["partitioning_distinct_limit"],
         "partitioning_ranges": first_task["partitioning_ranges"],
         "bindings": first_task["bindings"],
-        "etl_tasks": normalized_tasks,
+        "flow_tasks": normalized_tasks,
     }
 
     return {
@@ -1162,8 +1162,9 @@ def _cleanup_airflow_dag_metadata(dag_id: str) -> dict[str, Any]:
         ("task_instances", [("airflow.models.taskinstance", "TaskInstance")]),
         ("task_reschedules", [("airflow.models.taskreschedule", "TaskReschedule")]),
         ("task_fails", [("airflow.models.taskfail", "TaskFail")]),
-        # Airflow 3'te XCom -> BaseXCom alias olabilir; ORM model XComModel'dir.
-        ("xcom", [("airflow.models.xcom", "XComModel"), ("airflow.models.xcom", "XCom")]),
+        # Airflow 3'te airflow.models.xcom.XCom alias'i BaseXCom olabilir.
+        # Metadata cleanup icin yalniz ORM model olan XComModel kullanilir.
+        ("xcom", [("airflow.models.xcom", "XComModel")]),
         ("dag_runs", [("airflow.models.dagrun", "DagRun")]),
         ("dag_versions", [("airflow.models.dag_version", "DagVersion")]),
         ("serialized_dags", [("airflow.models.serialized_dag", "SerializedDagModel")]),
@@ -1281,7 +1282,7 @@ def promote_dag_revision(
     *,
     dag_id: str,
     revision_id: str,
-    actor: str = "etl_studio",
+    actor: str = "flow_studio",
 ) -> dict[str, Any]:
     did = (dag_id or "").strip()
     rid = (revision_id or "").strip()
@@ -1355,9 +1356,9 @@ def promote_dag_revision(
 def delete_dag_bundle(
     *,
     dag_id: str,
-    actor: str = "etl_studio",
+    actor: str = "flow_studio",
 ) -> dict[str, Any]:
-    _ = str(actor or "").strip() or "etl_studio"
+    _ = str(actor or "").strip() or "flow_studio"
     did = str(dag_id or "").strip()
     if not did:
         raise ValueError("dag_id zorunludur.")
@@ -1564,7 +1565,7 @@ def build_task_dict_for_validation_from_task(
 def validate_pipeline_payload(payload: dict[str, Any]) -> None:
     """Pipeline formu (T06): task kurallarini ConfigValidator ile dogrular."""
     validator = ConfigValidator()
-    task_items = payload.get("etl_tasks")
+    task_items = payload.get("flow_tasks")
     if isinstance(task_items, list) and task_items:
         normalized_tasks: list[dict[str, Any]] = []
         source_conn_id = str(payload.get("source_conn_id") or "").strip()
@@ -1683,7 +1684,7 @@ def discover_hierarchy_options(
     source: str | None = None,
 ) -> dict[str, list[str]]:
     """
-    ETL Studio hiyerarsisi icin mevcut klasor seceneklerini dondurur.
+    Flow Studio hiyerarsisi icin mevcut klasor seceneklerini dondurur.
     Hem projects root hem dag root taranir ve union alinir.
     """
     project_val = (project or "").strip()
@@ -1889,7 +1890,7 @@ def create_or_update_dag(
     level = _slugify(payload["level"], "level1")
     flow = _slugify(payload["flow"], "src_to_stg")
 
-    task_payloads = payload.get("etl_tasks")
+    task_payloads = payload.get("flow_tasks")
     if isinstance(task_payloads, list) and task_payloads:
         tasks_input = [dict(item or {}) for item in task_payloads]
     else:
@@ -1947,7 +1948,7 @@ def create_or_update_dag(
 
         existing_auto_mapping_paths = _collect_existing_auto_mapping_paths(config_path, flow_dir)
         tags = _derive_tags(project, domain, level, flow)
-        actor = str(os.getenv("FFENGINE_STUDIO_ACTOR", "etl_studio")).strip() or "etl_studio"
+        actor = str(os.getenv("FFENGINE_STUDIO_ACTOR", "flow_studio")).strip() or "flow_studio"
 
         task_cfgs: list[dict[str, Any]] = []
         sql_mapping_checks: list[dict[str, Any]] = []
@@ -2087,7 +2088,7 @@ def create_or_update_dag(
             config_obj = {
                 "source_db_var": payload["source_conn_id"],
                 "target_db_var": payload["target_conn_id"],
-                "etl_tasks": task_cfgs,
+                "flow_tasks": task_cfgs,
             }
             config_path.write_text(
                 yaml.safe_dump(config_obj, sort_keys=False, allow_unicode=False),

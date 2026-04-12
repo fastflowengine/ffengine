@@ -18,7 +18,7 @@ from ffengine.errors.exceptions import ConfigError, ValidationError
 _VALID_YAML = textwrap.dedent("""\
     source_db_var: src_conn
     target_db_var: tgt_conn
-    etl_tasks:
+    flow_tasks:
       - task_group_id: t1
         source_schema: public
         source_table: orders
@@ -31,7 +31,7 @@ _VALID_YAML = textwrap.dedent("""\
 _MULTI_TASK_YAML = textwrap.dedent("""\
     source_db_var: src_conn
     target_db_var: tgt_conn
-    etl_tasks:
+    flow_tasks:
       - task_group_id: t1
         source_schema: public
         source_table: orders
@@ -136,7 +136,7 @@ class TestConfigLoaderValid:
         yaml_part = textwrap.dedent("""\
             source_db_var: src_conn
             target_db_var: tgt_conn
-            etl_tasks:
+            flow_tasks:
               - task_group_id: t1
                 source_schema: public
                 source_table: orders
@@ -176,7 +176,7 @@ class TestConfigLoaderValid:
         yaml_m = textwrap.dedent("""\
             source_db_var: src_conn
             target_db_var: tgt_conn
-            etl_tasks:
+            flow_tasks:
               - task_group_id: t1
                 source_schema: public
                 source_table: t
@@ -212,7 +212,7 @@ class TestConfigLoaderErrors:
     def test_missing_root_target_db_var(self, tmp_path):
         yaml_no_tgt = textwrap.dedent("""\
             source_db_var: src_conn
-            etl_tasks: []
+            flow_tasks: []
         """)
         p = tmp_path / "cfg.yaml"
         p.write_text(yaml_no_tgt)
@@ -223,7 +223,7 @@ class TestConfigLoaderErrors:
         yaml_null = textwrap.dedent("""\
             source_db_var: null
             target_db_var: tgt_conn
-            etl_tasks: []
+            flow_tasks: []
         """)
         p = tmp_path / "cfg.yaml"
         p.write_text(yaml_null)
@@ -234,7 +234,7 @@ class TestConfigLoaderErrors:
         yaml_null = textwrap.dedent("""\
             source_db_var: src_conn
             target_db_var: null
-            etl_tasks: []
+            flow_tasks: []
         """)
         p = tmp_path / "cfg.yaml"
         p.write_text(yaml_null)
@@ -244,21 +244,21 @@ class TestConfigLoaderErrors:
     def test_missing_root_source_db_var(self, tmp_path):
         yaml_no_src = textwrap.dedent("""\
             target_db_var: tgt_conn
-            etl_tasks: []
+            flow_tasks: []
         """)
         p = tmp_path / "cfg.yaml"
         p.write_text(yaml_no_src)
         with pytest.raises(ConfigError, match="source_db_var"):
             ConfigLoader().load(str(p), "t1")
 
-    def test_missing_root_etl_tasks(self, tmp_path):
+    def test_missing_root_flow_tasks(self, tmp_path):
         yaml_no_tasks = textwrap.dedent("""\
             source_db_var: src_conn
             target_db_var: tgt_conn
         """)
         p = tmp_path / "cfg.yaml"
         p.write_text(yaml_no_tasks)
-        with pytest.raises(ConfigError, match="etl_tasks"):
+        with pytest.raises(ConfigError, match="flow_tasks"):
             ConfigLoader().load(str(p), "t1")
 
     def test_invalid_yaml_raises_config_error(self, tmp_path):
@@ -271,7 +271,7 @@ class TestConfigLoaderErrors:
         yaml_sql = textwrap.dedent("""\
             source_db_var: src_conn
             target_db_var: tgt_conn
-            etl_tasks:
+            flow_tasks:
               - task_group_id: t1
                 source_schema: public
                 source_type: sql
@@ -288,7 +288,7 @@ class TestConfigLoaderErrors:
         yaml_m = textwrap.dedent("""\
             source_db_var: src_conn
             target_db_var: tgt_conn
-            etl_tasks:
+            flow_tasks:
               - task_group_id: t1
                 source_schema: public
                 source_table: t
@@ -307,7 +307,7 @@ class TestConfigLoaderErrors:
         yaml_bad_lm = textwrap.dedent("""\
             source_db_var: src_conn
             target_db_var: tgt_conn
-            etl_tasks:
+            flow_tasks:
               - task_group_id: t1
                 source_schema: public
                 source_table: t

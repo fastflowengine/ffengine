@@ -138,15 +138,15 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 - Type conversion policy and matrix:
   `docs/type-mapping-policy.md`
 
-## ETL Studio Update Mode
+## Flow Studio Update Mode
 
-- DAG detail deep-link supported: `/etl-studio/?dag_id=<dag_id>`.
+- DAG detail deep-link supported: `/flow-studio/?dag_id=<dag_id>`.
 - New naming DAG'lerde form preload edilip update mode acilir.
 - Ayni flow klasorunde birden fazla group DAG olabilir; bu desteklenir.
-- `POST /etl-studio/api/update-dag` cagrisi `dag_id` query parami ile hedef DAG'i zorunlu olarak belirtmelidir.
-- `DELETE /etl-studio/api/delete-dag?dag_id=<dag_id>` sadece ETL Studio marker'li DAG'lerde calisir ve DAG bundle'i (dag.py + YAML + auto mapping + history) siler.
+- `POST /flow-studio/api/update-dag` cagrisi `dag_id` query parami ile hedef DAG'i zorunlu olarak belirtmelidir.
+- `DELETE /flow-studio/api/delete-dag?dag_id=<dag_id>` sadece Flow Studio marker'li DAG'lerde calisir ve DAG bundle'i (dag.py + YAML + auto mapping + history) siler.
 
-## ETL Studio Form Notes
+## Flow Studio Form Notes
 
 - Schema/table autocomplete case-insensitive calisir.
 - MSSQL baglantilarinda schema genelde `dbo` olur.

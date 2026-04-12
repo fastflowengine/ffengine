@@ -18,7 +18,7 @@ class BaseDialect(ABC):
     """
     Abstract contract for all FFEngine database dialects.
     Every dialect must implement these methods to participate
-    in the ETL pipeline.
+    in the Flow pipeline.
     """
 
     # ------------------------------------------------------------------

@@ -1,4 +1,4 @@
-﻿"""
+"""
 C07 - DAG generator unit tests.
 
 Scope: generate_dags, register_dags, and FFEngineOperator-based DAG generation.
@@ -14,7 +14,7 @@ class TestGenerateDags:
         cfg.write_text(
             "source_db_var: src_pg\n"
             "target_db_var: tgt_pg\n"
-            "etl_tasks:\n"
+            "flow_tasks:\n"
             "  - task_group_id: load_orders\n"
             "    source_schema: public\n"
             "    source_table: orders\n"
@@ -33,7 +33,7 @@ class TestGenerateDags:
         cfg.write_text(
             "source_db_var: src\n"
             "target_db_var: tgt\n"
-            "etl_tasks:\n"
+            "flow_tasks:\n"
             "  - task_group_id: t1\n"
             "    source_schema: s\n"
             "    source_table: a\n"
@@ -66,7 +66,7 @@ class TestGenerateDags:
         good.write_text(
             "source_db_var: s\n"
             "target_db_var: t\n"
-            "etl_tasks:\n"
+            "flow_tasks:\n"
             "  - task_group_id: ok\n"
             "    source_schema: s\n"
             "    source_table: x\n"
@@ -87,7 +87,7 @@ class TestGenerateDags:
     def test_custom_prefix_and_tags(self, tmp_path):
         cfg = tmp_path / "test.yaml"
         cfg.write_text(
-            "etl_tasks:\n"
+            "flow_tasks:\n"
             "  - task_group_id: x\n",
             encoding="utf-8",
         )
@@ -99,7 +99,7 @@ class TestGenerateDags:
         cfg.write_text(
             "source_db_var: src_pg\n"
             "target_db_var: tgt_pg\n"
-            "etl_tasks:\n"
+            "flow_tasks:\n"
             "  - task_group_id: load_orders\n",
             encoding="utf-8",
         )
@@ -115,7 +115,7 @@ class TestRegisterDags:
     def test_updates_globals_dict(self, tmp_path):
         cfg = tmp_path / "reg.yaml"
         cfg.write_text(
-            "etl_tasks:\n"
+            "flow_tasks:\n"
             "  - task_group_id: r1\n",
             encoding="utf-8",
         )
@@ -126,7 +126,7 @@ class TestRegisterDags:
     def test_dag_id_format(self, tmp_path):
         cfg = tmp_path / "pipeline.yaml"
         cfg.write_text(
-            "etl_tasks:\n"
+            "flow_tasks:\n"
             "  - task_group_id: load\n",
             encoding="utf-8",
         )

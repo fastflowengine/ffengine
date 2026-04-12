@@ -1,11 +1,11 @@
 """
-ETLManager + PythonEngine — Community pipeline orkestratörü.
+FlowManager + PythonEngine — Community pipeline orkestratörü.
 
 PythonEngine, BaseEngine kontratını implement eder:
   - is_available() → True (her zaman)
-  - run(config_path, task_group_id) → ETLResult
+  - run(config_path, task_group_id) → FlowResult
 
-ETLManager, tek bir task_config dict'i alarak pipeline'ı çalıştırır
+FlowManager, tek bir task_config dict'i alarak pipeline'ı çalıştırır
 ve partitionlı senaryolarda çağrılabilir.
 """
 
@@ -13,7 +13,7 @@ import logging
 import time
 from datetime import UTC, datetime
 
-from ffengine.core.base_engine import BaseEngine, ETLResult
+from ffengine.core.base_engine import BaseEngine, FlowResult
 from ffengine.errors import FFEngineError, normalize_exception
 from ffengine.pipeline.source_reader import SourceReader
 from ffengine.pipeline.streamer import Streamer
@@ -58,15 +58,15 @@ def _log_structured(
     _log.log(level, "%s", payload)
 
 
-class ETLManager:
+class FlowManager:
     """
-    Tek bir ETL task'ını çalıştırır.
+    Tek bir Flow task'ını çalıştırır.
 
     Doğrudan task_config dict kabul eder; config yükleme sorumluluğu
     çağırana aittir (C05 tamamlandığında PythonEngine._load_task bağlar).
     """
 
-    def run_etl_task(
+    def run_flow_task(
         self,
         src_session,
         tgt_session,
@@ -75,7 +75,7 @@ class ETLManager:
         task_config: dict,
         partition_spec: dict | None = None,
         skip_prepare: bool = False,
-    ) -> ETLResult:
+    ) -> FlowResult:
         """
         Parameters
         ----------
@@ -83,12 +83,12 @@ class ETLManager:
         tgt_session    : Hedef DBSession (açık).
         src_dialect    : Kaynak BaseDialect implementasyonu.
         tgt_dialect    : Hedef BaseDialect implementasyonu.
-        task_config    : ETL görev konfigürasyonu.
+        task_config    : Flow görev konfigürasyonu.
         partition_spec : {"part_id": int, "where": str | None} veya None.
 
         Returns
         -------
-        ETLResult
+        FlowResult
         """
         start = time.monotonic()
         task_group_id = str(task_config.get("task_group_id") or "")
@@ -97,7 +97,7 @@ class ETLManager:
         _log_structured(
             level=logging.INFO,
             stage="extract",
-            message="ETL task started.",
+            message="Flow task started.",
             task_group_id=task_group_id,
             source_db=source_db,
             target_db=target_db,
@@ -138,7 +138,7 @@ class ETLManager:
             _log_structured(
                 level=logging.ERROR,
                 stage="load",
-                message="ETL task failed.",
+                message="Flow task failed.",
                 task_group_id=task_group_id,
                 source_db=source_db,
                 target_db=target_db,
@@ -155,7 +155,7 @@ class ETLManager:
         _log_structured(
             level=logging.INFO,
             stage="load",
-            message="ETL task completed.",
+            message="Flow task completed.",
             task_group_id=task_group_id,
             source_db=source_db,
             target_db=target_db,
@@ -165,7 +165,7 @@ class ETLManager:
             partition_id=(partition_spec or {}).get("part_id"),
         )
 
-        return ETLResult(
+        return FlowResult(
             rows=rows,
             duration_seconds=round(elapsed, 3),
             throughput=round(throughput, 2),
@@ -179,13 +179,13 @@ class PythonEngine(BaseEngine):
     Community Python Engine — BaseEngine implementasyonu.
 
     run() C05 tamamlandığında config_path'ten task_config yükler.
-    Şu an için doğrudan task_config dict ile ETLManager'a devreder.
+    Şu an için doğrudan task_config dict ile FlowManager'a devreder.
     """
 
     def is_available(self) -> bool:
         return True
 
-    def run(self, config_path: str, task_group_id: str) -> ETLResult:
+    def run(self, config_path: str, task_group_id: str) -> FlowResult:
         """
         config_path'ten task konfigürasyonunu yükle ve pipeline'ı çalıştır.
 
@@ -207,8 +207,8 @@ class PythonEngine(BaseEngine):
                 "task_config içinde bulunmalıdır (C07 AirflowDBAdapter tarafından sağlanır)."
             )
 
-        manager = ETLManager()
-        return manager.run_etl_task(
+        manager = FlowManager()
+        return manager.run_flow_task(
             src_session=src_session,
             tgt_session=tgt_session,
             src_dialect=src_dialect,
