@@ -18,6 +18,7 @@ from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, available_timezones
 
 import yaml
 
@@ -35,6 +36,9 @@ STUDIO_HISTORY_DIR_NAME = ".flow_studio_history"
 STUDIO_HISTORY_KEEP_LIMIT = 20
 STUDIO_CUSTOM_TAG_MAX_COUNT = 10
 STUDIO_CUSTOM_TAG_MAX_LENGTH = 32
+STUDIO_DAG_DEPENDENCY_MAX_COUNT = 200
+STUDIO_DEFAULT_START_DATE = "2023-01-01T00:00:00"
+STUDIO_DEFAULT_ACTIVE = True
 REVISION_SOURCE_CREATE_INITIAL = "create_initial"
 REVISION_SOURCE_UPDATE = "update"
 
@@ -140,6 +144,108 @@ def _merge_tags(auto_tags: list[str], user_tags: list[str]) -> list[str]:
     return merged
 
 
+def get_airflow_default_timezone_name() -> str:
+    try:
+        from airflow.settings import TIMEZONE  # type: ignore
+
+        tz_name = str(getattr(TIMEZONE, "name", "") or str(TIMEZONE) or "").strip()
+        if tz_name:
+            return tz_name
+    except Exception:
+        pass
+    return "UTC"
+
+
+def discover_timezones(
+    search: str | None = None,
+    limit: int = 200,
+) -> list[str]:
+    safe_limit = max(1, min(int(limit or 200), 1000))
+    search_val = str(search or "").strip().lower()
+    zones = sorted(available_timezones())
+    if search_val:
+        zones = [item for item in zones if search_val in item.lower()]
+    return zones[:safe_limit]
+
+
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _normalize_scheduler_cron(raw: Any) -> str | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    cron = " ".join(text.split())
+    if len(cron.split()) != 5:
+        raise ValueError("scheduler.cron_expression must be a valid 5-field cron expression.")
+    try:
+        from croniter import croniter
+
+        croniter(cron)
+    except ImportError:
+        allowed = re.compile(r"^[\d\*/,\-]+$")
+        for field in cron.split():
+            if field == "?":
+                raise ValueError("scheduler.cron_expression must be a valid 5-field cron expression.")
+            if not allowed.fullmatch(field):
+                raise ValueError("scheduler.cron_expression must be a valid 5-field cron expression.")
+    except Exception as exc:
+        raise ValueError("scheduler.cron_expression must be a valid 5-field cron expression.") from exc
+    return cron
+
+
+def _normalize_scheduler_start_date(raw: Any, *, timezone_name: str) -> str:
+    default_start = STUDIO_DEFAULT_START_DATE
+    text = str(raw or "").strip()
+    if not text:
+        return default_start
+    candidate = text.replace(" ", "T")
+    try:
+        parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("scheduler.start_date must be a valid datetime.") from exc
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(ZoneInfo(timezone_name)).replace(tzinfo=None)
+    return parsed.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def normalize_scheduler(raw_scheduler: Any) -> dict[str, Any]:
+    if raw_scheduler is None:
+        payload: dict[str, Any] = {}
+    elif isinstance(raw_scheduler, dict):
+        payload = dict(raw_scheduler)
+    else:
+        raise ValueError("scheduler must be an object.")
+
+    timezone_name = str(payload.get("timezone") or "").strip() or get_airflow_default_timezone_name()
+    try:
+        ZoneInfo(timezone_name)
+    except Exception as exc:
+        raise ValueError("scheduler.timezone must be a valid IANA timezone.") from exc
+
+    cron_expression = _normalize_scheduler_cron(payload.get("cron_expression"))
+    start_date = _normalize_scheduler_start_date(payload.get("start_date"), timezone_name=timezone_name)
+    active = _coerce_bool(payload.get("active"), default=STUDIO_DEFAULT_ACTIVE)
+
+    return {
+        "cron_expression": cron_expression,
+        "timezone": timezone_name,
+        "active": active,
+        "start_date": start_date,
+    }
+
+
 def _extract_flow_target(flow: str) -> str:
     """src_to_stg -> stg, stg_to_dwh -> dwh, fallback -> flow slug."""
     raw = _slugify(flow, "flow")
@@ -210,8 +316,8 @@ def _generated_dag_root() -> Path:
 def resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str, str]]:
     """
     Build dependency edges for flow_tasks.
-    - Uses depends_on when provided.
-    - If depends_on is missing, chains tasks by YAML order.
+    - Uses explicit depends_on only.
+    - Missing/empty depends_on means parallel execution (no implicit chain).
     """
     if not isinstance(task_defs, list):
         raise ValueError("flow_tasks must be a list.")
@@ -230,28 +336,31 @@ def resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str
         id_set.add(task_id)
 
     edges: list[tuple[str, str]] = []
-    previous_task_id: str | None = None
+    seen_edges: set[tuple[str, str]] = set()
     for idx, task in enumerate(task_defs):
         task_id = task_ids[idx]
         depends_on = task.get("depends_on")
         if depends_on is None:
-            if previous_task_id is not None:
-                edges.append((previous_task_id, task_id))
-        else:
-            if not isinstance(depends_on, list):
+            depends_on = []
+        if not isinstance(depends_on, list):
+            raise ValueError(
+                f"depends_on must be a list: task_group_id={task_id}"
+            )
+        for dep in depends_on:
+            dep_id = str(dep or "").strip()
+            if not dep_id:
+                continue
+            if dep_id == task_id:
+                raise ValueError(f"depends_on cannot reference itself: {task_id}")
+            if dep_id not in id_set:
                 raise ValueError(
-                    f"depends_on must be a list: task_group_id={task_id}"
+                    f"depends_on contains invalid task_group_id: {dep_id}"
                 )
-            for dep in depends_on:
-                dep_id = str(dep or "").strip()
-                if not dep_id:
-                    continue
-                if dep_id not in id_set:
-                    raise ValueError(
-                        f"depends_on contains invalid task_group_id: {dep_id}"
-                    )
-                edges.append((dep_id, task_id))
-        previous_task_id = task_id
+            edge = (dep_id, task_id)
+            if edge in seen_edges:
+                continue
+            seen_edges.add(edge)
+            edges.append(edge)
 
     # cycle kontrolu
     graph: dict[str, list[str]] = {task_id: [] for task_id in task_ids}
@@ -276,28 +385,368 @@ def resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str
     return edges
 
 
+def _normalize_dag_dependency_ids(raw_ids: Any) -> list[str]:
+    if raw_ids is None:
+        return []
+    if not isinstance(raw_ids, list):
+        raise ValueError("dag_dependencies.upstream_dag_ids must be a list.")
+    out: list[str] = []
+    seen: set[str] = set()
+    for idx, raw in enumerate(raw_ids, start=1):
+        dag_id = str(raw or "").strip()
+        if not dag_id:
+            continue
+        if dag_id in seen:
+            continue
+        seen.add(dag_id)
+        out.append(dag_id)
+        if len(out) > STUDIO_DAG_DEPENDENCY_MAX_COUNT:
+            raise ValueError(
+                "dag_dependencies.upstream_dag_ids can contain at most "
+                f"{STUDIO_DAG_DEPENDENCY_MAX_COUNT} items."
+            )
+    return out
+
+
+def _normalize_dag_dependencies(raw_dependencies: Any) -> dict[str, Any]:
+    if raw_dependencies is None:
+        payload: dict[str, Any] = {}
+    elif isinstance(raw_dependencies, dict):
+        payload = dict(raw_dependencies)
+    else:
+        raise ValueError("dag_dependencies must be an object.")
+    upstream_dag_ids = _normalize_dag_dependency_ids(payload.get("upstream_dag_ids"))
+    return {"upstream_dag_ids": upstream_dag_ids}
+
+
+def _extract_scope_from_config_path(config_path: Path) -> tuple[str, str, str, str]:
+    projects_root = _projects_root().resolve()
+    config_resolved = config_path.resolve()
+    try:
+        rel = config_resolved.relative_to(projects_root)
+    except ValueError as exc:
+        raise ValueError("YAML path is outside Flow Studio projects root.") from exc
+    if len(rel.parts) < 5:
+        raise ValueError("YAML path hierarchy is invalid.")
+    project, domain, level, flow = rel.parts[:4]
+    return (
+        _slugify(project, "default_project"),
+        _slugify(domain, "default_domain"),
+        _slugify(level, "level1"),
+        _slugify(flow, "src_to_stg"),
+    )
+
+
+def _load_yaml_root(config_path: Path) -> dict[str, Any]:
+    if not config_path.is_file():
+        raise FileNotFoundError(f"YAML file not found: {config_path.as_posix()}")
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("YAML root must be a dict.")
+    return raw
+
+
+def _read_dag_dependencies_from_yaml(config_path: Path) -> list[str]:
+    try:
+        raw = _load_yaml_root(config_path)
+    except Exception:
+        return []
+    try:
+        normalized = _normalize_dag_dependencies(raw.get("dag_dependencies"))
+    except ValueError:
+        return []
+    return list(normalized.get("upstream_dag_ids") or [])
+
+
+def _collect_scope_studio_dag_entries(project: str, domain: str) -> dict[str, dict[str, Any]]:
+    scope_project = _slugify(project, "default_project")
+    scope_domain = _slugify(domain, "default_domain")
+    dag_root = _generated_dag_root()
+    scope_root = dag_root / scope_project / scope_domain
+    if not scope_root.is_dir():
+        return {}
+
+    entries: dict[str, dict[str, Any]] = {}
+    for dag_path in scope_root.rglob("*.py"):
+        if not dag_path.is_file():
+            continue
+        try:
+            config_path = _extract_config_path_from_dag_source(dag_path)
+        except Exception:
+            continue
+        if not config_path.is_file():
+            continue
+        try:
+            cfg_project, cfg_domain, cfg_level, cfg_flow = _extract_scope_from_config_path(config_path)
+        except Exception:
+            continue
+        if cfg_project != scope_project or cfg_domain != scope_domain:
+            continue
+        dag_id = str(dag_path.stem or "").strip()
+        if not dag_id:
+            continue
+        try:
+            group_no = _extract_group_no(dag_id, config_path)
+        except Exception:
+            group_no = 0
+        entries[dag_id] = {
+            "dag_id": dag_id,
+            "dag_path": dag_path,
+            "config_path": config_path,
+            "project": cfg_project,
+            "domain": cfg_domain,
+            "level": cfg_level,
+            "flow": cfg_flow,
+            "group_no": group_no,
+            "upstream_dag_ids": _read_dag_dependencies_from_yaml(config_path),
+        }
+    return entries
+
+
+def _build_scope_dag_graph(
+    scope_entries: dict[str, dict[str, Any]],
+    *,
+    override_dag_id: str | None = None,
+    override_upstreams: list[str] | None = None,
+) -> dict[str, list[str]]:
+    dag_ids = set(scope_entries.keys())
+    if override_dag_id:
+        dag_ids.add(str(override_dag_id).strip())
+    graph: dict[str, list[str]] = {dag_id: [] for dag_id in dag_ids if dag_id}
+
+    for dag_id in graph:
+        if override_dag_id and dag_id == override_dag_id:
+            upstreams = list(override_upstreams or [])
+        else:
+            upstreams = list((scope_entries.get(dag_id) or {}).get("upstream_dag_ids") or [])
+        for upstream in upstreams:
+            if upstream not in graph:
+                continue
+            graph[upstream].append(dag_id)
+
+    for upstream in list(graph.keys()):
+        graph[upstream] = list(dict.fromkeys(graph[upstream]))
+    return graph
+
+
+def _validate_scope_dag_graph(graph: dict[str, list[str]]) -> None:
+    state: dict[str, int] = {}
+
+    def _dfs(node: str) -> None:
+        marker = state.get(node, 0)
+        if marker == 1:
+            raise ValueError("dag_dependencies cycle detected.")
+        if marker == 2:
+            return
+        state[node] = 1
+        for nxt in graph.get(node, []):
+            _dfs(nxt)
+        state[node] = 2
+
+    for dag_id in graph:
+        _dfs(dag_id)
+
+
+def _validate_dag_dependencies_for_scope(
+    *,
+    project: str,
+    domain: str,
+    dag_id: str,
+    upstream_dag_ids: list[str],
+    scope_entries: dict[str, dict[str, Any]],
+) -> list[str]:
+    did = str(dag_id or "").strip()
+    if not did:
+        raise ValueError("dag_id is required.")
+    normalized = _normalize_dag_dependency_ids(upstream_dag_ids)
+    if did in normalized:
+        raise ValueError("dag_dependencies cannot reference itself.")
+
+    for dep_dag_id in normalized:
+        upstream_entry = scope_entries.get(dep_dag_id)
+        if upstream_entry is None:
+            raise ValueError(f"dag_dependencies contains invalid dag_id: {dep_dag_id}")
+        if (
+            str(upstream_entry.get("project") or "") != project
+            or str(upstream_entry.get("domain") or "") != domain
+        ):
+            raise ValueError(
+                "dag_dependencies can only reference DAGs in the same project/domain scope."
+            )
+
+    graph = _build_scope_dag_graph(
+        scope_entries,
+        override_dag_id=did,
+        override_upstreams=normalized,
+    )
+    _validate_scope_dag_graph(graph)
+    return normalized
+
+
+def _build_scope_downstream_map(scope_entries: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {dag_id: [] for dag_id in scope_entries}
+    for dag_id, entry in scope_entries.items():
+        upstreams = list(entry.get("upstream_dag_ids") or [])
+        for upstream_dag_id in upstreams:
+            if upstream_dag_id not in out:
+                continue
+            out[upstream_dag_id].append(dag_id)
+    for dag_id in list(out.keys()):
+        out[dag_id] = sorted(dict.fromkeys(out[dag_id]))
+    return out
+
+
+def discover_dag_dependency_options(
+    *,
+    project: str,
+    domain: str,
+    level: str,
+    flow: str,
+    dag_id: str | None = None,
+) -> dict[str, Any]:
+    scope_project = _slugify(project, "default_project")
+    scope_domain = _slugify(domain, "default_domain")
+    scope_level = _slugify(level, "level1")
+    scope_flow = _slugify(flow, "src_to_stg")
+    current_dag_id = str(dag_id or "").strip()
+
+    scope_entries = _collect_scope_studio_dag_entries(scope_project, scope_domain)
+    current_entry = scope_entries.get(current_dag_id) if current_dag_id else None
+
+    if current_entry is not None:
+        current_group_no = int(current_entry.get("group_no") or 1)
+        current_upstream_dag_ids = list(current_entry.get("upstream_dag_ids") or [])
+    else:
+        flow_dir = _projects_root() / scope_project / scope_domain / scope_level / scope_flow
+        flow_dag_dir = _generated_dag_root() / scope_project / scope_domain / scope_level / scope_flow
+        current_group_no = _next_group_no(flow_dir, flow_dag_dir)
+        current_upstream_dag_ids = []
+
+    items: list[dict[str, Any]] = []
+    for entry in scope_entries.values():
+        candidate_id = str(entry.get("dag_id") or "").strip()
+        if not candidate_id or candidate_id == current_dag_id:
+            continue
+        items.append(
+            {
+                "dag_id": candidate_id,
+                "project": str(entry.get("project") or ""),
+                "domain": str(entry.get("domain") or ""),
+                "level": str(entry.get("level") or ""),
+                "flow": str(entry.get("flow") or ""),
+                "group_no": int(entry.get("group_no") or 0),
+            }
+        )
+    items.sort(
+        key=lambda row: (
+            str(row.get("level") or ""),
+            str(row.get("flow") or ""),
+            int(row.get("group_no") or 0),
+            str(row.get("dag_id") or ""),
+        )
+    )
+
+    referenced_by = sorted(
+        [
+            str(entry.get("dag_id") or "")
+            for entry in scope_entries.values()
+            if current_dag_id and current_dag_id in list(entry.get("upstream_dag_ids") or [])
+        ]
+    )
+
+    return {
+        "project": scope_project,
+        "domain": scope_domain,
+        "level": scope_level,
+        "flow": scope_flow,
+        "dag_id": current_dag_id,
+        "group_no": int(current_group_no),
+        "current_upstream_dag_ids": current_upstream_dag_ids,
+        "referenced_by": referenced_by,
+        "items": items,
+        "count": len(items),
+    }
+
+
+def _sync_scope_dag_dependency_render(
+    *,
+    project: str,
+    domain: str,
+    strict_dag_id: str | None = None,
+) -> list[str]:
+    scope_entries = _collect_scope_studio_dag_entries(project, domain)
+    if not scope_entries:
+        return []
+    downstream_map = _build_scope_downstream_map(scope_entries)
+    warnings: list[str] = []
+    strict_id = str(strict_dag_id or "").strip()
+
+    for dag_id, entry in scope_entries.items():
+        dag_path = entry.get("dag_path")
+        config_path = entry.get("config_path")
+        if not isinstance(dag_path, Path) or not isinstance(config_path, Path):
+            continue
+        try:
+            cfg = _load_yaml_root(config_path)
+            user_tags = _normalize_custom_tags(cfg.get("custom_tags"))
+            tags = _merge_tags(
+                _derive_tags(
+                    str(entry.get("project") or ""),
+                    str(entry.get("domain") or ""),
+                    str(entry.get("level") or ""),
+                    str(entry.get("flow") or ""),
+                ),
+                user_tags,
+            )
+            dag_source = _render_group_dag_source(
+                dag_id=dag_id,
+                config_path=config_path,
+                tags=tags,
+                upstream_dag_ids=list(entry.get("upstream_dag_ids") or []),
+                downstream_dag_ids=list(downstream_map.get(dag_id) or []),
+            )
+            if not dag_path.is_file() or dag_path.read_text(encoding="utf-8") != dag_source:
+                dag_path.write_text(dag_source, encoding="utf-8")
+        except Exception as exc:
+            if strict_id and dag_id == strict_id:
+                raise
+            warnings.append(f"DAG dependency render skipped for {dag_id}: {exc}")
+
+    return warnings
+
+
 def _render_group_dag_source(
     *,
     dag_id: str,
     config_path: Path,
     tags: list[str],
+    upstream_dag_ids: list[str] | None = None,
+    downstream_dag_ids: list[str] | None = None,
 ) -> str:
     cfg = json.dumps(config_path.as_posix())
     did = json.dumps(dag_id)
     dtags = json.dumps(tags)
+    upstream_ids = json.dumps(list(dict.fromkeys(upstream_dag_ids or [])))
+    downstream_ids = json.dumps(list(dict.fromkeys(downstream_dag_ids or [])))
     return f'''{STUDIO_DAG_MARKER}
 import json
+import re
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import yaml
 from airflow import DAG
+from airflow.sensors.external_task import ExternalTaskSensor
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 from ffengine.airflow.operator import FFEngineOperator
 
 CONFIG_PATH = Path({cfg})
 DAG_ID = {did}
 DAG_TAGS = {dtags}
+UPSTREAM_DAG_IDS = {upstream_ids}
+DOWNSTREAM_DAG_IDS = {downstream_ids}
 
 
 def _resolve_task_dependencies(task_defs):
@@ -315,24 +764,27 @@ def _resolve_task_dependencies(task_defs):
         id_set.add(task_id)
 
     edges = []
-    previous_task_id = None
+    seen_edges = set()
     for idx, task in enumerate(task_defs):
         task_id = task_ids[idx]
         depends_on = task.get("depends_on")
         if depends_on is None:
-            if previous_task_id is not None:
-                edges.append((previous_task_id, task_id))
-        else:
-            if not isinstance(depends_on, list):
-                raise ValueError(f"depends_on must be a list: task_group_id={{task_id}}")
-            for dep in depends_on:
-                dep_id = str(dep or "").strip()
-                if not dep_id:
-                    continue
-                if dep_id not in id_set:
-                    raise ValueError(f"depends_on contains invalid task_group_id: {{dep_id}}")
-                edges.append((dep_id, task_id))
-        previous_task_id = task_id
+            depends_on = []
+        if not isinstance(depends_on, list):
+            raise ValueError(f"depends_on must be a list: task_group_id={{task_id}}")
+        for dep in depends_on:
+            dep_id = str(dep or "").strip()
+            if not dep_id:
+                continue
+            if dep_id == task_id:
+                raise ValueError(f"depends_on cannot reference itself: {{task_id}}")
+            if dep_id not in id_set:
+                raise ValueError(f"depends_on contains invalid task_group_id: {{dep_id}}")
+            edge = (dep_id, task_id)
+            if edge in seen_edges:
+                continue
+            seen_edges.add(edge)
+            edges.append(edge)
 
     graph = {{task_id: [] for task_id in task_ids}}
     for upstream, downstream in edges:
@@ -363,20 +815,48 @@ if not isinstance(raw, dict):
 source_conn_id = str(raw.get("source_db_var") or "").strip()
 target_conn_id = str(raw.get("target_db_var") or "").strip()
 task_defs = raw.get("flow_tasks") or []
+scheduler = raw.get("scheduler") or {{}}
+if not isinstance(scheduler, dict):
+    scheduler = {{}}
 
 if not source_conn_id or not target_conn_id:
     raise ValueError("source_db_var and target_db_var are required.")
 if not isinstance(task_defs, list) or not task_defs:
     raise ValueError("flow_tasks must be a list with at least one task.")
 
+cron_expression = scheduler.get("cron_expression")
+if isinstance(cron_expression, str):
+    cron_expression = cron_expression.strip() or None
+else:
+    cron_expression = None
+
+timezone_name = str(scheduler.get("timezone") or "UTC").strip() or "UTC"
+try:
+    scheduler_tz = ZoneInfo(timezone_name)
+except Exception:
+    scheduler_tz = ZoneInfo("UTC")
+
+start_date_raw = str(scheduler.get("start_date") or "{STUDIO_DEFAULT_START_DATE}").strip() or "{STUDIO_DEFAULT_START_DATE}"
+try:
+    dag_start_date = datetime.fromisoformat(start_date_raw.replace("Z", "+00:00"))
+except ValueError:
+    dag_start_date = datetime(2023, 1, 1, 0, 0, 0)
+if dag_start_date.tzinfo is None:
+    dag_start_date = dag_start_date.replace(tzinfo=scheduler_tz)
+else:
+    dag_start_date = dag_start_date.astimezone(scheduler_tz)
+
+dag_active = bool(scheduler.get("active", True))
 edges = _resolve_task_dependencies(task_defs)
+effective_schedule = None if UPSTREAM_DAG_IDS else cron_expression
 
 with DAG(
     dag_id=DAG_ID,
-    schedule=None,
-    start_date=datetime(2023, 1, 1),
+    schedule=effective_schedule,
+    start_date=dag_start_date,
     catchup=False,
     tags=DAG_TAGS,
+    is_paused_upon_creation=not dag_active,
 ) as dag:
     operators = {{}}
     for task in task_defs:
@@ -390,6 +870,42 @@ with DAG(
         )
     for upstream, downstream in edges:
         operators[upstream] >> operators[downstream]
+
+    if UPSTREAM_DAG_IDS:
+        upstream_waiters = {{}}
+        for upstream_dag_id in UPSTREAM_DAG_IDS:
+            waiter_task_id = "wait_upstream__" + re.sub(r"[^A-Za-z0-9_]+", "_", str(upstream_dag_id)).strip("_").lower()
+            upstream_waiters[upstream_dag_id] = ExternalTaskSensor(
+                task_id=waiter_task_id,
+                external_dag_id=upstream_dag_id,
+                external_task_id=None,
+                allowed_states=["success"],
+                failed_states=["failed", "upstream_failed"],
+                check_existence=False,
+                mode="reschedule",
+                poke_interval=60,
+                timeout=12 * 60 * 60,
+            )
+
+        task_ids_with_upstream = {{downstream for _upstream, downstream in edges}}
+        root_task_ids = [task_id for task_id in operators if task_id not in task_ids_with_upstream]
+        for waiter in upstream_waiters.values():
+            for root_task_id in root_task_ids:
+                waiter >> operators[root_task_id]
+
+    if DOWNSTREAM_DAG_IDS:
+        task_ids_with_downstream = {{upstream for upstream, _downstream in edges}}
+        leaf_task_ids = [task_id for task_id in operators if task_id not in task_ids_with_downstream]
+        for downstream_dag_id in DOWNSTREAM_DAG_IDS:
+            trigger_task_id = "trigger_downstream__" + re.sub(r"[^A-Za-z0-9_]+", "_", str(downstream_dag_id)).strip("_").lower()
+            trigger = TriggerDagRunOperator(
+                task_id=trigger_task_id,
+                trigger_dag_id=downstream_dag_id,
+                wait_for_completion=False,
+                reset_dag_run=False,
+            )
+            for leaf_task_id in leaf_task_ids:
+                operators[leaf_task_id] >> trigger
 '''
 
 
@@ -1026,6 +1542,11 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         normalized_tasks.append(
             {
                 "task_group_id": str(task.get("task_group_id") or "").strip() or None,
+                "depends_on": [
+                    str(dep or "").strip()
+                    for dep in list(task.get("depends_on") or [])
+                    if str(dep or "").strip()
+                ],
                 "source_schema": str(task.get("source_schema") or "").strip(),
                 "source_table": str(task.get("source_table") or "").strip(),
                 "source_type": str(task.get("source_type") or "table").strip() or "table",
@@ -1055,6 +1576,8 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
 
     first_task = normalized_tasks[0]
     custom_tags = _normalize_custom_tags(raw.get("custom_tags"))
+    scheduler = normalize_scheduler(raw.get("scheduler"))
+    dag_dependencies = _normalize_dag_dependencies(raw.get("dag_dependencies"))
 
     payload = {
         "project": project,
@@ -1062,6 +1585,8 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "level": level,
         "flow": flow,
         "custom_tags": custom_tags,
+        "scheduler": scheduler,
+        "dag_dependencies": dag_dependencies,
         "group_no": _extract_group_no(did, config_path),
         "task_group_id": first_task["task_group_id"],
         "source_conn_id": str(raw.get("source_db_var") or "").strip(),
@@ -1106,6 +1631,47 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
             )
         ),
     }
+
+
+def _sync_dag_paused_state(dag_id: str, *, active: bool) -> str | None:
+    did = str(dag_id or "").strip()
+    if not did:
+        return "dag_id is empty; pause state sync skipped."
+    try:
+        from airflow.utils.session import create_session
+    except Exception:
+        return "Airflow session is unavailable; pause state sync skipped."
+
+    DagModel = None
+    for module_name in ("airflow.models.dag", "airflow.models.dagmodel"):
+        try:
+            module = __import__(module_name, fromlist=["DagModel"])
+            DagModel = getattr(module, "DagModel", None)
+            if DagModel is not None:
+                break
+        except Exception:
+            continue
+    if DagModel is None:
+        return "DagModel is unavailable; pause state sync skipped."
+
+    target_paused = not bool(active)
+    try:
+        with create_session() as session:
+            row = session.query(DagModel).filter(DagModel.dag_id == did).one_or_none()
+            if row is None:
+                return f"DagModel not found for dag_id={did}; pause state sync skipped."
+            setattr(row, "is_paused", target_paused)
+            try:
+                if hasattr(row, "set_is_paused"):
+                    row.set_is_paused(target_paused)
+            except Exception:
+                # attribute assignment above is enough for most Airflow versions
+                pass
+            session.flush()
+            session.commit()
+    except Exception as exc:
+        return f"DagModel pause state sync failed: {exc}"
+    return None
 
 
 def _airflow_parse_state(dag_id: str) -> dict[str, Any] | None:
@@ -1391,6 +1957,9 @@ def promote_dag_revision(
             auto_tags = []
         raw_cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         user_tags = _normalize_custom_tags(raw_cfg.get("custom_tags") if isinstance(raw_cfg, dict) else [])
+        dag_dependencies = _normalize_dag_dependencies(
+            raw_cfg.get("dag_dependencies") if isinstance(raw_cfg, dict) else None
+        )
         tags = _merge_tags(auto_tags, user_tags)
         metadata = _load_studio_metadata(flow_dir) or {}
         metadata.update(
@@ -1402,6 +1971,7 @@ def promote_dag_revision(
                 "tags": tags,
                 "auto_tags": auto_tags,
                 "user_tags": user_tags,
+                "dag_dependencies": dag_dependencies,
                 "active_revision_id": revision_state.get("active_revision_id"),
                 "revision_count": revision_state.get("count", 0),
             }
@@ -1414,6 +1984,7 @@ def promote_dag_revision(
             "active_revision_id": revision_state.get("active_revision_id"),
             "revision_count": revision_state.get("count", 0),
             "promoted_revision_id": rid,
+            "dag_dependencies": dag_dependencies,
         }
 
 
@@ -1421,6 +1992,7 @@ def delete_dag_bundle(
     *,
     dag_id: str,
     actor: str = "flow_studio",
+    cleanup_references: bool = False,
 ) -> dict[str, Any]:
     _ = str(actor or "").strip() or "flow_studio"
     did = str(dag_id or "").strip()
@@ -1437,6 +2009,7 @@ def delete_dag_bundle(
         if not config_path.is_file():
             raise ValueError("DAG was found but linked YAML file was not found.")
         config_path = _ensure_path_under_root(config_path, _projects_root())
+        project, domain, _level, _flow = _extract_scope_from_config_path(config_path)
 
         flow_dir = config_path.resolve().parent
         auto_mapping_paths = _collect_existing_auto_mapping_paths(config_path, flow_dir)
@@ -1445,6 +2018,50 @@ def delete_dag_bundle(
 
         deleted_paths: list[str] = []
         warnings: list[str] = []
+        cleaned_reference_dags: list[str] = []
+
+        scope_entries = _collect_scope_studio_dag_entries(project, domain)
+        referenced_by = sorted(
+            [
+                str(entry.get("dag_id") or "")
+                for entry in scope_entries.values()
+                if str(entry.get("dag_id") or "") != did
+                and did in list(entry.get("upstream_dag_ids") or [])
+            ]
+        )
+        if referenced_by and not cleanup_references:
+            raise ValueError(
+                "This DAG is referenced by other DAGs. Retry delete with cleanup_references=true."
+            )
+        if referenced_by and cleanup_references:
+            for ref_dag_id in referenced_by:
+                ref_entry = scope_entries.get(ref_dag_id) or {}
+                ref_config_path = ref_entry.get("config_path")
+                if not isinstance(ref_config_path, Path) or not ref_config_path.is_file():
+                    warnings.append(
+                        f"Reference cleanup skipped (YAML missing): {ref_dag_id}"
+                    )
+                    continue
+                try:
+                    ref_cfg = _load_yaml_root(ref_config_path)
+                    ref_deps = _normalize_dag_dependencies(ref_cfg.get("dag_dependencies"))
+                    filtered = [
+                        dep
+                        for dep in list(ref_deps.get("upstream_dag_ids") or [])
+                        if dep != did
+                    ]
+                    if filtered == list(ref_deps.get("upstream_dag_ids") or []):
+                        continue
+                    ref_cfg["dag_dependencies"] = {"upstream_dag_ids": filtered}
+                    ref_config_path.write_text(
+                        yaml.safe_dump(ref_cfg, sort_keys=False, allow_unicode=False),
+                        encoding="utf-8",
+                    )
+                    cleaned_reference_dags.append(ref_dag_id)
+                except Exception as exc:
+                    warnings.append(
+                        f"Reference cleanup failed for {ref_dag_id}: {exc}"
+                    )
 
         try:
             airflow_cleanup = _cleanup_airflow_dag_metadata(did)
@@ -1501,11 +2118,24 @@ def delete_dag_bundle(
                 else:
                     warnings.append(f"Metadata file could not be deleted: {metadata_path.as_posix()}")
 
+        try:
+            warnings.extend(
+                _sync_scope_dag_dependency_render(
+                    project=project,
+                    domain=domain,
+                )
+            )
+        except Exception as exc:
+            warnings.append(f"DAG dependency render sync failed: {exc}")
+
         return {
             "dag_id": did,
             "deleted_paths": sorted(set(deleted_paths)),
             "airflow_cleanup": airflow_cleanup,
             "warnings": warnings,
+            "cleanup_references": bool(cleanup_references),
+            "referenced_by": referenced_by,
+            "cleaned_reference_dags": cleaned_reference_dags,
         }
 
 
@@ -2014,7 +2644,23 @@ def create_or_update_dag(
         auto_tags = _derive_tags(project, domain, level, flow)
         user_tags = _normalize_custom_tags(payload.get("custom_tags"))
         tags = _merge_tags(auto_tags, user_tags)
+        scheduler = normalize_scheduler(payload.get("scheduler"))
+        if update and "dag_dependencies" not in payload:
+            existing_cfg = _load_yaml_root(config_path)
+            dag_dependencies = _normalize_dag_dependencies(existing_cfg.get("dag_dependencies"))
+        else:
+            dag_dependencies = _normalize_dag_dependencies(payload.get("dag_dependencies"))
+        scope_entries = _collect_scope_studio_dag_entries(project, domain)
+        dag_upstream_dag_ids = _validate_dag_dependencies_for_scope(
+            project=project,
+            domain=domain,
+            dag_id=dag_path.stem,
+            upstream_dag_ids=list(dag_dependencies.get("upstream_dag_ids") or []),
+            scope_entries=scope_entries,
+        )
+        dag_dependencies = {"upstream_dag_ids": dag_upstream_dag_ids}
         actor = str(os.getenv("FFENGINE_STUDIO_ACTOR", "flow_studio")).strip() or "flow_studio"
+        operation_warnings: list[str] = []
 
         task_cfgs: list[dict[str, Any]] = []
         sql_mapping_checks: list[dict[str, Any]] = []
@@ -2041,8 +2687,20 @@ def create_or_update_dag(
                 tgt_table=target_table,
                 task_index=idx,
             )
+            raw_depends_on = item.get("depends_on")
+            if raw_depends_on is None:
+                raw_depends_on = []
+            if not isinstance(raw_depends_on, list):
+                raise ValueError(f"depends_on must be a list: task_group_id={task_group_id}")
             task_cfg: dict[str, Any] = {
                 "task_group_id": task_group_id,
+                "depends_on": [
+                    dep_id
+                    for dep_id in dict.fromkeys(
+                        str(dep or "").strip() for dep in raw_depends_on
+                    )
+                    if dep_id
+                ],
                 "source_schema": normalized_source_schema,
                 "source_table": normalized_source_table,
                 "source_type": source_type,
@@ -2156,18 +2814,32 @@ def create_or_update_dag(
                 "target_db_var": payload["target_conn_id"],
                 "flow_tasks": task_cfgs,
                 "custom_tags": user_tags,
+                "scheduler": scheduler,
+                "dag_dependencies": dag_dependencies,
             }
             config_path.write_text(
                 yaml.safe_dump(config_obj, sort_keys=False, allow_unicode=False),
                 encoding="utf-8",
             )
-
             dag_source = _render_group_dag_source(
                 dag_id=dag_path.stem,
                 config_path=config_path,
                 tags=tags,
+                upstream_dag_ids=dag_upstream_dag_ids,
+                downstream_dag_ids=[],
             )
             dag_path.write_text(dag_source, encoding="utf-8")
+            operation_warnings.extend(
+                _sync_scope_dag_dependency_render(
+                    project=project,
+                    domain=domain,
+                    strict_dag_id=dag_path.stem,
+                )
+            )
+            if update:
+                pause_sync_warning = _sync_dag_paused_state(dag_path.stem, active=bool(scheduler.get("active", True)))
+                if pause_sync_warning:
+                    operation_warnings.append(pause_sync_warning)
         except Exception:
             if update and pre_update_bundle is not None:
                 _apply_bundle_to_active(
@@ -2222,10 +2894,12 @@ def create_or_update_dag(
             "user_tags": user_tags,
             "active_revision_id": active_revision_id,
             "revision_count": len(revision_items),
+            "scheduler": scheduler,
+            "dag_dependencies": dag_dependencies,
         }
         _write_studio_metadata(flow_dir, metadata)
 
-        return {
+        response = {
             "flow_dir": metadata["flow_dir"],
             "config_path": metadata["config_path"],
             "dag_path": metadata["dag_path"],
@@ -2233,4 +2907,9 @@ def create_or_update_dag(
             "task_group_id": task_cfgs[0]["task_group_id"],
             "active_revision_id": active_revision_id,
             "revision_count": len(revision_items),
+            "scheduler": scheduler,
+            "dag_dependencies": dag_dependencies,
         }
+        if operation_warnings:
+            response["warnings"] = operation_warnings
+        return response

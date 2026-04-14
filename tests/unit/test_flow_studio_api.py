@@ -110,9 +110,18 @@ def test_index_html_ok(client):
     assert "+ Add New Task" in r.text
     assert "Custom Tags" in r.text
     assert "custom_tags_input" in r.text
-    assert "Scheduler (coming in 15.6)" in r.text
+    assert "Scheduler" in r.text
+    assert "Configure Scheduler" in r.text
+    assert "Cron Expression (5 fields)" in r.text
+    assert "scheduler_timezone_options" in r.text
+    assert "scheduler_modal" in r.text
+    assert "scheduler_compact_summary" in r.text
+    assert "DAG Dependencies" in r.text
+    assert "dag_deps_modal" in r.text
+    assert "dag_deps_compact_summary" in r.text
     assert "Delete DAG" in r.text
     assert "delete_dag_modal" in r.text
+    assert "delete_task_modal" in r.text
     assert "Update DAG + YAML" not in r.text
     assert "Load Timeline" not in r.text
     assert "Timeline DAG ID (optional)" not in r.text
@@ -243,6 +252,17 @@ def test_airflow_variables_mocked(client):
     assert body["count"] == 2
     assert body["items"] == ["k1", "k2"]
     mocked.assert_called_once_with(search="k", limit=50)
+
+
+def test_timezones_mocked(client):
+    with patch.object(api_app_module, "discover_timezones", return_value=["UTC", "Europe/Istanbul"]) as mocked:
+        r = client.get("/api/timezones?q=eu&limit=25")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["count"] == 2
+    assert body["items"] == ["UTC", "Europe/Istanbul"]
+    mocked.assert_called_once_with(search="eu", limit=25)
 
 
 def test_folder_options_mocked(client):
@@ -771,6 +791,7 @@ def test_update_dag_allows_adding_new_task(client, studio_paths):
             "target_table": "customers_stg",
             "load_method": "append",
             "column_mapping_mode": "source",
+            "depends_on": ["1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"],
         },
     ]
     r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=update_payload)
@@ -782,6 +803,8 @@ def test_update_dag_allows_adding_new_task(client, studio_paths):
     assert len(tasks) == 2
     assert tasks[0]["target_table"] == "orders_stg"
     assert tasks[1]["target_table"] == "customers_stg"
+    assert tasks[0]["depends_on"] == []
+    assert tasks[1]["depends_on"] == ["1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"]
 
 
 def test_update_dag_targets_selected_dag_when_same_flow_has_multiple_groups(client, studio_paths):
@@ -809,6 +832,150 @@ def test_update_dag_targets_selected_dag_when_same_flow_has_multiple_groups(clie
     c2 = yaml.safe_load(cfg2.read_text(encoding="utf-8"))
     assert c1["flow_tasks"][0]["load_method"] == "replace"
     assert c2["flow_tasks"][0]["load_method"] == "append"
+
+
+def test_dag_options_filters_scope_without_wait_previous_field(client, studio_paths):
+    p1 = _minimal_table_payload()
+    p2 = _minimal_table_payload()
+    p2["source_table"] = "customers"
+    p2["target_table"] = "customers_stg"
+    p3 = _minimal_table_payload()
+    p3["domain"] = "other"
+    p3["source_table"] = "products"
+    p3["target_table"] = "products_stg"
+
+    r1 = client.post("/api/create-dag", json=p1)
+    r2 = client.post("/api/create-dag", json=p2)
+    r3 = client.post("/api/create-dag", json=p3)
+    assert r1.status_code == 201, r1.text
+    assert r2.status_code == 201, r2.text
+    assert r3.status_code == 201, r3.text
+
+    dag1 = Path(r1.json()["dag_path"]).stem
+    dag2 = Path(r2.json()["dag_path"]).stem
+    dag3 = Path(r3.json()["dag_path"]).stem
+
+    r_opts = client.get(
+        f"/api/dag-options?project=webhook&domain=whk&level=level1&flow=src_to_stg&dag_id={dag2}"
+    )
+    assert r_opts.status_code == 200, r_opts.text
+    body = r_opts.json()
+    assert body["ok"] is True
+    assert body["dag_id"] == dag2
+    assert "wait_previous_dag_id" not in body
+    option_ids = [str(item.get("dag_id") or "") for item in body.get("items", [])]
+    assert dag1 in option_ids
+    assert dag2 not in option_ids
+    assert dag3 not in option_ids
+
+
+def test_create_update_roundtrip_dag_dependencies(client, studio_paths):
+    p1 = _minimal_table_payload()
+    p2 = _minimal_table_payload()
+    p2["source_table"] = "customers"
+    p2["target_table"] = "customers_stg"
+
+    r1 = client.post("/api/create-dag", json=p1)
+    r2 = client.post("/api/create-dag", json=p2)
+    assert r1.status_code == 201, r1.text
+    assert r2.status_code == 201, r2.text
+
+    dag1 = Path(r1.json()["dag_path"]).stem
+    dag2 = Path(r2.json()["dag_path"]).stem
+    cfg2_path = Path(r2.json()["config_path"])
+
+    update_payload = _minimal_table_payload()
+    update_payload["source_table"] = "customers"
+    update_payload["target_table"] = "customers_stg"
+    update_payload["dag_dependencies"] = {"upstream_dag_ids": [dag1]}
+
+    r_upd = client.post(f"/api/update-dag?dag_id={dag2}", json=update_payload)
+    assert r_upd.status_code == 200, r_upd.text
+    assert (r_upd.json().get("dag_dependencies") or {}).get("upstream_dag_ids") == [dag1]
+
+    cfg2 = yaml.safe_load(cfg2_path.read_text(encoding="utf-8"))
+    assert (cfg2.get("dag_dependencies") or {}).get("upstream_dag_ids") == [dag1]
+
+    dag2_source = Path(r2.json()["dag_path"]).read_text(encoding="utf-8")
+    assert f'UPSTREAM_DAG_IDS = ["{dag1}"]' in dag2_source
+
+    r_cfg = client.get(f"/api/dag-config?dag_id={dag2}")
+    assert r_cfg.status_code == 200, r_cfg.text
+    payload = r_cfg.json().get("payload") or {}
+    assert (payload.get("dag_dependencies") or {}).get("upstream_dag_ids") == [dag1]
+
+
+def test_create_dag_rejects_unknown_dag_dependency(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["dag_dependencies"] = {"upstream_dag_ids": ["missing_dag_id"]}
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "dag_dependencies contains invalid dag_id" in r.text
+
+
+def test_dag_dependency_cycle_rejected(client, studio_paths):
+    p1 = _minimal_table_payload()
+    p2 = _minimal_table_payload()
+    p2["source_table"] = "customers"
+    p2["target_table"] = "customers_stg"
+
+    r1 = client.post("/api/create-dag", json=p1)
+    r2 = client.post("/api/create-dag", json=p2)
+    assert r1.status_code == 201, r1.text
+    assert r2.status_code == 201, r2.text
+
+    dag1 = Path(r1.json()["dag_path"]).stem
+    dag2 = Path(r2.json()["dag_path"]).stem
+
+    upd2 = _minimal_table_payload()
+    upd2["source_table"] = "customers"
+    upd2["target_table"] = "customers_stg"
+    upd2["dag_dependencies"] = {"upstream_dag_ids": [dag1]}
+    r_upd2 = client.post(f"/api/update-dag?dag_id={dag2}", json=upd2)
+    assert r_upd2.status_code == 200, r_upd2.text
+
+    upd1 = _minimal_table_payload()
+    upd1["dag_dependencies"] = {"upstream_dag_ids": [dag2]}
+    r_upd1 = client.post(f"/api/update-dag?dag_id={dag1}", json=upd1)
+    assert r_upd1.status_code == 422
+    assert "cycle" in r_upd1.text.lower()
+
+
+def test_delete_dag_requires_cleanup_references_and_then_cleans(client, studio_paths):
+    p1 = _minimal_table_payload()
+    p2 = _minimal_table_payload()
+    p2["source_table"] = "customers"
+    p2["target_table"] = "customers_stg"
+
+    r1 = client.post("/api/create-dag", json=p1)
+    r2 = client.post("/api/create-dag", json=p2)
+    assert r1.status_code == 201, r1.text
+    assert r2.status_code == 201, r2.text
+
+    dag1 = Path(r1.json()["dag_path"]).stem
+    dag2 = Path(r2.json()["dag_path"]).stem
+    cfg2_path = Path(r2.json()["config_path"])
+
+    upd2 = _minimal_table_payload()
+    upd2["source_table"] = "customers"
+    upd2["target_table"] = "customers_stg"
+    upd2["dag_dependencies"] = {"upstream_dag_ids": [dag1]}
+    r_upd2 = client.post(f"/api/update-dag?dag_id={dag2}", json=upd2)
+    assert r_upd2.status_code == 200, r_upd2.text
+
+    r_del_fail = client.delete(f"/api/delete-dag?dag_id={dag1}")
+    assert r_del_fail.status_code == 422
+    assert "cleanup_references=true" in r_del_fail.text
+
+    r_del_ok = client.delete(f"/api/delete-dag?dag_id={dag1}&cleanup_references=true")
+    assert r_del_ok.status_code == 200, r_del_ok.text
+    body = r_del_ok.json()
+    assert body["ok"] is True
+    assert body["cleanup_references"] is True
+    assert dag2 in (body.get("cleaned_reference_dags") or [])
+
+    cfg2 = yaml.safe_load(cfg2_path.read_text(encoding="utf-8"))
+    assert (cfg2.get("dag_dependencies") or {}).get("upstream_dag_ids") == []
 
 
 def test_dag_revisions_promote_roundtrip(client, studio_paths):
@@ -1063,7 +1230,7 @@ def test_update_dag_rejects_full_scan_partitioning_mode(client, studio_paths):
     assert "Invalid partitioning.mode" in r2.text
 
 
-def test_resolve_task_dependencies_depends_on_and_default_order():
+def test_resolve_task_dependencies_depends_on_and_parallel_default():
     tasks = [
         {"task_group_id": "t1"},
         {"task_group_id": "t2", "depends_on": ["t1"]},
@@ -1071,7 +1238,16 @@ def test_resolve_task_dependencies_depends_on_and_default_order():
     ]
     edges = ss.resolve_task_dependencies(tasks)
     assert ("t1", "t2") in edges
-    assert ("t2", "t3") in edges
+    assert ("t2", "t3") not in edges
+
+
+def test_resolve_task_dependencies_rejects_self_dependency():
+    tasks = [
+        {"task_group_id": "t1", "depends_on": ["t1"]},
+        {"task_group_id": "t2"},
+    ]
+    with pytest.raises(ValueError, match="cannot reference itself"):
+        ss.resolve_task_dependencies(tasks)
 
 
 def test_resolve_task_dependencies_invalid_upstream():
@@ -1171,6 +1347,7 @@ def test_resolve_dag_config_for_update_roundtrip(client, studio_paths):
     assert resolved["payload"]["source_table"] == "orders"
     assert resolved["payload"]["target_table"] == "orders_stg"
     assert resolved["payload"]["custom_tags"] == ["ops", "nightly"]
+    assert resolved["payload"]["flow_tasks"][0]["depends_on"] == []
 
 
 def test_resolve_dag_config_returns_empty_custom_tags_when_yaml_missing_field(client, studio_paths):
@@ -1186,6 +1363,98 @@ def test_resolve_dag_config_returns_empty_custom_tags_when_yaml_missing_field(cl
 
     resolved = ss.resolve_dag_config_for_update(dag_id)
     assert resolved["payload"]["custom_tags"] == []
+
+
+def test_create_dag_rejects_invalid_scheduler_cron(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {
+        "cron_expression": "0 0 * * * *",
+        "timezone": "UTC",
+        "active": True,
+        "start_date": "2023-01-01T00:00:00",
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "cron" in r.text.lower()
+
+
+def test_create_dag_rejects_invalid_scheduler_timezone(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {
+        "cron_expression": "0 3 * * *",
+        "timezone": "Mars/Phobos",
+        "active": True,
+        "start_date": "2023-01-01T00:00:00",
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "timezone" in r.text.lower()
+
+
+def test_create_dag_rejects_invalid_scheduler_start_date(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {
+        "cron_expression": "0 3 * * *",
+        "timezone": "UTC",
+        "active": True,
+        "start_date": "invalid-date",
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "start_date" in r.text.lower()
+
+
+def test_create_dag_persists_scheduler_and_preload_returns_scheduler(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {
+        "cron_expression": "15 4 * * 1",
+        "timezone": "Europe/Istanbul",
+        "active": False,
+        "start_date": "2024-01-15T09:30:00",
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    dag_id = Path(body["dag_path"]).stem
+    config_path = Path(body["config_path"])
+    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    scheduler = cfg.get("scheduler") or {}
+    assert scheduler["cron_expression"] == "15 4 * * 1"
+    assert scheduler["timezone"] == "Europe/Istanbul"
+    assert scheduler["active"] is False
+    assert "catchup" not in scheduler
+    assert scheduler["start_date"] == "2024-01-15T09:30:00"
+
+    r2 = client.get(f"/api/dag-config?dag_id={dag_id}")
+    assert r2.status_code == 200, r2.text
+    scheduler_payload = ((r2.json().get("payload") or {}).get("scheduler") or {})
+    assert scheduler_payload["cron_expression"] == "15 4 * * 1"
+    assert scheduler_payload["timezone"] == "Europe/Istanbul"
+    assert scheduler_payload["active"] is False
+    assert "catchup" not in scheduler_payload
+    assert scheduler_payload["start_date"] == "2024-01-15T09:30:00"
+
+
+def test_update_dag_updates_scheduler_without_creating_new_dag(client, studio_paths):
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
+    dag_path_before = r1.json()["dag_path"]
+
+    payload["scheduler"] = {
+        "cron_expression": "5 * * * *",
+        "timezone": "UTC",
+        "active": True,
+        "start_date": "2023-01-01T00:00:00",
+    }
+    r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
+    assert r2.status_code == 200, r2.text
+    body2 = r2.json()
+    assert body2["dag_id"] == dag_id
+    assert body2["dag_path"] == dag_path_before
+    cfg = yaml.safe_load(Path(body2["config_path"]).read_text(encoding="utf-8"))
+    assert (cfg.get("scheduler") or {}).get("cron_expression") == "5 * * * *"
 
 
 def test_resolve_dag_config_for_update_roundtrip_sql_inline_sql(client, studio_paths):

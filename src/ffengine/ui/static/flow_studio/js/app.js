@@ -390,6 +390,7 @@ async function studioFetch(path, options) {
     let currentUpdateDagId = "";
     let currentActiveRevisionId = "";
     let currentRevisionItems = [];
+    let pendingTaskDeleteCard = null;
     let isBusy = false;
     const CUSTOM_TAG_MAX_COUNT = 10;
     const CUSTOM_TAG_MAX_LENGTH = 32;
@@ -405,9 +406,19 @@ async function studioFetch(path, options) {
       drop_if_exists_and_create: "Drop and recreate",
       script: "Run script",
     });
+    const DEPENDENCY_MODES = Object.freeze({
+      PARALLEL: "parallel",
+      WAIT_PREVIOUS: "wait_previous",
+      CUSTOM: "custom",
+    });
     let customTagsState = [];
     let schedulerModeState = "manual";
     let schedulerAppliedState = null;
+    let dagDepsAppliedState = null;
+    let dagDepsDraftState = null;
+    let dagDepsOptionsState = [];
+    let dagDepsReferencedByState = [];
+    let pendingDeleteDagCleanupReferences = false;
 
     function el(id) { return document.getElementById(id); }
 
@@ -946,6 +957,212 @@ async function studioFetch(path, options) {
       }
     }
 
+    function normalizeDagDependencyIds(rawIds) {
+      const items = Array.isArray(rawIds) ? rawIds : [];
+      const out = [];
+      const seen = new Set();
+      for (const raw of items) {
+        const dagId = String(raw || "").trim();
+        if (!dagId || seen.has(dagId)) continue;
+        seen.add(dagId);
+        out.push(dagId);
+      }
+      return out;
+    }
+
+    function cloneDagDepsState(state) {
+      const raw = state && typeof state === "object" ? state : {};
+      return {
+        upstream_dag_ids: normalizeDagDependencyIds(raw.upstream_dag_ids || []),
+      };
+    }
+
+    function resolveDagDepsUpstreamIds(state) {
+      const safeState = cloneDagDepsState(state);
+      const optionIds = new Set(
+        (Array.isArray(dagDepsOptionsState) ? dagDepsOptionsState : [])
+          .map((item) => String(item && item.dag_id || "").trim())
+          .filter(Boolean)
+      );
+      return normalizeDagDependencyIds(safeState.upstream_dag_ids)
+        .filter((dagId) => optionIds.has(dagId));
+    }
+
+    function summarizeDagDepsCompact(state) {
+      const selectedDagIds = resolveDagDepsUpstreamIds(state);
+      if (!selectedDagIds.length) return "No upstream DAG";
+      const labels = selectedDagIds.slice(0, 2);
+      if (selectedDagIds.length <= 2) {
+        return `Upstream: ${labels.join(", ")}`;
+      }
+      return `Upstream: ${labels.join(", ")} +${selectedDagIds.length - 2} more`;
+    }
+
+    function renderDagDepsCompactSummary() {
+      const summaryNode = el("dag_deps_compact_summary");
+      if (!summaryNode) return;
+      const summaryText = summarizeDagDepsCompact(dagDepsAppliedState || {});
+      summaryNode.textContent = summaryText;
+      const panel = el("dag_deps_compact_panel");
+      if (panel) panel.title = `DAG Dependencies: ${summaryText}. Click to configure.`;
+    }
+
+    function renderDagDepsModal() {
+      const customWrap = el("dag_deps_custom_wrap");
+      const customSelect = el("dag_deps_custom_select");
+      const customChips = el("dag_deps_custom_chips");
+      const summary = el("dag_deps_summary");
+      const addButton = el("btn_add_dag_dependency");
+      if (!customWrap || !customSelect || !customChips || !summary || !addButton) return;
+
+      const draft = cloneDagDepsState(dagDepsDraftState || dagDepsAppliedState || {});
+      customWrap.classList.remove("hidden");
+      const selectedCustom = resolveDagDepsUpstreamIds(draft);
+      customSelect.innerHTML = "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = dagDepsOptionsState.length ? "Select upstream DAG" : "No upstream DAG";
+      customSelect.appendChild(placeholder);
+
+      for (const item of dagDepsOptionsState) {
+        const optionDagId = String(item && item.dag_id || "").trim();
+        if (!optionDagId) continue;
+        const opt = document.createElement("option");
+        opt.value = optionDagId;
+        opt.textContent = `${optionDagId} (${item.level || "-"} / ${item.flow || "-"})`;
+        opt.disabled = selectedCustom.includes(optionDagId);
+        customSelect.appendChild(opt);
+      }
+
+      customChips.innerHTML = "";
+      for (const upstreamDagId of selectedCustom) {
+        const chip = document.createElement("span");
+        chip.className = "dependency-chip";
+        chip.textContent = upstreamDagId;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "dependency-chip-remove";
+        remove.textContent = "x";
+        remove.title = `Remove upstream DAG: ${upstreamDagId}`;
+        remove.disabled = !!isBusy;
+        remove.addEventListener("click", () => {
+          const nextState = cloneDagDepsState(dagDepsDraftState || {});
+          nextState.upstream_dag_ids = normalizeDagDependencyIds(
+            nextState.upstream_dag_ids.filter((item) => item !== upstreamDagId)
+          );
+          dagDepsDraftState = nextState;
+          renderDagDepsModal();
+        });
+        chip.appendChild(remove);
+        customChips.appendChild(chip);
+      }
+
+      summary.textContent = summarizeDagDepsCompact(draft);
+      addButton.disabled = !!isBusy || !dagDepsOptionsState.length;
+    }
+
+    function setDagDepsAppliedStateFromUpstreamIds(upstreamDagIds) {
+      const normalized = normalizeDagDependencyIds(upstreamDagIds || []);
+      dagDepsAppliedState = {
+        upstream_dag_ids: normalized,
+      };
+      renderDagDepsCompactSummary();
+    }
+
+    function reconcileDagDepsAppliedState() {
+      if (!dagDepsAppliedState) {
+        dagDepsAppliedState = {
+          upstream_dag_ids: [],
+        };
+      }
+      const nextState = cloneDagDepsState(dagDepsAppliedState);
+      const optionIds = new Set(
+        (Array.isArray(dagDepsOptionsState) ? dagDepsOptionsState : [])
+          .map((item) => String(item && item.dag_id || "").trim())
+          .filter(Boolean)
+      );
+      nextState.upstream_dag_ids = normalizeDagDependencyIds(nextState.upstream_dag_ids)
+        .filter((dagId) => optionIds.has(dagId));
+      dagDepsAppliedState = nextState;
+      renderDagDepsCompactSummary();
+    }
+
+    async function loadDagDependencyOptions(rawDagId) {
+      const project = String(el("project")?.value || "").trim();
+      const domain = String(el("domain")?.value || "").trim();
+      const level = String(el("level")?.value || "").trim();
+      const flow = String(el("flow")?.value || "").trim();
+      if (!project || !domain || !level || !flow) {
+        dagDepsOptionsState = [];
+        dagDepsReferencedByState = [];
+        reconcileDagDepsAppliedState();
+        return null;
+      }
+
+      const dagId = String(rawDagId || currentUpdateDagId || "").trim();
+      const params = new URLSearchParams();
+      params.set("project", project);
+      params.set("domain", domain);
+      params.set("level", level);
+      params.set("flow", flow);
+      if (dagId) params.set("dag_id", dagId);
+      const response = await studioFetch(`/api/dag-options?${params.toString()}`);
+      const data = await parseJsonSafe(response);
+      if (!response.ok || !data || !data.ok) {
+        dagDepsOptionsState = [];
+        dagDepsReferencedByState = [];
+        reconcileDagDepsAppliedState();
+        return null;
+      }
+
+      dagDepsOptionsState = Array.isArray(data.items) ? data.items : [];
+      dagDepsReferencedByState = Array.isArray(data.referenced_by) ? data.referenced_by : [];
+
+      if (!dagDepsAppliedState) {
+        setDagDepsAppliedStateFromUpstreamIds(data.current_upstream_dag_ids || []);
+      } else {
+        reconcileDagDepsAppliedState();
+      }
+      return data;
+    }
+
+    async function openDagDepsModal() {
+      if (isBusy) return;
+      const modal = el("dag_deps_modal");
+      if (!modal) return;
+      await loadDagDependencyOptions(currentUpdateDagId).catch((_err) => {});
+      dagDepsDraftState = cloneDagDepsState(dagDepsAppliedState || {
+        upstream_dag_ids: [],
+      });
+      renderDagDepsModal();
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+      document.body.classList.add("dag-deps-modal-open");
+    }
+
+    function closeDagDepsModal() {
+      const modal = el("dag_deps_modal");
+      if (!modal) return;
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("dag-deps-modal-open");
+      dagDepsDraftState = null;
+    }
+
+    function applyDagDepsModal() {
+      const draft = cloneDagDepsState(dagDepsDraftState || dagDepsAppliedState || {});
+      dagDepsAppliedState = draft;
+      renderDagDepsCompactSummary();
+      closeDagDepsModal();
+    }
+
+    function collectDagDependenciesPayload() {
+      const upstreamDagIds = resolveDagDepsUpstreamIds(dagDepsAppliedState || {});
+      return {
+        upstream_dag_ids: upstreamDagIds,
+      };
+    }
+
     function pushToast(message, variant = "success", persistent = false) {
       const container = el("toast_container");
       if (!container || !message) return;
@@ -979,13 +1196,18 @@ async function studioFetch(path, options) {
       if (progressLabel) {
         progressLabel.textContent = active ? (label || "Operation in progress") : "";
       }
-      for (const btn of document.querySelectorAll(".btn-create-dag, #btn_update_top, #btn_promote_revision, #btn_add_task, #btn_refresh_revisions, #btn_delete_dag, #btn_cancel_delete_dag, #btn_confirm_delete_dag, #btn_cancel_scheduler_modal, #btn_apply_scheduler_modal")) {
+      for (const btn of document.querySelectorAll(".btn-create-dag, #btn_update_top, #btn_promote_revision, #btn_add_task, #btn_refresh_revisions, #btn_delete_dag, #btn_cancel_delete_dag, #btn_confirm_delete_dag, #btn_cancel_scheduler_modal, #btn_apply_scheduler_modal, #btn_cancel_dag_deps_modal, #btn_apply_dag_deps_modal, #btn_add_dag_dependency, #btn_cancel_task_delete, #btn_confirm_task_delete, .btn-delete-task")) {
         btn.disabled = !!active;
       }
       const schedulerCompactPanel = el("scheduler_compact_panel");
       if (schedulerCompactPanel) {
         schedulerCompactPanel.classList.toggle("disabled", !!active);
         schedulerCompactPanel.setAttribute("aria-disabled", active ? "true" : "false");
+      }
+      const dagDepsCompactPanel = el("dag_deps_compact_panel");
+      if (dagDepsCompactPanel) {
+        dagDepsCompactPanel.classList.toggle("disabled", !!active);
+        dagDepsCompactPanel.setAttribute("aria-disabled", active ? "true" : "false");
       }
       const customTagInput = el("custom_tags_input");
       if (customTagInput) {
@@ -994,8 +1216,19 @@ async function studioFetch(path, options) {
       for (const node of document.querySelectorAll(".scheduler-control-input, .scheduler-tab-btn")) {
         node.disabled = !!active;
       }
+      for (const node of document.querySelectorAll("#dag_deps_custom_select")) {
+        node.disabled = !!active;
+      }
+      for (const node of document.querySelectorAll(".dependency-mode, .dependency-custom-select, .btn-add-dependency")) {
+        node.disabled = !!active;
+      }
       renderCustomTags();
+      for (const card of getTaskCards()) {
+        syncDependencyState(card);
+      }
       syncDeleteDagConfirmState();
+      syncTaskDeleteConfirmState();
+      renderDagDepsModal();
     }
 
     function beginOperation(label) {
@@ -1035,6 +1268,8 @@ async function studioFetch(path, options) {
         revisionPanel.classList.add("hidden");
         if (deleteButton) deleteButton.classList.add("hidden");
         closeDeleteDagModal();
+        closeDagDepsModal();
+        closeTaskDeleteModal();
         currentUpdateDagId = "";
         currentActiveRevisionId = "";
         currentRevisionItems = [];
@@ -1048,6 +1283,12 @@ async function studioFetch(path, options) {
     function resetStudioAfterDelete() {
       currentUpdateDagId = "";
       setCustomTags([]);
+      dagDepsAppliedState = {
+        upstream_dag_ids: [],
+      };
+      dagDepsDraftState = null;
+      dagDepsReferencedByState = [];
+      renderDagDepsCompactSummary();
       setSchedulerAppliedState({
         cron_expression: null,
         timezone: resolveBrowserTimezone() || SCHEDULER_DEFAULT_TIMEZONE,
@@ -1058,6 +1299,7 @@ async function studioFetch(path, options) {
       closeSchedulerModal();
       clearAndLoadTasks([{}]);
       setUpdateMode(false);
+      loadDagDependencyOptions("").catch((_err) => {});
       try {
         const url = new URL(window.location.href);
         url.searchParams.delete("dag_id");
@@ -1084,6 +1326,51 @@ async function studioFetch(path, options) {
       }
     }
 
+    function syncTaskDeleteConfirmState() {
+      const confirmBtn = el("btn_confirm_task_delete");
+      if (!confirmBtn) return;
+      const canConfirm = !!pendingTaskDeleteCard && !isBusy;
+      confirmBtn.disabled = !canConfirm;
+      confirmBtn.setAttribute("aria-disabled", canConfirm ? "false" : "true");
+    }
+
+    function openTaskDeleteModal(taskCard) {
+      const modal = el("delete_task_modal");
+      if (!modal || !taskCard) return;
+      pendingTaskDeleteCard = taskCard;
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+      syncTaskDeleteConfirmState();
+    }
+
+    function closeTaskDeleteModal() {
+      const modal = el("delete_task_modal");
+      if (!modal) return;
+      pendingTaskDeleteCard = null;
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+      syncTaskDeleteConfirmState();
+    }
+
+    function confirmTaskDelete() {
+      const taskCard = pendingTaskDeleteCard;
+      closeTaskDeleteModal();
+      if (!taskCard) return;
+      taskCard.remove();
+      refreshTaskCardHeaders();
+    }
+
+    function requestTaskDelete(taskCard) {
+      const cards = getTaskCards();
+      if (!taskCard || cards.length <= 1 || isBusy) return;
+      if (!hasIncomingDependencyForCard(taskCard)) {
+        taskCard.remove();
+        refreshTaskCardHeaders();
+        return;
+      }
+      openTaskDeleteModal(taskCard);
+    }
+
     function syncDeleteDagConfirmState() {
       const input = el("delete_dag_confirm_input");
       const expected = String(currentUpdateDagId || "").trim();
@@ -1094,7 +1381,7 @@ async function studioFetch(path, options) {
       confirmBtn.setAttribute("aria-disabled", matches && !isBusy ? "false" : "true");
     }
 
-    function openDeleteDagModal() {
+    async function openDeleteDagModal() {
       const dagId = String(currentUpdateDagId || "").trim();
       if (!dagId) {
         pushToast("Update mode must be active before delete.", "error", true);
@@ -1103,7 +1390,25 @@ async function studioFetch(path, options) {
       const modal = el("delete_dag_modal");
       const expected = el("delete_dag_expected");
       const input = el("delete_dag_confirm_input");
-      if (!modal || !expected || !input) return;
+      const referencesWarning = el("delete_dag_references_warning");
+      if (!modal || !expected || !input || !referencesWarning) return;
+
+      pendingDeleteDagCleanupReferences = false;
+      referencesWarning.classList.add("hidden");
+      referencesWarning.textContent = "";
+      try {
+        const optionsData = await loadDagDependencyOptions(dagId);
+        const referencedBy = Array.isArray(optionsData && optionsData.referenced_by)
+          ? optionsData.referenced_by
+          : [];
+        if (referencedBy.length) {
+          pendingDeleteDagCleanupReferences = true;
+          referencesWarning.textContent = `This DAG is referenced by ${referencedBy.length} DAG(s). Deleting it will remove those references.`;
+          referencesWarning.classList.remove("hidden");
+        }
+      } catch (_err) {
+        pendingDeleteDagCleanupReferences = false;
+      }
       expected.textContent = dagId;
       input.value = "";
       modal.classList.add("open");
@@ -1115,10 +1420,16 @@ async function studioFetch(path, options) {
     function closeDeleteDagModal() {
       const modal = el("delete_dag_modal");
       const input = el("delete_dag_confirm_input");
+      const referencesWarning = el("delete_dag_references_warning");
       if (!modal) return;
       modal.classList.remove("open");
       modal.setAttribute("aria-hidden", "true");
       if (input) input.value = "";
+      if (referencesWarning) {
+        referencesWarning.classList.add("hidden");
+        referencesWarning.textContent = "";
+      }
+      pendingDeleteDagCleanupReferences = false;
       syncDeleteDagConfirmState();
     }
 
@@ -1137,7 +1448,10 @@ async function studioFetch(path, options) {
         return;
       }
       try {
-        const data = await deleteJson(studioUrl(`/api/delete-dag?dag_id=${encodeURIComponent(dagId)}`));
+        const cleanupFlag = pendingDeleteDagCleanupReferences ? "&cleanup_references=true" : "";
+        const data = await deleteJson(
+          studioUrl(`/api/delete-dag?dag_id=${encodeURIComponent(dagId)}${cleanupFlag}`)
+        );
         if (!data || !data.ok) {
           pushToast(data && data.detail ? data.detail : "DAG deletion failed.", "error", true);
           return;
@@ -1301,6 +1615,48 @@ async function studioFetch(path, options) {
       const n = Number(value);
       if (Number.isInteger(n) && n > 0) return n;
       return fallback;
+    }
+
+    function normalizeDependsOnList(rawDependsOn) {
+      const items = Array.isArray(rawDependsOn) ? rawDependsOn : [];
+      const out = [];
+      const seen = new Set();
+      for (const raw of items) {
+        const depId = String(raw || "").trim();
+        if (!depId || seen.has(depId)) continue;
+        seen.add(depId);
+        out.push(depId);
+      }
+      return out;
+    }
+
+    function getCardDependencyMode(card) {
+      const mode = String(card.dataset.dependencyMode || DEPENDENCY_MODES.PARALLEL).trim();
+      if (mode === DEPENDENCY_MODES.WAIT_PREVIOUS || mode === DEPENDENCY_MODES.CUSTOM) return mode;
+      return DEPENDENCY_MODES.PARALLEL;
+    }
+
+    function setCardDependencyMode(card, mode) {
+      const normalized = (mode === DEPENDENCY_MODES.WAIT_PREVIOUS || mode === DEPENDENCY_MODES.CUSTOM)
+        ? mode
+        : DEPENDENCY_MODES.PARALLEL;
+      card.dataset.dependencyMode = normalized;
+      const modeSelect = card.querySelector(".dependency-mode");
+      if (modeSelect && modeSelect.value !== normalized) {
+        modeSelect.value = normalized;
+      }
+    }
+
+    function getCardCustomDependsOn(card) {
+      try {
+        return normalizeDependsOnList(JSON.parse(String(card.dataset.customDependsOn || "[]")));
+      } catch (_err) {
+        return [];
+      }
+    }
+
+    function setCardCustomDependsOn(card, dependsOn) {
+      card.dataset.customDependsOn = JSON.stringify(normalizeDependsOnList(dependsOn));
     }
 
     function slugify(raw, fallback) {
@@ -1649,8 +2005,8 @@ async function studioFetch(path, options) {
         clearDraftBelow("project");
       } else if (levelName === "domain") {
         if (!pickerDraft.project) {
-          setUpdateModeStatus("Once project secin.", "warn");
-          pushToast("Once project secin.", "error", true);
+          setUpdateModeStatus("Select project first.", "warn");
+          pushToast("Select project first.", "error", true);
           return;
         }
         setMapItem(pickerTemp.domains, pickerDraft.project, raw);
@@ -1658,8 +2014,8 @@ async function studioFetch(path, options) {
         clearDraftBelow("domain");
       } else if (levelName === "level") {
         if (!pickerDraft.project || !pickerDraft.domain) {
-          setUpdateModeStatus("Once project ve domain secin.", "warn");
-          pushToast("Once project ve domain secin.", "error", true);
+          setUpdateModeStatus("Select project and domain first.", "warn");
+          pushToast("Select project and domain first.", "error", true);
           return;
         }
         setMapItem(pickerTemp.levels, `${pickerDraft.project}/${pickerDraft.domain}`, raw);
@@ -1667,8 +2023,8 @@ async function studioFetch(path, options) {
         clearDraftBelow("level");
       } else if (levelName === "flow") {
         if (!pickerDraft.project || !pickerDraft.domain || !pickerDraft.level) {
-          setUpdateModeStatus("Once project/domain/level secin.", "warn");
-          pushToast("Once project/domain/level secin.", "error", true);
+          setUpdateModeStatus("Select project, domain, and level first.", "warn");
+          pushToast("Select project, domain, and level first.", "error", true);
           return;
         }
         setMapItem(
@@ -1691,6 +2047,7 @@ async function studioFetch(path, options) {
       el("flow").value = pickerDraft.flow || "";
       syncFolderPathDisplay();
       for (const card of getTaskCards()) syncMappingState(card);
+      loadDagDependencyOptions(currentUpdateDagId).catch((_err) => {});
       closeFolderPicker();
     }
 
@@ -1779,11 +2136,23 @@ async function studioFetch(path, options) {
 
     function refreshTaskCardHeaders() {
       const cards = getTaskCards();
+      const oldTaskIds = cards.map((card, idx) => {
+        const cached = String(card.dataset.currentTaskGroupId || "").trim();
+        if (cached) return cached;
+        return resolveTaskIdentity(card, idx + 1).task_group_id;
+      });
+      const newTaskIds = [];
       for (let i = 0; i < cards.length; i += 1) {
         cards[i].querySelector(".task-title").textContent = `Task #${i + 1}`;
         cards[i].querySelector(".btn-delete-task").disabled = cards.length <= 1;
-        syncTaskGroupState(cards[i], i + 1);
+        const identity = syncTaskGroupState(cards[i], i + 1);
+        cards[i].dataset.currentTaskGroupId = identity.task_group_id;
+        newTaskIds.push(identity.task_group_id);
         syncMappingState(cards[i]);
+      }
+      remapDependenciesAfterTaskIdChange(cards, oldTaskIds, newTaskIds);
+      for (let i = 0; i < cards.length; i += 1) {
+        syncDependencyState(cards[i], i, newTaskIds);
       }
     }
 
@@ -1891,11 +2260,17 @@ async function studioFetch(path, options) {
       const sourceType = values.source_type || "table";
       const partitioningMode = values.partitioning_mode || "auto";
       const loadedTaskGroupId = String(values.task_group_id || "").trim();
+      const initialDependsOn = normalizeDependsOnList(values.depends_on || []);
       if (loadedTaskGroupId) {
         card.dataset.loadedTaskGroupId = loadedTaskGroupId;
       } else {
         delete card.dataset.loadedTaskGroupId;
       }
+      card.dataset.initialDependsOn = JSON.stringify(initialDependsOn);
+      card.dataset.dependenciesInitialized = "0";
+      card.dataset.currentTaskGroupId = loadedTaskGroupId || "";
+      setCardDependencyMode(card, DEPENDENCY_MODES.PARALLEL);
+      setCardCustomDependsOn(card, []);
       card.dataset.loadedSignature = "";
       card.querySelector(".source-schema").value = values.source_schema || "";
       card.querySelector(".source-table").value = values.source_table || "";
@@ -1992,6 +2367,257 @@ async function studioFetch(path, options) {
       const out = card.querySelector(".task-group-id-readonly");
       if (out) out.textContent = identity.task_group_id;
       return identity;
+    }
+
+    function deriveDependencyMode(dependsOn, previousTaskId) {
+      const normalized = normalizeDependsOnList(dependsOn);
+      if (!normalized.length) return DEPENDENCY_MODES.PARALLEL;
+      if (normalized.length === 1 && previousTaskId && normalized[0] === previousTaskId) {
+        return DEPENDENCY_MODES.WAIT_PREVIOUS;
+      }
+      return DEPENDENCY_MODES.CUSTOM;
+    }
+
+    function remapDependenciesAfterTaskIdChange(cards, oldTaskIds, newTaskIds) {
+      const remap = new Map();
+      for (let i = 0; i < oldTaskIds.length; i += 1) {
+        const oldId = String(oldTaskIds[i] || "").trim();
+        const newId = String(newTaskIds[i] || "").trim();
+        if (!oldId || !newId || oldId === newId) continue;
+        remap.set(oldId, newId);
+      }
+      if (!remap.size) return;
+
+      const available = new Set(newTaskIds);
+      for (let i = 0; i < cards.length; i += 1) {
+        const card = cards[i];
+        if (getCardDependencyMode(card) !== DEPENDENCY_MODES.CUSTOM) continue;
+        const selfTaskId = String(newTaskIds[i] || "").trim();
+        const remapped = normalizeDependsOnList(
+          getCardCustomDependsOn(card).map((depId) => remap.get(depId) || depId)
+        ).filter((depId) => depId !== selfTaskId && available.has(depId));
+        setCardCustomDependsOn(card, remapped);
+      }
+    }
+
+    function renderDependencyChips(card) {
+      const chipsWrap = card.querySelector(".dependency-chips");
+      if (!chipsWrap) return;
+      const selected = getCardCustomDependsOn(card);
+      chipsWrap.innerHTML = "";
+      for (const depId of selected) {
+        const chip = document.createElement("span");
+        chip.className = "dependency-chip";
+        chip.textContent = depId;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "dependency-chip-remove";
+        remove.textContent = "x";
+        remove.title = `Remove upstream: ${depId}`;
+        remove.disabled = !!isBusy;
+        remove.addEventListener("click", () => {
+          setCardCustomDependsOn(
+            card,
+            getCardCustomDependsOn(card).filter((item) => item !== depId)
+          );
+          syncDependencyState(card);
+        });
+        chip.appendChild(remove);
+        chipsWrap.appendChild(chip);
+      }
+    }
+
+    function buildDependencyOptionLabel(taskNo, taskGroupId) {
+      return `Task #${taskNo} (${taskGroupId})`;
+    }
+
+    function addDependencyToCard(card, rawDepId) {
+      const depId = String(rawDepId || "").trim();
+      if (!depId) return false;
+      const cards = getTaskCards();
+      const taskIds = cards.map((item, idx) => resolveTaskIdentity(item, idx + 1).task_group_id);
+      const selfIndex = Math.max(0, cards.indexOf(card));
+      const selfTaskId = String(taskIds[selfIndex] || "").trim();
+      if (!depId || depId === selfTaskId) return false;
+      if (!new Set(taskIds).has(depId)) return false;
+      const next = normalizeDependsOnList([...getCardCustomDependsOn(card), depId]);
+      setCardCustomDependsOn(card, next);
+      syncDependencyState(card);
+      return true;
+    }
+
+    function resolveCardDependsOnForState(card, cardIndex, taskIds) {
+      const selfTaskId = String(taskIds[cardIndex] || "").trim();
+      const previousTaskId = cardIndex > 0 ? String(taskIds[cardIndex - 1] || "").trim() : "";
+      const mode = getCardDependencyMode(card);
+      if (mode === DEPENDENCY_MODES.WAIT_PREVIOUS) {
+        return previousTaskId ? [previousTaskId] : [];
+      }
+      if (mode === DEPENDENCY_MODES.CUSTOM) {
+        const available = new Set(taskIds);
+        const pendingSelected = String(card.querySelector(".dependency-custom-select")?.value || "").trim();
+        const merged = pendingSelected
+          ? [...getCardCustomDependsOn(card), pendingSelected]
+          : getCardCustomDependsOn(card);
+        return normalizeDependsOnList(
+          merged.filter((depId) => depId !== selfTaskId && available.has(depId))
+        );
+      }
+      return [];
+    }
+
+    function hasIncomingDependencyForCard(targetCard) {
+      const cards = getTaskCards();
+      const targetIndex = cards.indexOf(targetCard);
+      if (targetIndex < 0) return false;
+      const taskIds = cards.map((card, idx) => resolveTaskIdentity(card, idx + 1).task_group_id);
+      const targetTaskId = String(taskIds[targetIndex] || "").trim();
+      if (!targetTaskId) return false;
+      for (let i = 0; i < cards.length; i += 1) {
+        if (i === targetIndex) continue;
+        const deps = resolveCardDependsOnForState(cards[i], i, taskIds);
+        if (deps.includes(targetTaskId)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function syncDependencyState(card, indexOverride, taskIdsOverride) {
+      const cards = getTaskCards();
+      const cardIndex = Number.isInteger(indexOverride) ? indexOverride : Math.max(0, cards.indexOf(card));
+      const taskIds = Array.isArray(taskIdsOverride) && taskIdsOverride.length
+        ? taskIdsOverride.slice()
+        : cards.map((item, idx) => resolveTaskIdentity(item, idx + 1).task_group_id);
+      const selfTaskId = String(taskIds[cardIndex] || "").trim();
+      const previousTaskId = cardIndex > 0 ? String(taskIds[cardIndex - 1] || "").trim() : "";
+      const allTaskIds = new Set(taskIds);
+      const customWrap = card.querySelector(".dependency-custom-wrap");
+      const customSelect = card.querySelector(".dependency-custom-select");
+      const customAddButton = card.querySelector(".btn-add-dependency");
+      const summary = card.querySelector(".dependency-summary");
+      const modeSelect = card.querySelector(".dependency-mode");
+
+      if (String(card.dataset.dependenciesInitialized || "") !== "1") {
+        const initialDependsOn = normalizeDependsOnList(
+          parseJsonArray(String(card.dataset.initialDependsOn || "[]"))
+        );
+        const modeFromInitial = deriveDependencyMode(initialDependsOn, previousTaskId);
+        setCardDependencyMode(card, modeFromInitial);
+        if (modeFromInitial === DEPENDENCY_MODES.CUSTOM) {
+          setCardCustomDependsOn(
+            card,
+            initialDependsOn.filter((depId) => depId !== selfTaskId && allTaskIds.has(depId))
+          );
+        } else {
+          setCardCustomDependsOn(card, []);
+        }
+        card.dataset.dependenciesInitialized = "1";
+      }
+
+      let mode = getCardDependencyMode(card);
+      if (!previousTaskId && mode === DEPENDENCY_MODES.WAIT_PREVIOUS) {
+        mode = DEPENDENCY_MODES.PARALLEL;
+        setCardDependencyMode(card, mode);
+      }
+
+      let customDependsOn = getCardCustomDependsOn(card).filter(
+        (depId) => depId !== selfTaskId && allTaskIds.has(depId)
+      );
+      if (getCardCustomDependsOn(card).length !== customDependsOn.length) {
+        setCardCustomDependsOn(card, customDependsOn);
+      }
+
+      const optionRows = [];
+      for (let i = 0; i < taskIds.length; i += 1) {
+        const depId = String(taskIds[i] || "").trim();
+        if (!depId || depId === selfTaskId) continue;
+        optionRows.push({
+          task_no: i + 1,
+          task_group_id: depId,
+          selected: customDependsOn.includes(depId),
+        });
+      }
+
+      if (customSelect) {
+        customSelect.innerHTML = "";
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = optionRows.length ? "Select upstream task" : "No upstream task";
+        customSelect.appendChild(placeholder);
+        for (const row of optionRows) {
+          const opt = document.createElement("option");
+          opt.value = row.task_group_id;
+          opt.textContent = buildDependencyOptionLabel(row.task_no, row.task_group_id);
+          opt.disabled = row.selected;
+          customSelect.appendChild(opt);
+        }
+      }
+      if (customAddButton) {
+        customAddButton.disabled = !!isBusy || mode !== DEPENDENCY_MODES.CUSTOM || !optionRows.length;
+      }
+      if (customWrap) {
+        customWrap.classList.toggle("hidden", mode !== DEPENDENCY_MODES.CUSTOM);
+      }
+
+      renderDependencyChips(card);
+      if (summary) {
+        if (mode === DEPENDENCY_MODES.PARALLEL) {
+          summary.textContent = "Parallel: no upstream dependency.";
+        } else if (mode === DEPENDENCY_MODES.WAIT_PREVIOUS) {
+          summary.textContent = previousTaskId
+            ? `Wait Previous: depends on ${previousTaskId}.`
+            : "Wait Previous is unavailable for the first task.";
+        } else if (customDependsOn.length) {
+          summary.textContent = `Custom: waits for ${customDependsOn.length} upstream task(s).`;
+        } else {
+          summary.textContent = "Custom: select one or more upstream tasks.";
+        }
+      }
+
+      if (modeSelect) {
+        const waitPreviousOpt = modeSelect.querySelector('option[value="wait_previous"]');
+        if (waitPreviousOpt) {
+          waitPreviousOpt.disabled = !previousTaskId;
+        }
+        modeSelect.value = mode;
+      }
+    }
+
+    function bindDependencyState(card) {
+      const modeSelect = card.querySelector(".dependency-mode");
+      const customSelect = card.querySelector(".dependency-custom-select");
+      const addButton = card.querySelector(".btn-add-dependency");
+      if (!modeSelect || !customSelect || !addButton) return;
+      modeSelect.addEventListener("change", () => {
+        const nextMode = String(modeSelect.value || DEPENDENCY_MODES.PARALLEL).trim();
+        setCardDependencyMode(card, nextMode);
+        if (nextMode !== DEPENDENCY_MODES.CUSTOM) {
+          setCardCustomDependsOn(card, []);
+        }
+        refreshTaskCardHeaders();
+      });
+      addButton.addEventListener("click", () => {
+        const depId = String(customSelect.value || "").trim();
+        if (!depId) return;
+        if (addDependencyToCard(card, depId)) {
+          customSelect.value = "";
+        }
+      });
+      customSelect.addEventListener("change", () => {
+        const depId = String(customSelect.value || "").trim();
+        if (!depId) return;
+        if (addDependencyToCard(card, depId)) {
+          customSelect.value = "";
+        }
+      });
+      customSelect.addEventListener("dblclick", () => {
+        const depId = String(customSelect.value || "").trim();
+        if (!depId) return;
+        if (addDependencyToCard(card, depId)) {
+          customSelect.value = "";
+        }
+      });
     }
 
     function buildGeneratedMappingRelativePath(card) {
@@ -2247,7 +2873,7 @@ async function studioFetch(path, options) {
       loadMethodSelect.addEventListener("change", () => refreshTaskCardHeaders());
     }
 
-    function addTaskCard(values = {}) {
+    function addTaskCard(values = {}, options = {}) {
       const template = el("task_card_template");
       const node = template.content.firstElementChild.cloneNode(true);
       const fallbackIndex = getTaskCards().length + 1;
@@ -2259,14 +2885,16 @@ async function studioFetch(path, options) {
       bindTaskAutocomplete(node);
       bindPartitionState(node);
       bindMappingState(node);
+      bindDependencyState(node);
       node.querySelector(".btn-delete-task").addEventListener("click", (ev) => {
         ev.stopPropagation();
-        node.remove();
-        refreshTaskCardHeaders();
+        requestTaskDelete(node);
       });
       setTaskCardCollapsed(node, false);
       el("tasks_container").appendChild(node);
-      refreshTaskCardHeaders();
+      if (options.refresh !== false) {
+        refreshTaskCardHeaders();
+      }
     }
 
     function bindMappingState(card) {
@@ -2281,8 +2909,9 @@ async function studioFetch(path, options) {
       const tasks = Array.isArray(taskItems) && taskItems.length ? taskItems : [{}];
       el("tasks_container").innerHTML = "";
       for (const item of tasks) {
-        addTaskCard(item || {});
+        addTaskCard(item || {}, { refresh: false });
       }
+      refreshTaskCardHeaders();
     }
 
     function applyPreloadPayload(payload, dagId) {
@@ -2292,6 +2921,11 @@ async function studioFetch(path, options) {
       el("flow").value = payload.flow || "";
       setCustomTags(payload.custom_tags || []);
       setSchedulerAppliedState(payload.scheduler || null);
+      const rawDagDeps = payload && typeof payload === "object" ? payload.dag_dependencies : null;
+      const dagDepsUpstream = rawDagDeps && typeof rawDagDeps === "object"
+        ? rawDagDeps.upstream_dag_ids
+        : [];
+      setDagDepsAppliedStateFromUpstreamIds(dagDepsUpstream || []);
       setSchedulerFormFromState(schedulerAppliedState);
       syncFolderPathDisplay();
       setConnectionValue("source_conn_id", payload.source_conn_id || "");
@@ -2318,6 +2952,7 @@ async function studioFetch(path, options) {
       }
       currentUpdateDagId = dagId;
       applyPreloadPayload(data.payload || {}, dagId);
+      await loadDagDependencyOptions(dagId);
       await loadFolderOptions();
       renderRevisionOptions([], data.active_revision_id || "");
       await loadRevisions(dagId);
@@ -2393,6 +3028,7 @@ async function studioFetch(path, options) {
           return;
         }
         currentUpdateDagId = String(data.dag_id || dagId || "").trim();
+        await loadDagDependencyOptions(currentUpdateDagId);
         await loadRevisions(currentUpdateDagId);
         setUpdateModeStatus(`Update completed: ${currentUpdateDagId}`, "ok");
         pushToast(`Update completed: ${currentUpdateDagId}`, "success", false);
@@ -2433,6 +3069,7 @@ async function studioFetch(path, options) {
         setUpdateMode(true);
         setUpdateModeStatus(`Create completed, update mode active: ${dagId}`, "ok");
         pushToast(`Create completed: ${dagId}`, "success", false);
+        await loadDagDependencyOptions(dagId);
         await loadRevisions(dagId);
         try {
           const url = new URL(window.location.href);
@@ -2459,7 +3096,7 @@ async function studioFetch(path, options) {
       await submitCreate();
     }
 
-    function collectTaskPayload(card, index) {
+    function collectTaskPayload(card, index, taskIds) {
       const sourceType = card.querySelector(".source-type").value;
       const sourceSchemaVal = card.querySelector(".source-schema").value.trim();
       const sourceTableVal = card.querySelector(".source-table").value.trim();
@@ -2467,6 +3104,23 @@ async function studioFetch(path, options) {
       const targetTableVal = card.querySelector(".target-table").value.trim();
       const inlineSqlVal = card.querySelector(".source-inline-sql").value.trim();
       const identity = resolveTaskIdentity(card, index);
+      const normalizedTaskIds = Array.isArray(taskIds) ? taskIds : [];
+      const selfTaskId = String(normalizedTaskIds[index - 1] || identity.task_group_id || "").trim();
+      const previousTaskId = index > 1 ? String(normalizedTaskIds[index - 2] || "").trim() : "";
+      const dependencyMode = getCardDependencyMode(card);
+      let dependsOn = [];
+      if (dependencyMode === DEPENDENCY_MODES.WAIT_PREVIOUS && previousTaskId) {
+        dependsOn = [previousTaskId];
+      } else if (dependencyMode === DEPENDENCY_MODES.CUSTOM) {
+        const available = new Set(normalizedTaskIds);
+        const pendingSelected = String(card.querySelector(".dependency-custom-select")?.value || "").trim();
+        const merged = pendingSelected
+          ? [...getCardCustomDependsOn(card), pendingSelected]
+          : getCardCustomDependsOn(card);
+        dependsOn = normalizeDependsOnList(
+          merged.filter((depId) => depId !== selfTaskId && available.has(depId))
+        );
+      }
       const partitioningMode = card.querySelector(".partitioning-mode").value;
       const partitioningDistinctLimit = asPositiveInt(
         card.querySelector(".partitioning-distinct-limit").value,
@@ -2516,6 +3170,7 @@ async function studioFetch(path, options) {
         partitioning_distinct_limit: partitioningDistinctLimit,
         partitioning_ranges: partitioningRanges,
         bindings: bindings.length ? bindings : undefined,
+        depends_on: dependsOn,
       };
     }
 
@@ -2525,7 +3180,8 @@ async function studioFetch(path, options) {
       const levelVal = el("level").value.trim() || "level1";
       const flowVal = el("flow").value.trim() || "src_to_stg";
       const cards = getTaskCards();
-      const flowTasks = cards.map((card, idx) => collectTaskPayload(card, idx + 1));
+      const taskIds = cards.map((card, idx) => resolveTaskIdentity(card, idx + 1).task_group_id);
+      const flowTasks = cards.map((card, idx) => collectTaskPayload(card, idx + 1, taskIds));
       const firstTask = flowTasks[0] || {};
       const payload = {
         project: projectVal,
@@ -2534,6 +3190,7 @@ async function studioFetch(path, options) {
         flow: flowVal,
         custom_tags: customTagsState.slice(),
         scheduler: cloneSchedulerState(schedulerAppliedState || collectSchedulerFormPayload()),
+        dag_dependencies: collectDagDependenciesPayload(),
         source_conn_id: el("source_conn_id").value,
         target_conn_id: el("target_conn_id").value,
         task_group_id: firstTask.task_group_id,
@@ -2570,6 +3227,8 @@ async function studioFetch(path, options) {
     el("btn_delete_dag").onclick = () => openDeleteDagModal();
     el("btn_cancel_delete_dag").onclick = () => closeDeleteDagModal();
     el("btn_confirm_delete_dag").onclick = () => deleteCurrentDag();
+    el("btn_cancel_task_delete").onclick = () => closeTaskDeleteModal();
+    el("btn_confirm_task_delete").onclick = () => confirmTaskDelete();
     const schedulerCompactPanel = el("scheduler_compact_panel");
     if (schedulerCompactPanel) {
       schedulerCompactPanel.addEventListener("click", () => openSchedulerModal());
@@ -2580,11 +3239,44 @@ async function studioFetch(path, options) {
         }
       });
     }
+    const dagDepsCompactPanel = el("dag_deps_compact_panel");
+    if (dagDepsCompactPanel) {
+      dagDepsCompactPanel.addEventListener("click", () => openDagDepsModal());
+      dagDepsCompactPanel.addEventListener("keydown", (evt) => {
+        if (evt.key === "Enter" || evt.key === " ") {
+          evt.preventDefault();
+          openDagDepsModal();
+        }
+      });
+    }
     el("btn_cancel_scheduler_modal").onclick = () => closeSchedulerModal();
     el("btn_apply_scheduler_modal").onclick = () => applySchedulerModal();
     el("scheduler_modal_backdrop").onclick = () => closeSchedulerModal();
+    el("btn_cancel_dag_deps_modal").onclick = () => closeDagDepsModal();
+    el("btn_apply_dag_deps_modal").onclick = () => applyDagDepsModal();
+    el("dag_deps_modal_backdrop").onclick = () => closeDagDepsModal();
+    const dagDepsCustomSelect = el("dag_deps_custom_select");
+    const addDagDep = () => {
+      const selectNode = el("dag_deps_custom_select");
+      if (!selectNode) return;
+      const selectedDagId = String(selectNode.value || "").trim();
+      if (!selectedDagId) return;
+      const draft = cloneDagDepsState(dagDepsDraftState || dagDepsAppliedState || {});
+      draft.upstream_dag_ids = normalizeDagDependencyIds([
+        ...draft.upstream_dag_ids,
+        selectedDagId,
+      ]);
+      dagDepsDraftState = draft;
+      renderDagDepsModal();
+    };
+    el("btn_add_dag_dependency").onclick = () => addDagDep();
+    if (dagDepsCustomSelect) {
+      dagDepsCustomSelect.addEventListener("change", () => addDagDep());
+      dagDepsCustomSelect.addEventListener("dblclick", () => addDagDep());
+    }
     el("delete_dag_confirm_input").addEventListener("input", () => syncDeleteDagConfirmState());
     el("delete_dag_backdrop").onclick = () => closeDeleteDagModal();
+    el("delete_task_backdrop").onclick = () => closeTaskDeleteModal();
     el("revision_select").addEventListener("change", () => renderRevisionMeta());
 
     el("btn_open_folder_picker").onclick = openFolderPicker;
@@ -2620,12 +3312,20 @@ async function studioFetch(path, options) {
         closeSchedulerModal();
         return;
       }
+      if (el("dag_deps_modal").classList.contains("open")) {
+        closeDagDepsModal();
+        return;
+      }
       if (el("folder_picker_modal").classList.contains("open")) {
         closeFolderPicker();
         return;
       }
       if (el("delete_dag_modal").classList.contains("open")) {
         closeDeleteDagModal();
+        return;
+      }
+      if (el("delete_task_modal").classList.contains("open")) {
+        closeTaskDeleteModal();
       }
     });
 
@@ -2634,6 +3334,13 @@ async function studioFetch(path, options) {
       bindSchedulerControls();
       setUpdateMode(false);
       setCustomTags([]);
+      dagDepsAppliedState = {
+        upstream_dag_ids: [],
+      };
+      dagDepsDraftState = null;
+      dagDepsOptionsState = [];
+      dagDepsReferencedByState = [];
+      renderDagDepsCompactSummary();
       await initializeSchedulerDefaultsForCreate();
       syncFolderPathDisplay();
       clearAndLoadTasks([{}]);
@@ -2653,6 +3360,7 @@ async function studioFetch(path, options) {
       } catch (_err) {
         // no-op: UI message already shown
       }
+      await loadDagDependencyOptions("").catch((_err) => {});
       const initialDagId = resolveInitialDagId();
       if (initialDagId) {
         await preloadByDagId(initialDagId);

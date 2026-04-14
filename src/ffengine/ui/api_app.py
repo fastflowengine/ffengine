@@ -23,6 +23,9 @@ from ffengine.ui.studio_service import (
     STUDIO_DAG_MARKER,
     create_or_update_dag,
     delete_dag_bundle,
+    discover_dag_dependency_options,
+    discover_timezones,
+    get_airflow_default_timezone_name,
     discover_connections,
     discover_columns,
     discover_hierarchy_options,
@@ -32,6 +35,7 @@ from ffengine.ui.studio_service import (
     fetch_timeline_runs,
     generate_mapping_preview,
     get_dag_revisions,
+    normalize_scheduler,
     promote_dag_revision,
     resolve_dag_config_for_update,
 )
@@ -159,6 +163,22 @@ class FlowTaskPayload(BaseModel):
     partitioning_distinct_limit: int | None = Field(default=None, ge=1, le=1_000_000)
     partitioning_ranges: list[Any] | None = None
     bindings: list[BindingPayload] | None = None
+    depends_on: list[str] | None = None
+
+    @field_validator("depends_on")
+    @classmethod
+    def _v_depends_on(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in v:
+            dep = str(raw or "").strip()
+            if not dep or dep in seen:
+                continue
+            seen.add(dep)
+            normalized.append(dep)
+        return normalized or []
 
     @field_validator("source_type")
     @classmethod
@@ -203,8 +223,52 @@ class FlowTaskPayload(BaseModel):
         names = [item.variable_name for item in items]
         if len(names) != len(set(names)):
             raise ValueError("bindings.variable_name must be unique within a task.")
+        task_group_id = str(self.task_group_id or "").strip()
+        if task_group_id:
+            for dep in list(self.depends_on or []):
+                if dep == task_group_id:
+                    raise ValueError("depends_on cannot include task_group_id itself.")
         _validate_bindings_where_contract(self.where, items)
         return self
+
+
+class SchedulerPayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    cron_expression: str | None = None
+    timezone: str | None = None
+    active: bool | None = None
+    start_date: str | None = None
+
+    @model_validator(mode="after")
+    def _v_scheduler(self) -> "SchedulerPayload":
+        normalized = normalize_scheduler(self.model_dump(exclude_none=True))
+        self.cron_expression = normalized["cron_expression"]
+        self.timezone = normalized["timezone"]
+        self.active = normalized["active"]
+        self.start_date = normalized["start_date"]
+        return self
+
+
+class DagDependenciesPayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    upstream_dag_ids: list[str] | None = None
+
+    @field_validator("upstream_dag_ids")
+    @classmethod
+    def _v_upstream_dag_ids(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in v:
+            dag_id = str(raw or "").strip()
+            if not dag_id or dag_id in seen:
+                continue
+            seen.add(dag_id)
+            normalized.append(dag_id)
+        return normalized
 
 
 class DagUpsertPayload(BaseModel):
@@ -238,6 +302,8 @@ class DagUpsertPayload(BaseModel):
     task_group_id: str | None = Field(default=None, min_length=1)
     flow_tasks: list[FlowTaskPayload] | None = None
     custom_tags: list[str] | None = None
+    scheduler: SchedulerPayload | None = None
+    dag_dependencies: DagDependenciesPayload | None = None
 
     @field_validator("source_type")
     @classmethod
@@ -402,6 +468,23 @@ def api_airflow_variables(
         _raise_http_from_exception(exc)
 
 
+@flow_studio_app.get("/api/timezones")
+def api_timezones(
+    q: str | None = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict[str, Any]:
+    try:
+        items = discover_timezones(search=(q or "").strip() or None, limit=limit)
+        return {
+            "ok": True,
+            "items": items,
+            "count": len(items),
+            "default_timezone": get_airflow_default_timezone_name(),
+        }
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
 @flow_studio_app.get("/api/folder-options")
 def api_folder_options(
     project: str | None = Query(None),
@@ -415,6 +498,27 @@ def api_folder_options(
             domain=domain,
             level=level,
             source=source,
+        )
+        return {"ok": True, **data}
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@flow_studio_app.get("/api/dag-options")
+def api_dag_options(
+    project: str = Query(..., min_length=1),
+    domain: str = Query(..., min_length=1),
+    level: str = Query(..., min_length=1),
+    flow: str = Query(..., min_length=1),
+    dag_id: str | None = Query(None),
+) -> dict[str, Any]:
+    try:
+        data = discover_dag_dependency_options(
+            project=project,
+            domain=domain,
+            level=level,
+            flow=flow,
+            dag_id=dag_id,
         )
         return {"ok": True, **data}
     except Exception as exc:
@@ -566,10 +670,11 @@ def api_promote_dag_revision(
 @flow_studio_app.delete("/api/delete-dag")
 def api_delete_dag(
     dag_id: str = Query(..., min_length=1),
+    cleanup_references: bool = Query(False),
     _: None = Depends(_optional_api_key_dep),
 ) -> dict[str, Any]:
     try:
-        result = delete_dag_bundle(dag_id=dag_id)
+        result = delete_dag_bundle(dag_id=dag_id, cleanup_references=cleanup_references)
         return {"ok": True, **result}
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

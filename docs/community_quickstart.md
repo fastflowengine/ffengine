@@ -144,6 +144,10 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 - New naming DAG'lerde form preload edilip update mode acilir.
 - Ayni flow klasorunde birden fazla group DAG olabilir; bu desteklenir.
 - `POST /flow-studio/api/update-dag` cagrisi `dag_id` query parami ile hedef DAG'i zorunlu olarak belirtmelidir.
+- `flow_tasks[].depends_on` ile task bagimliliklari acik tanimlanir:
+  - bos liste (`[]`) -> parallel (varsayilan),
+  - tek onceki task id -> wait previous,
+  - coklu id -> custom upstream seti.
 - `DELETE /flow-studio/api/delete-dag?dag_id=<dag_id>` sadece Flow Studio marker'li DAG'lerde calisir ve DAG bundle'i (dag.py + YAML + auto mapping + history) siler.
 
 ## Flow Studio Form Notes

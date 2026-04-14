@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flow Studio</title>
-  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=38">
+  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=41">
 </head>
 <body class="flow-studio-root" data-ui-variant="current">
   <div id="operation_progress" class="operation-progress hidden" role="status" aria-live="polite" aria-busy="false">
@@ -76,6 +76,19 @@
             title="Open Scheduler Configuration"
           >
             <div id="scheduler_compact_summary" class="muted-note">Manual run only</div>
+          </div>
+        </div>
+        <div class="global-control dag-deps-control-wrap">
+          <div class="global-control-label">DAG Dependencies</div>
+          <div
+            class="dag-deps-compact"
+            id="dag_deps_compact_panel"
+            role="button"
+            tabindex="0"
+            aria-label="Configure DAG Dependencies"
+            title="Open DAG Dependencies Configuration"
+          >
+            <div id="dag_deps_compact_summary" class="muted-note">Parallel (no upstream DAG)</div>
           </div>
         </div>
       </div>
@@ -229,6 +242,7 @@
               <button class="tab-btn" data-tab="partitioning" type="button">Partitioning</button>
               <button class="tab-btn" data-tab="performance" type="button">Performance</button>
               <button class="tab-btn" data-tab="mapping" type="button">Mapping</button>
+              <button class="tab-btn" data-tab="dependencies" type="button">Dependencies</button>
             </div>
             <div class="tab-panel active" data-tab-panel="filter">
               <label>
@@ -309,6 +323,24 @@
                 <input class="mapping-generated-path" readonly>
               </label>
               <div class="mapping-status muted-note"></div>
+            </div>
+            <div class="tab-panel" data-tab-panel="dependencies">
+              <label>
+                Dependency Mode
+                <select class="dependency-mode" title="Choose how this task waits for upstream tasks.">
+                  <option value="parallel">Parallel</option>
+                  <option value="wait_previous">Wait Previous</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
+              <div class="dependency-custom-wrap hidden">
+                <div class="dependency-custom-actions">
+                  <select class="dependency-custom-select" title="Select upstream task to add"></select>
+                  <button class="btn btn-secondary btn-add-dependency" type="button">Add Upstream</button>
+                </div>
+                <div class="dependency-chips"></div>
+              </div>
+              <div class="dependency-summary muted-note"></div>
             </div>
             </div>
           </div>
@@ -486,6 +518,7 @@
       <div class="confirm-body">
         <p>This action cannot be undone. To delete, type the DAG ID exactly.</p>
         <p class="muted-note">DAG ID: <strong id="delete_dag_expected">-</strong></p>
+        <p id="delete_dag_references_warning" class="muted-note warn hidden"></p>
         <label>
           Confirm DAG ID
           <input id="delete_dag_confirm_input" placeholder="Type DAG ID">
@@ -498,7 +531,48 @@
     </div>
   </div>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=46"></script>
+  <div id="dag_deps_modal" class="scheduler-modal" aria-hidden="true">
+    <div class="scheduler-backdrop" id="dag_deps_modal_backdrop"></div>
+    <div class="scheduler-dialog dag-deps-dialog" role="dialog" aria-modal="true" aria-labelledby="dag_deps_modal_title">
+      <div class="scheduler-dialog-head">
+        <h3 id="dag_deps_modal_title">Configure DAG Dependencies</h3>
+      </div>
+      <div class="scheduler-dialog-body">
+        <div class="scheduler-control">
+          <div id="dag_deps_custom_wrap" class="dependency-custom-wrap">
+            <div class="dependency-custom-actions">
+              <select id="dag_deps_custom_select" class="scheduler-control-input" title="Select upstream DAG"></select>
+              <button class="btn btn-secondary btn-add-dependency" id="btn_add_dag_dependency" type="button">Add Upstream</button>
+            </div>
+            <div id="dag_deps_custom_chips" class="dependency-chips"></div>
+          </div>
+          <div id="dag_deps_summary" class="muted-note"></div>
+        </div>
+      </div>
+      <div class="scheduler-dialog-actions">
+        <button class="btn btn-secondary" id="btn_cancel_dag_deps_modal" type="button" title="Close without saving DAG dependencies">Cancel</button>
+        <button class="btn btn-primary" id="btn_apply_dag_deps_modal" type="button" title="Apply DAG dependency settings to form">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="delete_task_modal" class="confirm-modal" aria-hidden="true">
+    <div class="confirm-backdrop" id="delete_task_backdrop"></div>
+    <div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="delete_task_title">
+      <div class="confirm-head">
+        <h3 id="delete_task_title">Delete Task</h3>
+      </div>
+      <div class="confirm-body">
+        <p>This task is referenced by other tasks. Deleting it will remove those dependencies. Continue?</p>
+      </div>
+      <div class="confirm-actions">
+        <button class="btn btn-secondary" id="btn_cancel_task_delete" type="button">Cancel</button>
+        <button class="btn btn-danger" id="btn_confirm_task_delete" type="button">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=50"></script>
 </body>
 </html>
 
