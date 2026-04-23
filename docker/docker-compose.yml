@@ -64,7 +64,7 @@ services:
       - ../plugins:/opt/airflow/plugins
       - ../logs:/opt/airflow/logs
     command: >
-      bash -lc "sed -i 's|^jwt_secret =.*|jwt_secret = ffengine_api_auth_jwt_secret_dev|' /opt/airflow/airflow.cfg && exec airflow api-server"
+      bash -lc "sed -i 's|^jwt_secret =.*|jwt_secret = ffengine_api_auth_jwt_secret_dev|' /opt/airflow/airflow.cfg && sed -i 's|allow-scripts allow-same-origin allow-forms|allow-scripts allow-same-origin allow-forms allow-top-navigation-by-user-activation|g' /home/airflow/.local/lib/python3.12/site-packages/airflow/ui/dist/assets/index-*.js && exec airflow api-server"
     depends_on:
       airflow-init:
         condition: service_completed_successfully

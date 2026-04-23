@@ -129,6 +129,15 @@ def test_index_html_ok(client):
     assert "Timeline Limit" not in r.text
 
 
+def test_dag_explorer_html_ok(client):
+    r = client.get("/dag-explorer")
+    assert r.status_code == 200
+    assert "DAG Explorer" in r.text
+    assert "/api/dag-explorer" in r.text
+    assert "Folders" in r.text
+    assert "No DAG in this folder." in r.text
+
+
 def test_schemas_mocked(client):
     with patch.object(
         api_app_module, "discover_schemas", return_value=["public", "dwh"]
@@ -139,6 +148,55 @@ def test_schemas_mocked(client):
     assert body["ok"] is True
     assert body["count"] == 2
     assert "public" in body["items"]
+
+
+def test_api_dag_explorer_mocked(client):
+    mocked = {
+        "root": "/opt/airflow/dags",
+        "count": 2,
+        "items": [
+            {
+                "dag_id": "a_dag",
+                "is_paused": False,
+                "owners": ["alice"],
+                "fileloc": "/opt/airflow/dags/team/a.py",
+                "latest_run": "2026-04-23T20:00:00+00:00",
+                "create_date": "2026-04-20T12:00:00+00:00",
+                "relative_path": "team/a.py",
+                "folder_parts": ["team"],
+                "bucket": "dags_root",
+                "dag_url": "/dags/a_dag",
+            },
+            {
+                "dag_id": "x_dag",
+                "is_paused": True,
+                "owners": [],
+                "fileloc": "/external/x.py",
+                "latest_run": None,
+                "create_date": None,
+                "relative_path": None,
+                "folder_parts": [],
+                "bucket": "external",
+                "dag_url": "/dags/x_dag",
+            },
+        ],
+    }
+    with patch.object(api_app_module, "discover_dag_explorer_items", return_value=mocked):
+        r = client.get("/api/dag-explorer")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["root"] == "/opt/airflow/dags"
+    assert body["count"] == 2
+    assert body["items"][0]["bucket"] == "dags_root"
+    assert body["items"][1]["bucket"] == "external"
+
+
+def test_api_dag_explorer_maps_connection_error_to_502(client):
+    with patch.object(api_app_module, "discover_dag_explorer_items", side_effect=ConnectionError("db offline")):
+        r = client.get("/api/dag-explorer")
+    assert r.status_code == 502
+    assert r.json()["detail"] == "db offline"
 
 
 def test_schemas_mocked_forwards_q_and_limit(client):
@@ -372,6 +430,7 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
         {
             "source_type": "view",
             "column_mapping_mode": "mapping_file",
+            "mapping_content": _sql_mapping_yaml(["id", "amount"]),
             "where": "id > 10",
             "batch_size": 20000,
             "partitioning_enabled": True,
@@ -395,6 +454,7 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
     assert task["column_mapping_mode"] == "mapping_file"
     assert task["task_group_id"] == "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"
     assert task["mapping_file"] == "mapping/1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
+    assert (flow / task["mapping_file"]).is_file()
     assert task["batch_size"] == 20000
     assert task["partitioning"]["enabled"] is True
     assert task["partitioning"]["mode"] == "explicit"
@@ -402,6 +462,34 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
     assert task["partitioning"]["parts"] == 4
     assert task["partitioning"]["distinct_limit"] == 24
     assert task["partitioning"]["ranges"] == ["id < 100", "id >= 100"]
+
+
+def test_create_dag_mapping_file_requires_content_when_file_missing(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": "",
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "mapping_content is required when column_mapping_mode='mapping_file'" in r.text
+
+
+def test_create_dag_rejects_invalid_mapping_content_and_does_not_write_dag(client, studio_paths):
+    _, dag_root = studio_paths
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": "version: v1\ncolumns:\n  - source_name: id\n    target_name: id\n    source_type: TEXT\n    target_type: TEXT\n    nullable: [\n",
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "Invalid mapping YAML" in r.text
+    assert list(Path(dag_root).rglob("*_dag.py")) == []
 
 
 def test_create_dag_distinct_mode_persists_distinct_limit(client, studio_paths):
@@ -426,6 +514,49 @@ def test_create_dag_distinct_mode_persists_distinct_limit(client, studio_paths):
     assert task["partitioning"]["mode"] == "distinct"
     assert task["partitioning"]["column"] == "country_code"
     assert task["partitioning"]["distinct_limit"] == 9
+
+
+def test_update_dag_rejects_invalid_existing_mapping_file_and_keeps_bundle(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": _sql_mapping_yaml(["id"]),
+        }
+    )
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+
+    dag_path = Path(r1.json()["dag_path"])
+    cfg_path = Path(r1.json()["config_path"])
+    flow_dir = Path(r1.json()["flow_dir"])
+    mapping_path = flow_dir / "mapping" / "1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
+    assert mapping_path.is_file()
+
+    dag_before = dag_path.read_text(encoding="utf-8")
+    cfg_before = cfg_path.read_text(encoding="utf-8")
+    mapping_path.write_text(
+        "version: v1\ncolumns:\n  - source_name: id\n    target_name: id\n    source_type: TEXT\n    target_type: TEXT\n    nullable: [\n",
+        encoding="utf-8",
+    )
+
+    upd = _minimal_table_payload()
+    upd.update(
+        {
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": "",
+            "load_method": "append",
+        }
+    )
+    dag_id = dag_path.stem
+    r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=upd)
+    assert r2.status_code == 422
+    assert "Invalid mapping YAML" in r2.text
+
+    assert dag_path.read_text(encoding="utf-8") == dag_before
+    assert cfg_path.read_text(encoding="utf-8") == cfg_before
+    cfg_after = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    assert cfg_after["flow_tasks"][0]["load_method"] == "append"
 
 
 def test_create_dag_rejects_full_scan_partitioning_mode(client, studio_paths):
@@ -898,6 +1029,8 @@ def test_create_update_roundtrip_dag_dependencies(client, studio_paths):
 
     dag2_source = Path(r2.json()["dag_path"]).read_text(encoding="utf-8")
     assert f'UPSTREAM_DAG_IDS = ["{dag1}"]' in dag2_source
+    assert 'failed_states=["failed"]' in dag2_source
+    assert "upstream_failed" not in dag2_source
 
     r_cfg = client.get(f"/api/dag-config?dag_id={dag2}")
     assert r_cfg.status_code == 200, r_cfg.text
@@ -1022,6 +1155,53 @@ def test_dag_revisions_promote_roundtrip(client, studio_paths):
     assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
 
 
+def test_promote_regenerates_missing_revision_mapping_file(client, studio_paths, monkeypatch):
+    payload = _minimal_table_payload()
+    payload["column_mapping_mode"] = "mapping_file"
+    payload["mapping_content"] = _sql_mapping_yaml(["id"])
+
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
+    flow_dir = Path(r1.json()["flow_dir"])
+
+    payload["where"] = "id > 10"
+    r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
+    assert r2.status_code == 200, r2.text
+
+    r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
+    assert r_rev.status_code == 200, r_rev.text
+    create_revision = next((x["revision_id"] for x in r_rev.json()["items"] if x.get("source") == "create_initial"), "")
+    assert create_revision
+
+    history_root = flow_dir / ".flow_studio_history" / dag_id
+    rev_dir = history_root / create_revision
+    rev_cfg = yaml.safe_load((rev_dir / "config.yaml").read_text(encoding="utf-8"))
+    mapping_rel = str(rev_cfg["flow_tasks"][0]["mapping_file"])
+    missing_mapping_rel = mapping_rel.replace(".yaml", "_missing.yaml")
+    rev_cfg["flow_tasks"][0]["mapping_file"] = missing_mapping_rel
+    (rev_dir / "config.yaml").write_text(
+        yaml.safe_dump(rev_cfg, sort_keys=False, allow_unicode=False),
+        encoding="utf-8",
+    )
+
+    regenerated_mapping = _sql_mapping_yaml(["id", "amount"])
+    monkeypatch.setattr(
+        ss,
+        "_generate_mapping_content_for_task",
+        lambda **_kwargs: regenerated_mapping,
+    )
+
+    r_promote = client.post(
+        f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id={create_revision}",
+        json={},
+    )
+    assert r_promote.status_code == 200, r_promote.text
+    active_mapping_path = flow_dir / missing_mapping_rel
+    assert active_mapping_path.is_file()
+    assert active_mapping_path.read_text(encoding="utf-8") == regenerated_mapping
+
+
 def test_promote_rejects_invalid_revision_id_format(client, studio_paths):
     payload = _minimal_table_payload()
     r1 = client.post("/api/create-dag", json=payload)
@@ -1030,6 +1210,31 @@ def test_promote_rejects_invalid_revision_id_format(client, studio_paths):
     r = client.post(f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id=bad_revision", json={})
     assert r.status_code == 422
     assert "revision_id" in r.text
+
+
+def test_promote_active_revision_returns_noop_success(client, studio_paths):
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
+    cfg_path = Path(r1.json()["config_path"])
+    cfg_before = cfg_path.read_text(encoding="utf-8")
+
+    r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
+    assert r_rev.status_code == 200, r_rev.text
+    active_revision = str(r_rev.json().get("active_revision_id") or "")
+    assert active_revision
+
+    r_promote = client.post(
+        f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id={active_revision}",
+        json={},
+    )
+    assert r_promote.status_code == 200, r_promote.text
+    body = r_promote.json()
+    assert body.get("active_revision_id") == active_revision
+    assert body.get("promoted_revision_id") == active_revision
+    assert body.get("no_op") is True
+    assert cfg_path.read_text(encoding="utf-8") == cfg_before
 
 
 def test_promote_returns_404_for_missing_revision(client, studio_paths):
@@ -1266,6 +1471,59 @@ def test_resolve_task_dependencies_cycle_error():
     ]
     with pytest.raises(ValueError, match="cycle"):
         ss.resolve_task_dependencies(tasks)
+
+
+def test_build_dag_explorer_items_root_and_external():
+    rows = [
+        ("dag_in", False, "/opt/airflow/dags/team/flow/dag_in.py", "alice, bob,alice", "2026-04-23T20:00:00+00:00", "2026-04-20T12:00:00+00:00"),
+        ("dag_out", True, "/tmp/dag_out.py", "", None, None),
+    ]
+    items = ss._build_dag_explorer_items(rows, Path("/opt/airflow/dags"))
+    assert len(items) == 2
+
+    first = items[0]
+    assert first["dag_id"] == "dag_in"
+    assert first["bucket"] == "dags_root"
+    assert first["relative_path"] == "team/flow/dag_in.py"
+    assert first["folder_parts"] == ["team", "flow"]
+    assert first["owners"] == ["alice", "bob"]
+    assert first["dag_url"] == "/dags/dag_in"
+    assert first["latest_run"] == "2026-04-23T20:00:00+00:00"
+    assert first["create_date"] == "2026-04-20T12:00:00+00:00"
+
+    second = items[1]
+    assert second["dag_id"] == "dag_out"
+    assert second["bucket"] == "external"
+    assert second["relative_path"] is None
+    assert second["folder_parts"] == []
+    assert second["owners"] == []
+    assert second["latest_run"] is None
+    assert second["create_date"] is None
+
+
+def test_build_dag_explorer_items_sorted_by_bucket_folder_and_dag_id():
+    rows = [
+        ("z_dag", False, "/opt/airflow/dags/a/z.py", "", None, None),
+        ("a_dag", False, "/opt/airflow/dags/a/a.py", "", None, None),
+        ("m_dag", False, "/opt/airflow/dags/b/m.py", "", None, None),
+        ("x_dag", False, "/external/x.py", "", None, None),
+    ]
+    items = ss._build_dag_explorer_items(rows, Path("/opt/airflow/dags"))
+    assert [x["dag_id"] for x in items] == ["a_dag", "z_dag", "m_dag", "x_dag"]
+
+
+def test_discover_dag_explorer_items_uses_env_root(monkeypatch):
+    monkeypatch.setenv("FFENGINE_STUDIO_DAG_ROOT", "/opt/airflow/dags")
+    with patch.object(
+        ss,
+        "_read_dag_explorer_rows",
+        return_value=[("my_dag", False, "/opt/airflow/dags/p1/d1.py", "owner1", None, None)],
+    ):
+        data = ss.discover_dag_explorer_items()
+    assert data["root"] == "/opt/airflow/dags"
+    assert data["count"] == 1
+    assert data["items"][0]["dag_id"] == "my_dag"
+    assert data["items"][0]["bucket"] == "dags_root"
 
 
 def test_create_dag_rejects_invalid_payload_shape(client, studio_paths):

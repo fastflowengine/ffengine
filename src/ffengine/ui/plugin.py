@@ -4,6 +4,8 @@ from airflow.plugins_manager import AirflowPlugin
 
 from ffengine.ui.api_app import flow_studio_app
 
+_TRANSPARENT_ICON_DATA_URI = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="
+
 
 class FlowStudioPlugin(AirflowPlugin):
     name = "flow_studio_plugin"
@@ -31,5 +33,14 @@ class FlowStudioPlugin(AirflowPlugin):
             "destination": "dag",
             "url_route": "flow_studio_update",
             "category": "flow_studio",
+        },
+        {
+            "name": "DAG Explorer",
+            "href": "/flow-studio/dag-explorer",
+            "destination": "nav",
+            "url_route": "dag_explorer",
+            "category": "browse",
+            "icon": _TRANSPARENT_ICON_DATA_URI,
+            "icon_dark_mode": _TRANSPARENT_ICON_DATA_URI,
         },
     ]

@@ -18,6 +18,7 @@ from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo, available_timezones
 
 import yaml
@@ -880,7 +881,7 @@ with DAG(
                 external_dag_id=upstream_dag_id,
                 external_task_id=None,
                 allowed_states=["success"],
-                failed_states=["failed", "upstream_failed"],
+                failed_states=["failed"],
                 check_existence=False,
                 mode="reschedule",
                 poke_interval=60,
@@ -1178,6 +1179,38 @@ def _mapping_dump_text(mapping_obj: dict[str, Any]) -> str:
     return yaml.safe_dump(mapping_obj, sort_keys=False, allow_unicode=True)
 
 
+def _generate_mapping_content_for_task(
+    *,
+    source_conn_id: str,
+    target_conn_id: str,
+    task: dict[str, Any],
+    task_no: int,
+) -> str:
+    source_type = str(task.get("source_type") or "table").strip() or "table"
+    task_group_id = str(task.get("task_group_id") or "").strip() or f"task_{max(1, int(task_no))}"
+
+    preview_payload: dict[str, Any] = {
+        "source_conn_id": str(source_conn_id or "").strip(),
+        "target_conn_id": str(target_conn_id or "").strip(),
+        "source_type": source_type,
+        "task_no": max(1, int(task_no)),
+        "task_group_id": task_group_id,
+        "version": "v1",
+    }
+    if source_type in {"table", "view"}:
+        preview_payload["source_schema"] = str(task.get("source_schema") or "").strip()
+        preview_payload["source_table"] = str(task.get("source_table") or "").strip()
+    elif source_type == "sql":
+        preview_payload["inline_sql"] = str(task.get("inline_sql") or "").strip()
+
+    preview = generate_mapping_preview(preview_payload)
+    mapping_content = str(preview.get("mapping_content") or "")
+    if not mapping_content.strip():
+        raise ValueError("Generated mapping_content is empty.")
+    _parse_yaml_mapping_text(mapping_content, label=f"task_group_id={task_group_id}")
+    return mapping_content if mapping_content.endswith("\n") else f"{mapping_content}\n"
+
+
 def _semantic_yaml_equal(left_text: str, right_text: str) -> bool:
     try:
         left_obj = yaml.safe_load(left_text) if left_text.strip() else None
@@ -1379,7 +1412,7 @@ def _load_bundle_from_revision(revision_dir: Path) -> dict[str, Any]:
         rel_path = _normalize_relative_mapping_file(str(rel or ""))
         src = revision_dir / rel_path
         if not src.is_file():
-            raise FileNotFoundError(f"Revision mapping file is missing: {rel_path}")
+            continue
         mapping_texts[rel_path] = src.read_text(encoding="utf-8")
     return {
         "manifest": manifest,
@@ -1847,14 +1880,52 @@ def _apply_bundle_to_active(
         raise ValueError("Promoted config root must be a dict.")
     required_rels = _auto_mapping_rel_paths_from_config_obj(parsed_cfg)
     mapping_texts = dict(bundle.get("mapping_texts") or {})
+    source_conn_id = str(parsed_cfg.get("source_db_var") or "").strip()
+    target_conn_id = str(parsed_cfg.get("target_db_var") or "").strip()
+    flow_tasks = parsed_cfg.get("flow_tasks")
+    rel_task_context: dict[str, tuple[int, dict[str, Any]]] = {}
+    if isinstance(flow_tasks, list):
+        for idx, task in enumerate(flow_tasks, start=1):
+            if not isinstance(task, dict):
+                continue
+            mode = str(task.get("column_mapping_mode") or "source").strip()
+            rel = str(task.get("mapping_file") or "").strip()
+            if mode != "mapping_file" or not _is_auto_mapping_relative_file(rel):
+                continue
+            rel_task_context[_normalize_relative_mapping_file(rel)] = (idx, task)
+
     new_auto_mapping_paths: set[Path] = set()
     for rel in required_rels:
         rel_norm = _normalize_relative_mapping_file(rel)
-        if rel_norm not in mapping_texts:
+        mapping_text = str(mapping_texts.get(rel_norm) or "")
+        if not mapping_text.strip():
+            existing_path = _resolve_mapping_file_path(flow_dir, rel_norm)
+            if existing_path.is_file():
+                mapping_text = existing_path.read_text(encoding="utf-8")
+        if not mapping_text.strip():
+            task_context = rel_task_context.get(rel_norm)
+            if task_context is not None:
+                task_no, task_obj = task_context
+                if not source_conn_id or not target_conn_id:
+                    raise ValueError(f"Revision mapping file is missing: {rel_norm}")
+                try:
+                    mapping_text = _generate_mapping_content_for_task(
+                        source_conn_id=source_conn_id,
+                        target_conn_id=target_conn_id,
+                        task=task_obj,
+                        task_no=task_no,
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"Revision mapping file is missing and could not be regenerated: {rel_norm}"
+                    ) from exc
+        if not mapping_text.strip():
             raise ValueError(f"Revision mapping file is missing: {rel_norm}")
+
         target = _resolve_mapping_file_path(flow_dir, rel_norm)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(str(mapping_texts.get(rel_norm) or ""), encoding="utf-8")
+        target.write_text(mapping_text, encoding="utf-8")
+        mapping_texts[rel_norm] = mapping_text
         new_auto_mapping_paths.add(target)
 
     stale_auto_paths = existing_auto_mapping_paths - new_auto_mapping_paths
@@ -1925,8 +1996,56 @@ def promote_dag_revision(
             raise FileNotFoundError(f"Revision not found: {rid}")
 
         rollback_bundle = _read_active_bundle(dag_path, config_path, flow_dir)
-        before_state = _airflow_parse_state(did)
         target_bundle = _load_bundle_from_revision(revision_dir)
+
+        def _finalize_promote_response(*, no_op: bool = False) -> dict[str, Any]:
+            revision_state = get_dag_revisions(did)
+            auto_tags: list[str] = []
+            try:
+                rel = config_path.resolve().relative_to(_projects_root().resolve())
+                if len(rel.parts) >= 4:
+                    auto_tags = _derive_tags(rel.parts[0], rel.parts[1], rel.parts[2], rel.parts[3])
+            except ValueError:
+                auto_tags = []
+            raw_cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            user_tags = _normalize_custom_tags(raw_cfg.get("custom_tags") if isinstance(raw_cfg, dict) else [])
+            dag_dependencies = _normalize_dag_dependencies(
+                raw_cfg.get("dag_dependencies") if isinstance(raw_cfg, dict) else None
+            )
+            tags = _merge_tags(auto_tags, user_tags)
+            metadata = _load_studio_metadata(flow_dir) or {}
+            metadata.update(
+                {
+                    "flow_dir": flow_dir.as_posix(),
+                    "config_path": config_path.as_posix(),
+                    "dag_path": dag_path.as_posix(),
+                    "dag_id": did,
+                    "tags": tags,
+                    "auto_tags": auto_tags,
+                    "user_tags": user_tags,
+                    "dag_dependencies": dag_dependencies,
+                    "active_revision_id": revision_state.get("active_revision_id"),
+                    "revision_count": revision_state.get("count", 0),
+                }
+            )
+            _write_studio_metadata(flow_dir, metadata)
+            return {
+                "dag_id": did,
+                "dag_path": dag_path.as_posix(),
+                "config_path": config_path.as_posix(),
+                "active_revision_id": revision_state.get("active_revision_id"),
+                "revision_count": revision_state.get("count", 0),
+                "promoted_revision_id": rid,
+                "dag_dependencies": dag_dependencies,
+                "no_op": no_op,
+            }
+
+        current_bundle_hash = str((rollback_bundle.get("hashes") or {}).get("bundle") or "")
+        target_bundle_hash = str((((target_bundle.get("manifest") or {}).get("hashes") or {}).get("bundle") or ""))
+        if current_bundle_hash and target_bundle_hash and current_bundle_hash == target_bundle_hash:
+            return _finalize_promote_response(no_op=True)
+
+        before_state = _airflow_parse_state(did)
         try:
             _apply_bundle_to_active(
                 flow_dir=flow_dir,
@@ -1947,45 +2066,7 @@ def promote_dag_revision(
                 "Revision promote failed; rolled back to the previous active revision."
             ) from exc
 
-        revision_state = get_dag_revisions(did)
-        auto_tags: list[str] = []
-        try:
-            rel = config_path.resolve().relative_to(_projects_root().resolve())
-            if len(rel.parts) >= 4:
-                auto_tags = _derive_tags(rel.parts[0], rel.parts[1], rel.parts[2], rel.parts[3])
-        except ValueError:
-            auto_tags = []
-        raw_cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        user_tags = _normalize_custom_tags(raw_cfg.get("custom_tags") if isinstance(raw_cfg, dict) else [])
-        dag_dependencies = _normalize_dag_dependencies(
-            raw_cfg.get("dag_dependencies") if isinstance(raw_cfg, dict) else None
-        )
-        tags = _merge_tags(auto_tags, user_tags)
-        metadata = _load_studio_metadata(flow_dir) or {}
-        metadata.update(
-            {
-                "flow_dir": flow_dir.as_posix(),
-                "config_path": config_path.as_posix(),
-                "dag_path": dag_path.as_posix(),
-                "dag_id": did,
-                "tags": tags,
-                "auto_tags": auto_tags,
-                "user_tags": user_tags,
-                "dag_dependencies": dag_dependencies,
-                "active_revision_id": revision_state.get("active_revision_id"),
-                "revision_count": revision_state.get("count", 0),
-            }
-        )
-        _write_studio_metadata(flow_dir, metadata)
-        return {
-            "dag_id": did,
-            "dag_path": dag_path.as_posix(),
-            "config_path": config_path.as_posix(),
-            "active_revision_id": revision_state.get("active_revision_id"),
-            "revision_count": revision_state.get("count", 0),
-            "promoted_revision_id": rid,
-            "dag_dependencies": dag_dependencies,
-        }
+        return _finalize_promote_response(no_op=False)
 
 
 def delete_dag_bundle(
@@ -2309,6 +2390,259 @@ def fetch_timeline_runs(
                 }
             )
     return items
+
+
+def _parse_dag_owners(raw_owners: Any) -> list[str]:
+    owners_text = str(raw_owners or "").strip()
+    if not owners_text:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in owners_text.split(","):
+        owner = str(raw or "").strip()
+        if not owner or owner in seen:
+            continue
+        seen.add(owner)
+        out.append(owner)
+    return out
+
+
+def _normalize_explorer_path(raw_path: str) -> str:
+    text = str(raw_path or "").strip().replace("\\", "/")
+    while "//" in text:
+        text = text.replace("//", "/")
+    if len(text) > 1:
+        text = text.rstrip("/")
+    return text
+
+
+def _iso_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except Exception:
+            return str(value)
+    text = str(value).strip()
+    return text or None
+
+
+def _dag_file_creation_fallback(fileloc: str) -> str | None:
+    path_text = str(fileloc or "").strip()
+    if not path_text:
+        return None
+    try:
+        stat_obj = Path(path_text).stat()
+    except Exception:
+        return None
+
+    candidates: list[float] = []
+    birth_ts = getattr(stat_obj, "st_birthtime", None)
+    if isinstance(birth_ts, (int, float)) and birth_ts > 0:
+        candidates.append(float(birth_ts))
+    mtime = getattr(stat_obj, "st_mtime", None)
+    if isinstance(mtime, (int, float)) and mtime > 0:
+        candidates.append(float(mtime))
+    ctime = getattr(stat_obj, "st_ctime", None)
+    if isinstance(ctime, (int, float)) and ctime > 0:
+        candidates.append(float(ctime))
+    if not candidates:
+        return None
+
+    earliest_ts = min(candidates)
+    try:
+        return datetime.fromtimestamp(earliest_ts, tz=UTC).isoformat()
+    except Exception:
+        return None
+
+
+def _build_dag_explorer_items(
+    rows: list[tuple[Any, Any, Any, Any, Any, Any]],
+    root: Path,
+) -> list[dict[str, Any]]:
+    root_norm = _normalize_explorer_path(str(root))
+    root_prefix = f"{root_norm}/" if root_norm else "/"
+    items: list[dict[str, Any]] = []
+
+    for dag_id, is_paused, fileloc, owners, latest_run, create_date in rows:
+        did = str(dag_id or "").strip()
+        if not did:
+            continue
+
+        fileloc_text = str(fileloc or "").strip()
+        fileloc_norm = _normalize_explorer_path(fileloc_text)
+        create_date_iso = _iso_or_none(create_date) or _dag_file_creation_fallback(fileloc_text)
+        bucket = "external"
+        relative_path: str | None = None
+        folder_parts: list[str] = []
+
+        is_root_file = fileloc_norm == root_norm
+        is_under_root = bool(fileloc_norm) and fileloc_norm.startswith(root_prefix)
+        if is_root_file or is_under_root:
+            bucket = "dags_root"
+            if is_under_root:
+                rel = fileloc_norm[len(root_prefix) :]
+            else:
+                rel = ""
+            relative_path = rel or None
+            if rel:
+                dir_part = rel.rsplit("/", 1)[0] if "/" in rel else ""
+                if dir_part:
+                    folder_parts = [part for part in dir_part.split("/") if part]
+
+        items.append(
+            {
+                "dag_id": did,
+                "is_paused": bool(is_paused),
+                "owners": _parse_dag_owners(owners),
+                "fileloc": fileloc_text,
+                "latest_run": _iso_or_none(latest_run),
+                "create_date": create_date_iso,
+                "relative_path": relative_path,
+                "folder_parts": folder_parts,
+                "bucket": bucket,
+                "dag_url": f"/dags/{quote(did, safe='')}",
+            }
+        )
+
+    items.sort(
+        key=lambda item: (
+            0 if item["bucket"] == "dags_root" else 1,
+            tuple(str(part).lower() for part in item["folder_parts"]),
+            str(item["dag_id"]).lower(),
+        )
+    )
+    return items
+
+
+def _read_dag_explorer_rows() -> list[tuple[Any, Any, Any, Any, Any, Any]]:
+    DagModel = None
+    for module_name in ("airflow.models.dag", "airflow.models.dagmodel"):
+        try:
+            module = __import__(module_name, fromlist=["DagModel"])
+            DagModel = getattr(module, "DagModel", None)
+            if DagModel is not None:
+                break
+        except Exception:
+            continue
+    if DagModel is None:
+        raise RuntimeError("DagModel is unavailable.")
+
+    DagRun = None
+    for module_name in ("airflow.models.dagrun",):
+        try:
+            module = __import__(module_name, fromlist=["DagRun"])
+            DagRun = getattr(module, "DagRun", None)
+            if DagRun is not None:
+                break
+        except Exception:
+            continue
+
+    DagVersion = None
+    for module_name in ("airflow.models.dag_version",):
+        try:
+            module = __import__(module_name, fromlist=["DagVersion"])
+            DagVersion = getattr(module, "DagVersion", None)
+            if DagVersion is not None:
+                break
+        except Exception:
+            continue
+
+    SerializedDagModel = None
+    for module_name in ("airflow.models.serialized_dag",):
+        try:
+            module = __import__(module_name, fromlist=["SerializedDagModel"])
+            SerializedDagModel = getattr(module, "SerializedDagModel", None)
+            if SerializedDagModel is not None:
+                break
+        except Exception:
+            continue
+
+    from airflow.utils.session import create_session
+
+    with create_session() as session:
+        from sqlalchemy import func
+
+        base_rows = (
+            session.query(
+                DagModel.dag_id,
+                DagModel.is_paused,
+                DagModel.fileloc,
+                DagModel.owners,
+            )
+            .order_by(DagModel.dag_id.asc())
+            .all()
+        )
+
+        latest_run_by_dag: dict[str, Any] = {}
+        if DagRun is not None:
+            latest_rows = (
+                session.query(
+                    DagRun.dag_id,
+                    func.max(DagRun.run_after).label("latest_run"),
+                )
+                .group_by(DagRun.dag_id)
+                .all()
+            )
+            for dag_id, latest_run in latest_rows:
+                latest_run_by_dag[str(dag_id or "")] = latest_run
+
+        creation_by_dag: dict[str, Any] = {}
+        if DagVersion is not None:
+            creation_rows = (
+                session.query(
+                    DagVersion.dag_id,
+                    func.min(DagVersion.created_at).label("creation_date"),
+                )
+                .group_by(DagVersion.dag_id)
+                .all()
+            )
+            for dag_id, creation_date in creation_rows:
+                creation_by_dag[str(dag_id or "")] = creation_date
+
+        if SerializedDagModel is not None:
+            serialized_rows = (
+                session.query(
+                    SerializedDagModel.dag_id,
+                    func.min(SerializedDagModel.created_at).label("creation_date"),
+                )
+                .group_by(SerializedDagModel.dag_id)
+                .all()
+            )
+            for dag_id, creation_date in serialized_rows:
+                key = str(dag_id or "")
+                existing = creation_by_dag.get(key)
+                if existing is None:
+                    creation_by_dag[key] = creation_date
+                elif creation_date is not None and creation_date < existing:
+                    creation_by_dag[key] = creation_date
+
+        rows: list[tuple[Any, Any, Any, Any, Any, Any]] = []
+        for dag_id, is_paused, fileloc, owners in base_rows:
+            key = str(dag_id or "")
+            rows.append(
+                (
+                    dag_id,
+                    is_paused,
+                    fileloc,
+                    owners,
+                    latest_run_by_dag.get(key),
+                    creation_by_dag.get(key),
+                )
+            )
+    return list(rows)
+
+
+def discover_dag_explorer_items() -> dict[str, Any]:
+    root = _generated_dag_root()
+    rows = _read_dag_explorer_rows()
+    items = _build_dag_explorer_items(rows, root)
+    return {
+        "root": _normalize_explorer_path(str(root)),
+        "items": items,
+        "count": len(items),
+    }
 
 
 def discover_connections() -> list[dict[str, str]]:
@@ -2732,6 +3066,12 @@ def create_or_update_dag(
                 mapping_rel = _auto_mapping_relative_file(idx, task_group_id)
                 mapping_path = _resolve_mapping_file_path(flow_dir, mapping_rel)
                 task_cfg["mapping_file"] = mapping_rel
+                if not mapping_content.strip() and not mapping_path.is_file():
+                    raise ValueError(
+                        "mapping_content is required when column_mapping_mode='mapping_file' "
+                        f"and mapping file does not exist: {mapping_rel}. "
+                        "Use Generate Mapping or provide mapping_content."
+                    )
                 pending_mapping_writes.append(
                     {
                         "task_group_id": task_group_id,
@@ -2749,6 +3089,14 @@ def create_or_update_dag(
                         }
                     )
             task_cfgs.append(task_cfg)
+
+        for pending in pending_mapping_writes:
+            mapping_content = str(pending.get("mapping_content") or "")
+            mapping_path = pending["mapping_path"]
+            if mapping_content.strip():
+                _parse_yaml_mapping_text(mapping_content, label=mapping_path.as_posix())
+            else:
+                _read_mapping_object(mapping_path)
 
         resolve_task_dependencies(task_cfgs)
 

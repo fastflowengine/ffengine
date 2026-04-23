@@ -23,6 +23,7 @@ from ffengine.ui.studio_service import (
     STUDIO_DAG_MARKER,
     create_or_update_dag,
     delete_dag_bundle,
+    discover_dag_explorer_items,
     discover_dag_dependency_options,
     discover_timezones,
     get_airflow_default_timezone_name,
@@ -423,15 +424,37 @@ def _load_index_html() -> str:
     return template_path.read_text(encoding="utf-8")
 
 
+def _load_dag_explorer_html() -> str:
+    template_path = (
+        Path(__file__).resolve().parent / "templates" / "dag_explorer" / "index.html"
+    )
+    return template_path.read_text(encoding="utf-8")
+
+
 @flow_studio_app.get("/", response_class=HTMLResponse)
 def studio_index(response: Response) -> str:
     response.headers["Cache-Control"] = "no-store"
     return _load_index_html()
 
 
+@flow_studio_app.get("/dag-explorer", response_class=HTMLResponse)
+def dag_explorer_index(response: Response) -> str:
+    response.headers["Cache-Control"] = "no-store"
+    return _load_dag_explorer_html()
+
+
 @flow_studio_app.get("/health")
 def health() -> dict[str, Any]:
     return {"ok": True, "service": "flow-studio", "dag_marker": STUDIO_DAG_MARKER}
+
+
+@flow_studio_app.get("/api/dag-explorer")
+def api_dag_explorer() -> dict[str, Any]:
+    try:
+        data = discover_dag_explorer_items()
+        return {"ok": True, **data}
+    except Exception as exc:
+        _raise_http_from_exception(exc)
 
 
 @flow_studio_app.get("/api/schemas")

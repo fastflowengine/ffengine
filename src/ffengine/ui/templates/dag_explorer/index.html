@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DAG Explorer</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --line: #d9e0ea;
+      --text: #17212b;
+      --muted: #5a6a7d;
+      --accent: #0b57d0;
+      --ok: #198754;
+      --warn: #9c7a00;
+    }
+    :root[data-theme="dark"] {
+      --bg: #0f172a;
+      --card: #111827;
+      --line: #2a3952;
+      --text: #e5eefb;
+      --muted: #9db0cb;
+      --accent: #7cb2ff;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #0f172a;
+        --card: #111827;
+        --line: #2a3952;
+        --text: #e5eefb;
+        --muted: #9db0cb;
+        --accent: #7cb2ff;
+        --ok: #22c55e;
+        --warn: #f59e0b;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    .page {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 16px;
+    }
+    .header {
+      margin-bottom: 12px;
+    }
+    .header h1 {
+      margin: 0 0 4px;
+      font-size: 24px;
+    }
+    .header p {
+      margin: 0;
+      color: var(--muted);
+    }
+    .root-info {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 16px;
+      min-height: 560px;
+    }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .panel h2 {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .panel-head h2 {
+      margin: 0;
+    }
+    .folder-actions {
+      display: flex;
+      gap: 6px;
+    }
+    .folder-btn {
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      border-radius: 6px;
+      padding: 2px 8px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .folder-btn:hover {
+      background: #eef4ff;
+      border-color: #c8dafc;
+    }
+    .tree-list {
+      list-style: none;
+      margin: 0;
+      padding: 0 0 0 12px;
+    }
+    .tree-list.root {
+      padding-left: 0;
+    }
+    .tree-item {
+      margin: 2px 0;
+    }
+    .tree-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .tree-toggle {
+      width: 18px;
+      height: 18px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 4px;
+      cursor: pointer;
+      line-height: 1;
+      padding: 0;
+      font-size: 11px;
+    }
+    .tree-toggle:hover {
+      background: #eef4ff;
+      border-color: #c8dafc;
+      color: var(--text);
+    }
+    .tree-toggle.placeholder {
+      cursor: default;
+      pointer-events: none;
+    }
+    .tree-btn {
+      display: inline-block;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text);
+      font-size: 13px;
+      text-align: left;
+      border-radius: 6px;
+      padding: 4px 6px;
+      cursor: pointer;
+      width: 100%;
+    }
+    .tree-btn:hover {
+      background: #eef4ff;
+      border-color: #c8dafc;
+    }
+    .tree-btn.active {
+      background: #dce9ff;
+      border-color: #b3ccfa;
+      color: #083f9f;
+      font-weight: 600;
+    }
+    :root[data-theme="dark"] .folder-btn:hover,
+    :root[data-theme="dark"] .tree-toggle:hover,
+    :root[data-theme="dark"] .tree-btn:hover {
+      background: #1a2a44;
+      border-color: #31507f;
+    }
+    :root[data-theme="dark"] .tree-btn.active {
+      background: #173153;
+      border-color: #2d5a93;
+      color: #b8d7ff;
+    }
+    .status {
+      margin: 8px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .status.error {
+      color: #b42318;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 8px 6px;
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .dag-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .dag-link:hover {
+      text-decoration: underline;
+    }
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      border: 1px solid transparent;
+    }
+    .badge.on {
+      color: var(--warn);
+      background: #fff6d6;
+      border-color: #ffe39c;
+    }
+    .badge.off {
+      color: var(--ok);
+      background: #e8f7ee;
+      border-color: #bfe8cd;
+    }
+    .empty {
+      color: var(--muted);
+      padding: 12px 4px;
+    }
+    .mono {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      word-break: break-all;
+    }
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="header">
+      <h1>DAG Explorer</h1>
+      <p>Browse DAGs by folder hierarchy. Select a DAG to open its Airflow page.</p>
+      <div id="root_info" class="root-info">Root: -</div>
+    </div>
+
+    <div class="layout">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Folders</h2>
+          <div class="folder-actions">
+            <button id="expand_all_btn" class="folder-btn" type="button">Expand All</button>
+            <button id="collapse_all_btn" class="folder-btn" type="button">Collapse All</button>
+          </div>
+        </div>
+        <div id="tree_status" class="status">Loading...</div>
+        <div id="tree_container"></div>
+      </section>
+
+      <section class="panel">
+        <h2 id="list_title">DAGs</h2>
+        <div id="list_status" class="status"></div>
+        <div id="list_container"></div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const treeStatus = document.getElementById("tree_status");
+      const treeContainer = document.getElementById("tree_container");
+      const listContainer = document.getElementById("list_container");
+      const listStatus = document.getElementById("list_status");
+      const listTitle = document.getElementById("list_title");
+      const rootInfo = document.getElementById("root_info");
+      const expandAllBtn = document.getElementById("expand_all_btn");
+      const collapseAllBtn = document.getElementById("collapse_all_btn");
+
+      let currentSelection = { bucket: "dags_root", key: "" };
+      let dagItems = [];
+      let treeMap = new Map();
+      let collapsedKeys = new Set();
+
+      function resolveTheme() {
+        let explicit = "";
+        try {
+          explicit = String(localStorage.getItem("chakra-ui-color-mode") || "").trim().toLowerCase();
+        } catch (error) {
+          explicit = "";
+        }
+        if (explicit === "light" || explicit === "dark") {
+          return explicit;
+        }
+        if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+          return "dark";
+        }
+        return "light";
+      }
+
+      function applyTheme() {
+        document.documentElement.setAttribute("data-theme", resolveTheme());
+      }
+
+      function basePath() {
+        return "/flow-studio";
+      }
+
+      function normalizeFolderKey(parts) {
+        return (parts || []).join("/");
+      }
+
+      function expandAncestors(key) {
+        if (!key) return;
+        const parts = key.split("/");
+        const prefixes = [];
+        for (let i = 0; i < parts.length; i += 1) {
+          prefixes.push(parts.slice(0, i + 1).join("/"));
+        }
+        for (const prefix of prefixes) {
+          collapsedKeys.delete(prefix);
+        }
+      }
+
+      function selectNode(bucket, key) {
+        if (bucket === "dags_root") {
+          expandAncestors(key || "");
+        }
+        currentSelection = { bucket, key: key || "" };
+        renderTree();
+        renderList();
+      }
+
+      function treeChildrenFor(parentKey) {
+        const out = new Set();
+        for (const key of treeMap.keys()) {
+          if (!parentKey) {
+            if (!key) continue;
+            const first = key.split("/")[0];
+            if (first) out.add(first);
+            continue;
+          }
+          if (!key.startsWith(parentKey + "/")) continue;
+          const rest = key.slice(parentKey.length + 1);
+          if (!rest) continue;
+          const next = rest.split("/")[0];
+          const full = parentKey + "/" + next;
+          out.add(full);
+        }
+        return Array.from(out).sort((a, b) => a.localeCompare(b));
+      }
+
+      function toggleNode(fullKey) {
+        if (collapsedKeys.has(fullKey)) {
+          collapsedKeys.delete(fullKey);
+        } else {
+          collapsedKeys.add(fullKey);
+        }
+        renderTree();
+      }
+
+      function collapseAllFolders() {
+        collapsedKeys = new Set(Array.from(treeMap.keys()));
+        renderTree();
+      }
+
+      function expandAllFolders() {
+        collapsedKeys.clear();
+        renderTree();
+      }
+
+      function renderTreeNode(parentUl, fullKey) {
+        const label = fullKey.split("/").slice(-1)[0] || "/";
+        const li = document.createElement("li");
+        li.className = "tree-item";
+        const row = document.createElement("div");
+        row.className = "tree-row";
+        const children = treeChildrenFor(fullKey);
+        const hasChildren = children.length > 0;
+
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "tree-toggle";
+        if (!hasChildren) {
+          toggle.classList.add("placeholder");
+          toggle.textContent = " ";
+        } else {
+          const isCollapsed = collapsedKeys.has(fullKey);
+          toggle.textContent = isCollapsed ? "▸" : "▾";
+          toggle.onclick = (event) => {
+            event.stopPropagation();
+            toggleNode(fullKey);
+          };
+        }
+        row.appendChild(toggle);
+
+        const btn = document.createElement("button");
+        btn.className = "tree-btn";
+        if (currentSelection.bucket === "dags_root" && currentSelection.key === fullKey) {
+          btn.classList.add("active");
+        }
+        btn.textContent = label;
+        btn.type = "button";
+        btn.onclick = () => selectNode("dags_root", fullKey);
+        row.appendChild(btn);
+        li.appendChild(row);
+
+        if (hasChildren && !collapsedKeys.has(fullKey)) {
+          const ul = document.createElement("ul");
+          ul.className = "tree-list";
+          for (const child of children) {
+            renderTreeNode(ul, child);
+          }
+          li.appendChild(ul);
+        }
+        parentUl.appendChild(li);
+      }
+
+      function renderTree() {
+        treeContainer.innerHTML = "";
+        const rootUl = document.createElement("ul");
+        rootUl.className = "tree-list root";
+
+        const rootLi = document.createElement("li");
+        rootLi.className = "tree-item";
+        const rootBtn = document.createElement("button");
+        rootBtn.className = "tree-btn";
+        if (currentSelection.bucket === "dags_root" && currentSelection.key === "") {
+          rootBtn.classList.add("active");
+        }
+        rootBtn.type = "button";
+        rootBtn.textContent = "/ (dags root)";
+        rootBtn.onclick = () => selectNode("dags_root", "");
+        rootLi.appendChild(rootBtn);
+        rootUl.appendChild(rootLi);
+
+        for (const child of treeChildrenFor("")) {
+          renderTreeNode(rootUl, child);
+        }
+
+        const externalLi = document.createElement("li");
+        externalLi.className = "tree-item";
+        const externalBtn = document.createElement("button");
+        externalBtn.className = "tree-btn";
+        if (currentSelection.bucket === "external") {
+          externalBtn.classList.add("active");
+        }
+        externalBtn.type = "button";
+        externalBtn.textContent = "external";
+        externalBtn.onclick = () => selectNode("external", "");
+        externalLi.appendChild(externalBtn);
+        rootUl.appendChild(externalLi);
+
+        treeContainer.appendChild(rootUl);
+      }
+
+      function filteredItems() {
+        if (currentSelection.bucket === "external") {
+          return dagItems.filter((x) => x.bucket === "external");
+        }
+        return dagItems.filter((x) => {
+          if (x.bucket !== "dags_root") return false;
+          return normalizeFolderKey(x.folder_parts) === currentSelection.key;
+        });
+      }
+
+      function renderList() {
+        const items = filteredItems();
+        const title = currentSelection.bucket === "external"
+          ? "DAGs / external"
+          : "DAGs / " + (currentSelection.key || "/");
+        listTitle.textContent = title;
+        listContainer.innerHTML = "";
+        listStatus.textContent = items.length + " DAG(s)";
+
+        if (items.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = "No DAG in this folder.";
+          listContainer.appendChild(empty);
+          return;
+        }
+
+        function fmtDate(value) {
+          const text = String(value || "").trim();
+          if (!text) return "-";
+          const d = new Date(text);
+          if (!Number.isNaN(d.getTime())) {
+            return d.toLocaleString();
+          }
+          return text;
+        }
+
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        thead.innerHTML = "<tr><th>DAG</th><th>Status</th><th>Latest Run</th><th>Creation Date</th></tr>";
+        table.appendChild(thead);
+
+        const tbody = document.createElement("tbody");
+        for (const item of items) {
+          const tr = document.createElement("tr");
+
+          const tdDag = document.createElement("td");
+          const link = document.createElement("a");
+          link.className = "dag-link";
+          link.href = item.dag_url;
+          link.onclick = (event) => {
+            event.preventDefault();
+            const url = String(item.dag_url || "");
+            if (!url) return;
+            try {
+              if (window.top && window.top !== window) {
+                window.top.location.assign(url);
+                return;
+              }
+            } catch (error) {
+              // sandbox or cross-window restrictions: fallback to same frame
+            }
+            window.location.assign(url);
+          };
+          link.textContent = item.dag_id;
+          tdDag.appendChild(link);
+
+          const tdStatus = document.createElement("td");
+          const status = document.createElement("span");
+          status.className = "badge " + (item.is_paused ? "on" : "off");
+          status.textContent = item.is_paused ? "paused" : "active";
+          tdStatus.appendChild(status);
+
+          const tdLatestRun = document.createElement("td");
+          tdLatestRun.textContent = fmtDate(item.latest_run);
+          tdLatestRun.title = String(item.latest_run || "");
+
+          const tdCreateDate = document.createElement("td");
+          tdCreateDate.textContent = fmtDate(item.create_date);
+          tdCreateDate.title = String(item.create_date || "");
+
+          tr.appendChild(tdDag);
+          tr.appendChild(tdStatus);
+          tr.appendChild(tdLatestRun);
+          tr.appendChild(tdCreateDate);
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        listContainer.appendChild(table);
+      }
+
+      async function loadData() {
+        treeStatus.textContent = "Loading...";
+        treeStatus.classList.remove("error");
+        try {
+          const response = await fetch(basePath() + "/api/dag-explorer", {
+            headers: { "Accept": "application/json" },
+            credentials: "same-origin",
+          });
+          const data = await response.json();
+          if (!response.ok || !data.ok) {
+            throw new Error(data.detail || "Failed to load DAG explorer data.");
+          }
+          dagItems = Array.isArray(data.items) ? data.items : [];
+          treeMap = new Map();
+          const folderKeySet = new Set();
+          for (const item of dagItems) {
+            if (item.bucket !== "dags_root") continue;
+            const parts = Array.isArray(item.folder_parts) ? item.folder_parts : [];
+            for (let i = 0; i < parts.length; i += 1) {
+              const key = normalizeFolderKey(parts.slice(0, i + 1));
+              if (key) folderKeySet.add(key);
+            }
+          }
+          for (const key of Array.from(folderKeySet).sort((a, b) => a.localeCompare(b))) {
+            treeMap.set(key, true);
+          }
+          rootInfo.textContent = "Root: " + (data.root || "-");
+          treeStatus.textContent = "Ready";
+          renderTree();
+          renderList();
+        } catch (error) {
+          treeStatus.textContent = String(error && error.message || error);
+          treeStatus.classList.add("error");
+          listContainer.innerHTML = "";
+          listStatus.textContent = "";
+        }
+      }
+
+      expandAllBtn.onclick = expandAllFolders;
+      collapseAllBtn.onclick = collapseAllFolders;
+      applyTheme();
+      try {
+        const darkMedia = window.matchMedia("(prefers-color-scheme: dark)");
+        darkMedia.addEventListener("change", applyTheme);
+      } catch (error) {
+        // ignore matchMedia listener issues on older browsers
+      }
+      window.addEventListener("storage", applyTheme);
+      loadData();
+    })();
+  </script>
+</body>
+</html>
