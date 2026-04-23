@@ -144,6 +144,22 @@ To avoid local port conflicts, the FFEngine development environment allocates is
 - **Test MSSQL (`test-mssql`):** `localhost:1433`
 - **Test Oracle (`test-oracle`):** `localhost:1521`
 
+**Airflow Login Credentials (C18 — FabAuthManager + DB auth):**
+
+Dev defaults (override via env vars in prod):
+
+| Username     | Role   | Default password | Env var                              |
+| ------------ | ------ | ---------------- | ------------------------------------ |
+| `admin`      | Admin  | `admin`          | `FFENGINE_AIRFLOW_ADMIN_PASSWORD`    |
+| `breakglass` | Admin  | `breakglass`     | `FFENGINE_AIRFLOW_BREAKGLASS_PASSWORD` |
+| `operator`   | Op     | `operator`       | `FFENGINE_AIRFLOW_OP_PASSWORD`       |
+| `viewer`     | Viewer | `viewer`         | `FFENGINE_AIRFLOW_VIEWER_PASSWORD`   |
+
+- **Prod**: `FFENGINE_AIRFLOW_*_PASSWORD` ortam degiskenleri zorunludur; dev
+  default'lari kullanmayin.
+- **Break-glass**: `breakglass` hesabi acil durum Admin erisimi icindir;
+  parolasi vault'ta tutulmali ve kullanildiginda rotate edilmelidir.
+
 **Start the Core Cluster (Airflow):**
 
 ```bash

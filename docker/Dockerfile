@@ -30,6 +30,7 @@ RUN pip install --no-cache-dir -e .[dev] \
 # open(f,'w').write(t); \
 # print('Patched ALL DagRun.start_date -> Optional')"
 
-# Simple Auth Manager passwords file for Airflow 3.x
-RUN echo '{"admin": "admin"}' > /opt/airflow/simple_auth_manager_passwords.json
-ENV AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE=/opt/airflow/simple_auth_manager_passwords.json
+# C18: FabAuthManager + DB auth (SimpleAuthManager replaced).
+# apache-airflow-providers-fab and flask-appbuilder are pulled in via pyproject.toml.
+COPY --chown=airflow:0 docker/webserver_config.py /opt/airflow/webserver_config.py
+COPY --chown=airflow:0 docker/seed_airflow_users.py /opt/airflow/seed_airflow_users.py

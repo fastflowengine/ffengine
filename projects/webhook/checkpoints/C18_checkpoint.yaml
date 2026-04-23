@@ -1,0 +1,92 @@
+session_id: "sess_20260423_c18_001"
+epic_id: C18
+wave: 11
+scope: Community
+started_at: "2026-04-23T00:00:00Z"
+last_updated_at: "2026-04-23T17:00:00Z"
+status: COMPLETED
+
+completed_tasks:
+  - task_id: "C18_T01"
+    description: "FAB + flask-appbuilder dependencies added; SimpleAuthManager artefacts removed from Docker image; FAB user seed script shipped."
+    files_created:
+      - docker/webserver_config.py
+      - docker/seed_airflow_users.py
+    files_modified:
+      - pyproject.toml
+      - docker/Dockerfile
+    tests_passed: []
+    completed_at: "2026-04-23T00:00:00Z"
+
+  - task_id: "C18_T02"
+    description: "docker-compose wired to FabAuthManager; airflow-init runs airflow db migrate + Python seed script (airflow users CLI removed in Airflow 3)."
+    files_created: []
+    files_modified:
+      - docker/docker-compose.yml
+    tests_passed: []
+    completed_at: "2026-04-23T00:00:00Z"
+
+  - task_id: "C18_T03"
+    description: "Integration test suite for Airflow FAB auth (login, role enforcement, SimpleAuthManager artefact absence, ab_user seed)."
+    files_created:
+      - tests/integration/test_airflow_auth.py
+    files_modified: []
+    tests_passed:
+      - tests/integration/test_airflow_auth.py
+    completed_at: "2026-04-23T00:00:00Z"
+
+  - task_id: "C18_T04"
+    description: "Handbook + README updated: plugin standard security section, execution API bugfix notes, README credentials, C18 context progress."
+    files_created: []
+    files_modified:
+      - handbook/reference/AIRFLOW3_PLUGIN_STANDARD.md
+      - handbook/reference/AIRFLOW_EXECUTION_API_BUGFIX.md
+      - README.md
+      - handbook/context/C18_AIRFLOW_FAB_DB_AUTH.md
+    tests_passed: []
+    completed_at: "2026-04-23T00:00:00Z"
+
+  - task_id: "C18_T05"
+    description: "Late fixes after manual UAT: (1) `AIRFLOW__API__BASE_URL` on webserver/scheduler/dag-processor switched from container hostname to `http://localhost:8085` so browser-facing redirects (login, logout) resolve; inter-service dialing still uses EXECUTION_API_SERVER_URL / INTERNAL_API_URL. (2) `webserver_config.py` monkey-patches `airflow.api_fastapi.app.create_auth_manager` to return the existing global instead of overwriting it — workaround for FAB 3.6.1 bug where `AirflowAppBuilder.__init__` clobbers the auth_manager singleton, leaving `flask_app=None` and causing `GET /auth/logout` to 500."
+    files_created: []
+    files_modified:
+      - docker/docker-compose.yml
+      - docker/webserver_config.py
+    tests_passed:
+      - tests/integration/test_airflow_auth.py
+    completed_at: "2026-04-23T17:00:00Z"
+
+pending_tasks: []
+
+created_files:
+  - docker/webserver_config.py
+  - docker/seed_airflow_users.py
+  - tests/integration/test_airflow_auth.py
+  - handbook/context/C18_AIRFLOW_FAB_DB_AUTH.md
+  - projects/webhook/checkpoints/C18_checkpoint.yaml
+  - projects/webhook/checkpoints/C18_handoff.md
+
+modified_files:
+  - pyproject.toml
+  - docker/Dockerfile
+  - docker/docker-compose.yml
+  - handbook/reference/AIRFLOW3_PLUGIN_STANDARD.md
+  - handbook/reference/AIRFLOW_EXECUTION_API_BUGFIX.md
+  - handbook/wbs/WBS_COMMUNITY.md
+  - handbook/wbs/EPIC_ARTIFACTS.md
+  - handbook/manifest.txt
+  - handbook/AGENTS.md
+  - README.md
+
+test_results:
+  passed:
+    - tests/integration/test_airflow_auth.py
+  failed: []
+
+open_risks:
+  - "Integration test requires docker stack up + FFENGINE_ENABLE_AIRFLOW_AUTH_TESTS=1; manual UAT for 3 roles still a reviewer gate."
+  - "Dev default passwords (admin/operator/viewer/breakglass) must be overridden via FFENGINE_AIRFLOW_*_PASSWORD in prod; release playbook to enforce."
+  - "Break-glass account parolas1 vault'ta tutulmali; kullanim sonrasi rotate edilmeli."
+
+blocked_reason: null
+next_action: "Community Wave 11 closed. Next wave planning depends on backlog review (OIDC/SSO candidate C19)."

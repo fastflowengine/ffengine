@@ -7,12 +7,14 @@ name = "ffengine"
 version = "0.1.0"
 description = "Fast Flow Engine Community: Query-centric Airflow Native Data Integrator"
 authors = [
-    {name = "FFEngine Team", email = "info@ffengine.com"}
+    {name = "FFEngine Team", email = "contact@ffengine.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "apache-airflow>=3.1.6",
+    "apache-airflow-providers-fab>=3.6.1",
+    "flask-appbuilder>=4.3.0",
     "psycopg[binary]>=3.1.0",
     "pyodbc>=5.0.0",
     "oracledb>=2.0.0",

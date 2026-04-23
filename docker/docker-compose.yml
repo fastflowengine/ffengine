@@ -22,12 +22,18 @@ services:
       dockerfile: docker/Dockerfile
     environment:
       AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
       AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:-ffengine_api_secret_key_dev}
       AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_API_AUTH_JWT_SECRET:-ffengine_api_auth_jwt_secret_dev}
       AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@core-postgres:5432/airflow
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@core-postgres:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
-    command: db migrate
+      FFENGINE_AIRFLOW_ADMIN_PASSWORD: ${FFENGINE_AIRFLOW_ADMIN_PASSWORD:-admin}
+      FFENGINE_AIRFLOW_BREAKGLASS_PASSWORD: ${FFENGINE_AIRFLOW_BREAKGLASS_PASSWORD:-breakglass}
+      FFENGINE_AIRFLOW_OP_PASSWORD: ${FFENGINE_AIRFLOW_OP_PASSWORD:-operator}
+      FFENGINE_AIRFLOW_VIEWER_PASSWORD: ${FFENGINE_AIRFLOW_VIEWER_PASSWORD:-viewer}
+    command: >
+      bash -lc "airflow db migrate && python /opt/airflow/seed_airflow_users.py"
     depends_on:
       - postgres
 
@@ -38,9 +44,10 @@ services:
       dockerfile: docker/Dockerfile
     environment:
       AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
       AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:-ffengine_api_secret_key_dev}
       AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_API_AUTH_JWT_SECRET:-ffengine_api_auth_jwt_secret_dev}
-      AIRFLOW__API__BASE_URL: http://core-airflow-webserver:8080
+      AIRFLOW__API__BASE_URL: http://localhost:8085
       AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://core-airflow-webserver:8080/execution/
       AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@core-postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "False"
@@ -69,9 +76,10 @@ services:
       dockerfile: docker/Dockerfile
     environment:
       AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
       AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:-ffengine_api_secret_key_dev}
       AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_API_AUTH_JWT_SECRET:-ffengine_api_auth_jwt_secret_dev}
-      AIRFLOW__API__BASE_URL: http://core-airflow-webserver:8080
+      AIRFLOW__API__BASE_URL: http://localhost:8085
       AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://core-airflow-webserver:8080/execution/
       AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@core-postgres:5432/airflow
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@core-postgres:5432/airflow
@@ -99,9 +107,10 @@ services:
       dockerfile: docker/Dockerfile
     environment:
       AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
       AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:-ffengine_api_secret_key_dev}
       AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_API_AUTH_JWT_SECRET:-ffengine_api_auth_jwt_secret_dev}
-      AIRFLOW__API__BASE_URL: http://core-airflow-webserver:8080
+      AIRFLOW__API__BASE_URL: http://localhost:8085
       AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://core-airflow-webserver:8080/execution/
       AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@core-postgres:5432/airflow
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow_password@core-postgres:5432/airflow
