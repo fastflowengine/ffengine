@@ -1,0 +1,112 @@
+session_id: "sess_20260423_c20_001"
+epic_id: C20
+wave: 13
+scope: Community
+started_at: "2026-04-23T00:00:00Z"
+last_updated_at: "2026-04-23T21:05:00Z"
+status: COMPLETED
+
+completed_tasks:
+  - task_id: "C20_T00"
+    description: "C20 epic ve implementation plan dokumanlari olusturuldu (WBS/context/manifest sync)."
+    files_created:
+      - handbook/context/C20_LOCAL_EXECUTOR_TRANSITION.md
+      - projects/webhook/checkpoints/C20_checkpoint.yaml
+    files_modified:
+      - handbook/wbs/WBS_COMMUNITY.md
+      - handbook/wbs/EPIC_ARTIFACTS.md
+      - handbook/AGENTS.md
+      - handbook/manifest.txt
+    tests_passed: []
+    completed_at: "2026-04-23T21:40:00Z"
+
+  - task_id: "C20_T01"
+    description: "Compose stack executor degerleri LocalExecutor'a gecirildi ve runtime tuning parametreleri eklendi."
+    files_modified:
+      - docker/docker-compose.yml
+    completed_at: "2026-04-23T20:25:00Z"
+
+  - task_id: "C20_T02"
+    description: "Docker recreate sonrasi runtime dogrulandi; scheduler/webserver tarafinda LocalExecutor aktif."
+    commands_verified:
+      - "docker compose -p ffengine-core -f docker/docker-compose.yml --env-file .env up -d --force-recreate --remove-orphans"
+      - "docker exec core-airflow-webserver airflow config get-value core executor"
+      - "docker exec core-airflow-scheduler airflow config get-value core executor"
+    completed_at: "2026-04-23T20:55:00Z"
+
+  - task_id: "C20_T03"
+    description: "Paralel execution kaniti smoke DAG ile alindi."
+    files_created:
+      - dags/local_executor_smoke_dag.py
+    commands_verified:
+      - "docker exec core-airflow-webserver airflow dags trigger ffengine_local_executor_smoke"
+      - "docker exec core-airflow-webserver airflow dags list-runs ffengine_local_executor_smoke --no-backfill -o json"
+      - "docker exec core-airflow-webserver airflow tasks states-for-dag-run ffengine_local_executor_smoke manual__2026-04-23T20:55:02.564528+00:00 -o json"
+    evidence:
+      - "Dag run state=success"
+      - "probe_a/probe_b/probe_c start zamanlari ~0.10s aralikta"
+      - "3 task runtime overlap goruldu"
+    completed_at: "2026-04-23T21:02:00Z"
+
+  - task_id: "C20_T04"
+    description: "Regresyon testleri ve runtime dokumantasyonu guncellendi."
+    files_created:
+      - tests/unit/test_local_executor_smoke_dag.py
+    files_modified:
+      - README.md
+    tests_passed:
+      - "pytest tests/unit/test_local_executor_smoke_dag.py -q"
+      - "pytest tests/unit/test_flow_studio_api.py -q"
+      - "pytest tests/integration/test_mapping_chain.py -q"
+      - "pytest tests/integration/test_pg_to_pg.py -q"
+    tests_observed_non_blocking:
+      - "pytest tests/integration/test_airflow_auth.py -q -> startup/rate-limit kaynakli gecerli olmayan noise (429 / connection reset)"
+    completed_at: "2026-04-23T21:04:00Z"
+
+  - task_id: "C20_T05"
+    description: "C20 handoff ve checkpoint closure tamamlandi."
+    files_created:
+      - projects/webhook/checkpoints/C20_handoff.md
+    files_modified:
+      - projects/webhook/checkpoints/C20_checkpoint.yaml
+      - handbook/context/C20_LOCAL_EXECUTOR_TRANSITION.md
+      - handbook/wbs/WBS_COMMUNITY.md
+      - handbook/wbs/EPIC_ARTIFACTS.md
+      - handbook/AGENTS.md
+      - handbook/manifest.txt
+    completed_at: "2026-04-23T21:05:00Z"
+
+pending_tasks: []
+
+created_files:
+  - dags/local_executor_smoke_dag.py
+  - tests/unit/test_local_executor_smoke_dag.py
+  - projects/webhook/checkpoints/C20_handoff.md
+
+modified_files:
+  - docker/docker-compose.yml
+  - README.md
+  - projects/webhook/checkpoints/C20_checkpoint.yaml
+  - handbook/context/C20_LOCAL_EXECUTOR_TRANSITION.md
+  - handbook/wbs/WBS_COMMUNITY.md
+  - handbook/wbs/EPIC_ARTIFACTS.md
+  - handbook/AGENTS.md
+  - handbook/manifest.txt
+
+test_results:
+  passed:
+    - "pytest tests/unit/test_local_executor_smoke_dag.py -q"
+    - "pytest tests/unit/test_flow_studio_api.py -q"
+    - "pytest tests/integration/test_mapping_chain.py -q"
+    - "pytest tests/integration/test_pg_to_pg.py -q"
+  failed: []
+  non_blocking:
+    - "pytest tests/integration/test_airflow_auth.py -q: first run docker permission issue, second run login rate-limit (429)"
+
+open_risks:
+  - "LocalExecutor gecisinde host resource limiti nedeniyle scheduler pressure olusabilir."
+  - "Dis baglanti sorunlari (MSSQL/Oracle) executor regresyonu ile karistirilmamali."
+  - "FAB login smoke testinde webserver rate-limit ayari nedeniyle tekrarli test kosulari 429 verebilir."
+
+blocked_reason: null
+next_action: "Wave 13 kapatildi. Sonraki backlog epigi secilerek Wave 14 planning baslatilabilir."

@@ -50,6 +50,11 @@ This repository is intended to become the public `ffengine/ffengine` repository.
 
 - Canonical execution path is `FFEngineOperator` only.
 - `plan/prepare/run` phases are orchestrated inside `src/ffengine/airflow/operator.py`.
+- Local runtime executor (C20): `LocalExecutor`.
+- Default C20 tuning in compose:
+  - `AIRFLOW__CORE__PARALLELISM=8`
+  - `AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG=4`
+  - `AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG=2`
 - XCom policy is minimal for performance:
   - `rows_transferred`
   - `duration_seconds`
@@ -110,7 +115,7 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 ## Airflow Bugfix Notes
 
 - Detailed Airflow 3.1.6 execution/scheduler bugfix and verification guide:
-  [`docs/airflow-execution-api-bugfix.md`](docs/airflow-execution-api-bugfix.md)
+  [`handbook/reference/AIRFLOW_EXECUTION_API_BUGFIX.md`](handbook/reference/AIRFLOW_EXECUTION_API_BUGFIX.md)
 
 ## Debugpy UAT
 
@@ -119,7 +124,7 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 ## Type Mapping Contract
 
 - Cross-dialect type conversion policy and matrix:
-  [`docs/type-mapping-policy.md`](docs/type-mapping-policy.md)
+  [`handbook/reference/TYPE_MAPPING_POLICY.md`](handbook/reference/TYPE_MAPPING_POLICY.md)
 
 ## Governance
 
@@ -167,6 +172,31 @@ docker-compose -p ffengine-core -f docker/docker-compose.yml --env-file .env up 
 ```
 
 _(This launches the Webserver on port 8085, the internal background Scheduler, the Airflow 3 DAG Processor, and the Metadata Postgres database.)_
+
+**Apply config changes after compose edits (recreate):**
+
+```bash
+docker-compose -p ffengine-core -f docker/docker-compose.yml --env-file .env up -d --force-recreate --remove-orphans
+```
+
+**Verify LocalExecutor is active (C20):**
+
+```bash
+docker exec core-airflow-webserver airflow config get-value core executor
+docker exec core-airflow-scheduler airflow config get-value core executor
+```
+
+Expected output on both commands: `LocalExecutor`
+
+**LocalExecutor smoke DAG (parallel evidence):**
+
+```bash
+docker exec core-airflow-webserver airflow dags trigger ffengine_local_executor_smoke
+docker exec core-airflow-webserver airflow dags list-runs ffengine_local_executor_smoke --no-backfill
+docker exec core-airflow-webserver airflow tasks states-for-dag-run ffengine_local_executor_smoke <dag_run_id>
+```
+
+Acceptance hint: `probe_a`, `probe_b`, `probe_c` task time windows should overlap in the same DAG run.
 
 **Start the Test Databases (Isolated):**
 
