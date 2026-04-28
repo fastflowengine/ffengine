@@ -1,4 +1,4 @@
-﻿"""
+"""
 C08_T13 - Flow Studio FastAPI endpoint unit/API tests.
 """
 
@@ -402,7 +402,7 @@ def test_create_dag_writes_files(client, studio_paths):
     yaml_name = "webhook_whk_level1_src_to_stg_group_1.yaml"
     assert (flow / yaml_name).is_file()
     assert dag_py.as_posix().endswith(
-        "/dags/webhook/whk/level1/src_to_stg/whk_to_stg_level1_group_1_dag.py"
+        "/dags/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_1_dag.py"
     )
     assert dag_py.is_file()
     dag_source = dag_py.read_text(encoding="utf-8")
@@ -835,7 +835,7 @@ def test_dag_filename_fallback_when_flow_not_to_pattern(client, studio_paths):
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 201
     dag_py = Path(r.json()["dag_path"])
-    assert dag_py.name == "whk_to_delta_sync_level1_group_1_dag.py"
+    assert dag_py.name == "webhook_whk_level1_delta_sync_group_1_dag.py"
 
 
 def test_create_dag_same_flow_creates_group_based_dags_and_yamls(client, studio_paths):
@@ -856,8 +856,99 @@ def test_create_dag_same_flow_creates_group_based_dags_and_yamls(client, studio_
     flow = Path(body1["flow_dir"])
     assert (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").is_file()
     assert (flow / "webhook_whk_level1_src_to_stg_group_2.yaml").is_file()
-    assert Path(body1["dag_path"]).name == "whk_to_stg_level1_group_1_dag.py"
-    assert Path(body2["dag_path"]).name == "whk_to_stg_level1_group_2_dag.py"
+    assert Path(body1["dag_path"]).name == "webhook_whk_level1_src_to_stg_group_1_dag.py"
+    assert Path(body2["dag_path"]).name == "webhook_whk_level1_src_to_stg_group_2_dag.py"
+
+
+def test_update_dag_keeps_legacy_dag_id_and_path(client, studio_paths):
+    projects_root, dag_root = studio_paths
+    flow_dir = projects_root / "webhook" / "whk" / "level1" / "src_to_stg"
+    flow_dir.mkdir(parents=True, exist_ok=True)
+    config_path = flow_dir / "webhook_whk_level1_src_to_stg_group_9.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "source_db_var": "src_c",
+                "target_db_var": "tgt_c",
+                "flow_tasks": [
+                    {
+                        "task_group_id": "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg",
+                        "depends_on": [],
+                        "source_schema": "public",
+                        "source_table": "orders",
+                        "source_type": "table",
+                        "column_mapping_mode": "source",
+                        "target_schema": "dwh",
+                        "target_table": "orders_stg",
+                        "load_method": "append",
+                        "batch_size": 10000,
+                        "partitioning": {
+                            "enabled": False,
+                            "mode": "auto_numeric",
+                            "column": None,
+                            "parts": 2,
+                            "distinct_limit": 16,
+                            "ranges": [],
+                        },
+                        "tags": ["webhook", "whk", "level1", "src_to_stg"],
+                    }
+                ],
+                "custom_tags": [],
+                "scheduler": {
+                    "cron_expression": None,
+                    "timezone": "UTC",
+                    "active": True,
+                    "start_date": "2023-01-01T00:00:00",
+                },
+                "dag_dependencies": {"upstream_dag_ids": []},
+            },
+            sort_keys=False,
+            allow_unicode=False,
+        ),
+        encoding="utf-8",
+    )
+
+    legacy_dag_id = "whk_to_stg_level1_group_9_dag"
+    legacy_dag_path = dag_root / "webhook" / "whk" / "level1" / "src_to_stg" / f"{legacy_dag_id}.py"
+    legacy_dag_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_dag_path.write_text(
+        "\n".join(
+            [
+                ss.STUDIO_DAG_MARKER,
+                "from pathlib import Path",
+                f'CONFIG_PATH = Path("{config_path.as_posix()}")',
+                f'DAG_ID = "{legacy_dag_id}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _minimal_table_payload()
+    payload["load_method"] = "replace"
+    r = client.post(f"/api/update-dag?dag_id={legacy_dag_id}", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["dag_id"] == legacy_dag_id
+    assert body["dag_path"] == legacy_dag_path.as_posix()
+    assert Path(body["dag_path"]).name == "whk_to_stg_level1_group_9_dag.py"
+
+
+def test_create_dag_group_no_increments_with_mixed_legacy_and_new_dag_names(client, studio_paths):
+    projects_root, dag_root = studio_paths
+    flow_dir = projects_root / "webhook" / "whk" / "level1" / "src_to_stg"
+    flow_dir.mkdir(parents=True, exist_ok=True)
+    legacy_dag_dir = dag_root / "webhook" / "whk" / "level1" / "src_to_stg"
+    legacy_dag_dir.mkdir(parents=True, exist_ok=True)
+
+    legacy_dag = legacy_dag_dir / "whk_to_stg_level1_group_3_dag.py"
+    legacy_dag.write_text("# legacy dag\n", encoding="utf-8")
+
+    payload = _minimal_table_payload()
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    dag_name = Path(r.json()["dag_path"]).name
+    assert dag_name == "webhook_whk_level1_src_to_stg_group_4_dag.py"
+    assert (flow_dir / "webhook_whk_level1_src_to_stg_group_4.yaml").is_file()
 
 
 def test_update_dag_requires_dag_id_query(client, studio_paths):
@@ -997,7 +1088,36 @@ def test_dag_options_filters_scope_without_wait_previous_field(client, studio_pa
     option_ids = [str(item.get("dag_id") or "") for item in body.get("items", [])]
     assert dag1 in option_ids
     assert dag2 not in option_ids
-    assert dag3 not in option_ids
+    assert dag3 in option_ids
+
+
+def test_dag_dependencies_accept_cross_domain_in_same_project(client, studio_paths):
+    p1 = _minimal_table_payload()
+    p2 = _minimal_table_payload()
+    p2["domain"] = "other"
+    p2["source_table"] = "customers"
+    p2["target_table"] = "customers_stg"
+
+    r1 = client.post("/api/create-dag", json=p1)
+    r2 = client.post("/api/create-dag", json=p2)
+    assert r1.status_code == 201, r1.text
+    assert r2.status_code == 201, r2.text
+
+    dag1 = Path(r1.json()["dag_path"]).stem
+    dag2 = Path(r2.json()["dag_path"]).stem
+    cfg2_path = Path(r2.json()["config_path"])
+
+    upd2 = _minimal_table_payload()
+    upd2["domain"] = "other"
+    upd2["source_table"] = "customers"
+    upd2["target_table"] = "customers_stg"
+    upd2["dag_dependencies"] = {"upstream_dag_ids": [dag1]}
+    r_upd2 = client.post(f"/api/update-dag?dag_id={dag2}", json=upd2)
+    assert r_upd2.status_code == 200, r_upd2.text
+    assert (r_upd2.json().get("dag_dependencies") or {}).get("upstream_dag_ids") == [dag1]
+
+    cfg2 = yaml.safe_load(cfg2_path.read_text(encoding="utf-8"))
+    assert (cfg2.get("dag_dependencies") or {}).get("upstream_dag_ids") == [dag1]
 
 
 def test_create_update_roundtrip_dag_dependencies(client, studio_paths):
@@ -1013,7 +1133,9 @@ def test_create_update_roundtrip_dag_dependencies(client, studio_paths):
 
     dag1 = Path(r1.json()["dag_path"]).stem
     dag2 = Path(r2.json()["dag_path"]).stem
+    dag1_path = Path(r1.json()["dag_path"])
     cfg2_path = Path(r2.json()["config_path"])
+    dag1_source_before = dag1_path.read_text(encoding="utf-8")
 
     update_payload = _minimal_table_payload()
     update_payload["source_table"] = "customers"
@@ -1029,13 +1151,69 @@ def test_create_update_roundtrip_dag_dependencies(client, studio_paths):
 
     dag2_source = Path(r2.json()["dag_path"]).read_text(encoding="utf-8")
     assert f'UPSTREAM_DAG_IDS = ["{dag1}"]' in dag2_source
+    assert "def _bounded_task_id(value: str, max_len: int = 250) -> str:" in dag2_source
+    assert 'suffix = "__h_" + hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:8]' in dag2_source
+    assert 'trigger_task_id = "trigger_upstream__" +' in dag2_source
+    assert "upstream_triggers[upstream_dag_id] = TriggerDagRunOperator(" in dag2_source
+    assert "trigger_dag_id=upstream_dag_id" in dag2_source
+    assert 'logical_date="{{ dag_run.logical_date }}"' in dag2_source
+    assert "skip_when_already_exists=False" in dag2_source
+    assert "reset_dag_run=False" in dag2_source
+    assert "upstream_triggers[upstream_dag_id] >> upstream_waiters[upstream_dag_id]" in dag2_source
+    assert "dag_slug = _slug_task_token(DAG_ID) or \"dag\"" in dag2_source
+    assert "root_task_order = {task_id: idx + 1 for idx, task_id in enumerate(root_task_ids)}" in dag2_source
+    assert 'task_id_value = _bounded_task_id(' in dag2_source
+    assert 'f"run_after__{joined_upstream_slug}__{dag_slug}__r{root_order}"' in dag2_source
+    assert 'joined_upstream_slug = "__".join(upstream_slug_parts)' in dag2_source
+    assert "task_id=task_id_value" in dag2_source
+    assert "waiter >> task_groups[root_task_id]" in dag2_source
     assert 'failed_states=["failed"]' in dag2_source
     assert "upstream_failed" not in dag2_source
+
+    dag1_source = dag1_path.read_text(encoding="utf-8")
+    assert "DOWNSTREAM_DAG_IDS" not in dag1_source
+    assert "trigger_downstream__" not in dag1_source
+    assert "trigger_dag_id=downstream_dag_id" not in dag1_source
+    assert dag1_source == dag1_source_before
 
     r_cfg = client.get(f"/api/dag-config?dag_id={dag2}")
     assert r_cfg.status_code == 200, r_cfg.text
     payload = r_cfg.json().get("payload") or {}
     assert (payload.get("dag_dependencies") or {}).get("upstream_dag_ids") == [dag1]
+
+
+def test_dependency_render_contains_multi_upstream_join_logic(client, studio_paths):
+    p1 = _minimal_table_payload()
+    p2 = _minimal_table_payload()
+    p2["source_table"] = "customers"
+    p2["target_table"] = "customers_stg"
+    p3 = _minimal_table_payload()
+    p3["source_table"] = "orders"
+    p3["target_table"] = "orders_stg"
+
+    r1 = client.post("/api/create-dag", json=p1)
+    r2 = client.post("/api/create-dag", json=p2)
+    r3 = client.post("/api/create-dag", json=p3)
+    assert r1.status_code == 201, r1.text
+    assert r2.status_code == 201, r2.text
+    assert r3.status_code == 201, r3.text
+
+    dag1 = Path(r1.json()["dag_path"]).stem
+    dag2 = Path(r2.json()["dag_path"]).stem
+    dag3 = Path(r3.json()["dag_path"]).stem
+
+    upd3 = _minimal_table_payload()
+    upd3["source_table"] = "orders"
+    upd3["target_table"] = "orders_stg"
+    upd3["dag_dependencies"] = {"upstream_dag_ids": [dag1, dag2]}
+    r_upd3 = client.post(f"/api/update-dag?dag_id={dag3}", json=upd3)
+    assert r_upd3.status_code == 200, r_upd3.text
+
+    dag3_source = Path(r3.json()["dag_path"]).read_text(encoding="utf-8")
+    assert f'UPSTREAM_DAG_IDS = ["{dag1}", "{dag2}"]' in dag3_source
+    assert "upstream_slug_parts = [_slug_task_token(uid) for uid in UPSTREAM_DAG_IDS]" in dag3_source
+    assert 'joined_upstream_slug = "__".join(upstream_slug_parts)' in dag3_source
+    assert 'f"run_after__{joined_upstream_slug}__{dag_slug}__r{root_order}"' in dag3_source
 
 
 def test_create_dag_rejects_unknown_dag_dependency(client, studio_paths):
@@ -1077,6 +1255,7 @@ def test_dag_dependency_cycle_rejected(client, studio_paths):
 def test_delete_dag_requires_cleanup_references_and_then_cleans(client, studio_paths):
     p1 = _minimal_table_payload()
     p2 = _minimal_table_payload()
+    p2["domain"] = "other"
     p2["source_table"] = "customers"
     p2["target_table"] = "customers_stg"
 
@@ -1087,9 +1266,11 @@ def test_delete_dag_requires_cleanup_references_and_then_cleans(client, studio_p
 
     dag1 = Path(r1.json()["dag_path"]).stem
     dag2 = Path(r2.json()["dag_path"]).stem
+    dag2_path = Path(r2.json()["dag_path"])
     cfg2_path = Path(r2.json()["config_path"])
 
     upd2 = _minimal_table_payload()
+    upd2["domain"] = "other"
     upd2["source_table"] = "customers"
     upd2["target_table"] = "customers_stg"
     upd2["dag_dependencies"] = {"upstream_dag_ids": [dag1]}
@@ -1109,6 +1290,8 @@ def test_delete_dag_requires_cleanup_references_and_then_cleans(client, studio_p
 
     cfg2 = yaml.safe_load(cfg2_path.read_text(encoding="utf-8"))
     assert (cfg2.get("dag_dependencies") or {}).get("upstream_dag_ids") == []
+    dag2_source = dag2_path.read_text(encoding="utf-8")
+    assert "UPSTREAM_DAG_IDS = []" in dag2_source
 
 
 def test_dag_revisions_promote_roundtrip(client, studio_paths):
@@ -1560,13 +1743,13 @@ def test_timeline_mocked(client):
 
 def test_dag_config_mocked_success(client):
     mocked = {
-        "dag_id": "whk_to_stg_level1_group_1_dag",
+        "dag_id": "webhook_whk_level1_src_to_stg_group_1_dag",
         "payload": {"project": "webhook"},
-        "dag_path": "/opt/airflow/dags/webhook/whk/level1/src_to_stg/whk_to_stg_level1_group_1_dag.py",
+        "dag_path": "/opt/airflow/dags/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_1_dag.py",
         "config_path": "/opt/airflow/projects/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_1.yaml",
     }
     with patch.object(api_app_module, "resolve_dag_config_for_update", return_value=mocked):
-        r = client.get("/api/dag-config?dag_id=whk_to_stg_level1_group_1_dag")
+        r = client.get("/api/dag-config?dag_id=webhook_whk_level1_src_to_stg_group_1_dag")
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
@@ -1868,7 +2051,7 @@ def test_resolve_dag_config_for_update_with_nonstandard_dag_id_when_studio_dag_e
                         "batch_size": 10000,
                         "partitioning": {
                             "enabled": False,
-                            "mode": "auto",
+                            "mode": "auto_numeric",
                             "column": None,
                             "parts": 2,
                             "ranges": [],
@@ -1936,6 +2119,24 @@ def test_dag_payload_rejects_full_scan_partitioning_mode():
             source_type="table",
             partitioning_mode="full_scan",
         )
+
+
+def test_dag_payload_accepts_auto_datetime_partitioning_mode():
+    payload = DagUpsertPayload(
+        project="p",
+        domain="d",
+        level="level1",
+        flow="src_to_stg",
+        source_conn_id="a",
+        target_conn_id="b",
+        source_schema="s",
+        source_table="tbl",
+        target_schema="t",
+        target_table="x",
+        source_type="table",
+        partitioning_mode="auto_datetime",
+    )
+    assert payload.partitioning_mode == "auto_datetime"
 
 
 def test_api_key_required_when_env_set(client, studio_paths, monkeypatch):

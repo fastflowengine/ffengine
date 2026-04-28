@@ -257,11 +257,20 @@ def _extract_flow_target(flow: str) -> str:
     return raw
 
 
-def _build_dag_filename(domain: str, level: str, flow: str, group_no: int) -> str:
+def _build_dag_filename(
+    project: str,
+    domain: str,
+    level: str,
+    flow: str,
+    group_no: int,
+) -> str:
+    project_slug = _slugify(project, "default_project")
     domain_slug = _slugify(domain, "domain")
     level_slug = _slugify(level, "level1")
-    flow_target = _extract_flow_target(flow)
-    return f"{domain_slug}_to_{flow_target}_{level_slug}_group_{int(group_no)}_dag.py"
+    flow_slug = _slugify(flow, "src_to_stg")
+    return (
+        f"{project_slug}_{domain_slug}_{level_slug}_{flow_slug}_group_{int(group_no)}_dag.py"
+    )
 
 
 def _build_yaml_filename(
@@ -461,9 +470,8 @@ def _read_dag_dependencies_from_yaml(config_path: Path) -> list[str]:
 
 def _collect_scope_studio_dag_entries(project: str, domain: str) -> dict[str, dict[str, Any]]:
     scope_project = _slugify(project, "default_project")
-    scope_domain = _slugify(domain, "default_domain")
     dag_root = _generated_dag_root()
-    scope_root = dag_root / scope_project / scope_domain
+    scope_root = dag_root / scope_project
     if not scope_root.is_dir():
         return {}
 
@@ -481,7 +489,7 @@ def _collect_scope_studio_dag_entries(project: str, domain: str) -> dict[str, di
             cfg_project, cfg_domain, cfg_level, cfg_flow = _extract_scope_from_config_path(config_path)
         except Exception:
             continue
-        if cfg_project != scope_project or cfg_domain != scope_domain:
+        if cfg_project != scope_project:
             continue
         dag_id = str(dag_path.stem or "").strip()
         if not dag_id:
@@ -567,12 +575,9 @@ def _validate_dag_dependencies_for_scope(
         upstream_entry = scope_entries.get(dep_dag_id)
         if upstream_entry is None:
             raise ValueError(f"dag_dependencies contains invalid dag_id: {dep_dag_id}")
-        if (
-            str(upstream_entry.get("project") or "") != project
-            or str(upstream_entry.get("domain") or "") != domain
-        ):
+        if str(upstream_entry.get("project") or "") != project:
             raise ValueError(
-                "dag_dependencies can only reference DAGs in the same project/domain scope."
+                "dag_dependencies can only reference DAGs in the same project scope."
             )
 
     graph = _build_scope_dag_graph(
@@ -582,19 +587,6 @@ def _validate_dag_dependencies_for_scope(
     )
     _validate_scope_dag_graph(graph)
     return normalized
-
-
-def _build_scope_downstream_map(scope_entries: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
-    out: dict[str, list[str]] = {dag_id: [] for dag_id in scope_entries}
-    for dag_id, entry in scope_entries.items():
-        upstreams = list(entry.get("upstream_dag_ids") or [])
-        for upstream_dag_id in upstreams:
-            if upstream_dag_id not in out:
-                continue
-            out[upstream_dag_id].append(dag_id)
-    for dag_id in list(out.keys()):
-        out[dag_id] = sorted(dict.fromkeys(out[dag_id]))
-    return out
 
 
 def discover_dag_dependency_options(
@@ -669,51 +661,31 @@ def discover_dag_dependency_options(
     }
 
 
-def _sync_scope_dag_dependency_render(
-    *,
-    project: str,
-    domain: str,
-    strict_dag_id: str | None = None,
-) -> list[str]:
-    scope_entries = _collect_scope_studio_dag_entries(project, domain)
-    if not scope_entries:
-        return []
-    downstream_map = _build_scope_downstream_map(scope_entries)
-    warnings: list[str] = []
-    strict_id = str(strict_dag_id or "").strip()
-
-    for dag_id, entry in scope_entries.items():
-        dag_path = entry.get("dag_path")
-        config_path = entry.get("config_path")
-        if not isinstance(dag_path, Path) or not isinstance(config_path, Path):
-            continue
-        try:
-            cfg = _load_yaml_root(config_path)
-            user_tags = _normalize_custom_tags(cfg.get("custom_tags"))
-            tags = _merge_tags(
-                _derive_tags(
-                    str(entry.get("project") or ""),
-                    str(entry.get("domain") or ""),
-                    str(entry.get("level") or ""),
-                    str(entry.get("flow") or ""),
-                ),
-                user_tags,
-            )
-            dag_source = _render_group_dag_source(
-                dag_id=dag_id,
-                config_path=config_path,
-                tags=tags,
-                upstream_dag_ids=list(entry.get("upstream_dag_ids") or []),
-                downstream_dag_ids=list(downstream_map.get(dag_id) or []),
-            )
-            if not dag_path.is_file() or dag_path.read_text(encoding="utf-8") != dag_source:
-                dag_path.write_text(dag_source, encoding="utf-8")
-        except Exception as exc:
-            if strict_id and dag_id == strict_id:
-                raise
-            warnings.append(f"DAG dependency render skipped for {dag_id}: {exc}")
-
-    return warnings
+def _render_single_studio_dag_entry(entry: dict[str, Any]) -> None:
+    dag_id = str(entry.get("dag_id") or "").strip()
+    dag_path = entry.get("dag_path")
+    config_path = entry.get("config_path")
+    if not dag_id or not isinstance(dag_path, Path) or not isinstance(config_path, Path):
+        raise ValueError("Invalid studio DAG entry.")
+    cfg = _load_yaml_root(config_path)
+    user_tags = _normalize_custom_tags(cfg.get("custom_tags"))
+    tags = _merge_tags(
+        _derive_tags(
+            str(entry.get("project") or ""),
+            str(entry.get("domain") or ""),
+            str(entry.get("level") or ""),
+            str(entry.get("flow") or ""),
+        ),
+        user_tags,
+    )
+    dag_source = _render_group_dag_source(
+        dag_id=dag_id,
+        config_path=config_path,
+        tags=tags,
+        upstream_dag_ids=list(entry.get("upstream_dag_ids") or []),
+    )
+    if not dag_path.is_file() or dag_path.read_text(encoding="utf-8") != dag_source:
+        dag_path.write_text(dag_source, encoding="utf-8")
 
 
 def _render_group_dag_source(
@@ -722,13 +694,11 @@ def _render_group_dag_source(
     config_path: Path,
     tags: list[str],
     upstream_dag_ids: list[str] | None = None,
-    downstream_dag_ids: list[str] | None = None,
 ) -> str:
     cfg = json.dumps(config_path.as_posix())
     did = json.dumps(dag_id)
     dtags = json.dumps(tags)
     upstream_ids = json.dumps(list(dict.fromkeys(upstream_dag_ids or [])))
-    downstream_ids = json.dumps(list(dict.fromkeys(downstream_dag_ids or [])))
     return f'''{STUDIO_DAG_MARKER}
 import json
 import re
@@ -737,17 +707,47 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import yaml
+import hashlib
 from airflow import DAG
+try:
+    from airflow.sdk import task
+except Exception:
+    from airflow.decorators import task
 from airflow.sensors.external_task import ExternalTaskSensor
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.utils.task_group import TaskGroup
 
-from ffengine.airflow.operator import FFEngineOperator
+from ffengine.airflow.operator import (
+    FFEngineOperator,
+    aggregate_partition_payloads,
+    plan_partitions_for_task,
+    prepare_target_for_task,
+    run_partition_for_task,
+)
 
 CONFIG_PATH = Path({cfg})
 DAG_ID = {did}
 DAG_TAGS = {dtags}
 UPSTREAM_DAG_IDS = {upstream_ids}
-DOWNSTREAM_DAG_IDS = {downstream_ids}
+
+
+def _slug_task_token(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "").strip()).strip("_").lower()
+
+
+def _bounded_task_id(value: str, max_len: int = 250) -> str:
+    normalized = _slug_task_token(value) or "task"
+    if len(normalized) <= max_len:
+        return normalized
+    suffix = "__h_" + hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:8]
+    head_len = max(1, max_len - len(suffix))
+    head = normalized[:head_len].rstrip("_")
+    if not head:
+        head = "task"
+    return f"{{head}}{{suffix}}"
+
+
+dag_slug = _slug_task_token(DAG_ID) or "dag"
 
 
 def _resolve_task_dependencies(task_defs):
@@ -850,6 +850,9 @@ else:
 dag_active = bool(scheduler.get("active", True))
 edges = _resolve_task_dependencies(task_defs)
 effective_schedule = None if UPSTREAM_DAG_IDS else cron_expression
+task_ids_with_upstream = {{downstream for _upstream, downstream in edges}}
+root_task_ids = [task_id for task_id in [str(task.get("task_group_id") or "").strip() for task in task_defs] if task_id not in task_ids_with_upstream]
+root_task_order = {{task_id: idx + 1 for idx, task_id in enumerate(root_task_ids)}}
 
 with DAG(
     dag_id=DAG_ID,
@@ -859,22 +862,109 @@ with DAG(
     tags=DAG_TAGS,
     is_paused_upon_creation=not dag_active,
 ) as dag:
-    operators = {{}}
-    for task in task_defs:
-        task_group_id = str(task.get("task_group_id") or "").strip()
-        operators[task_group_id] = FFEngineOperator(
-            config_path=str(CONFIG_PATH),
-            task_group_id=task_group_id,
-            source_conn_id=source_conn_id,
-            target_conn_id=target_conn_id,
-            task_id=f"run_{{task_group_id}}",
-        )
+    task_groups = {{}}
+    for task_def in task_defs:
+        task_group_id = str(task_def.get("task_group_id") or "").strip()
+        partition_cfg = task_def.get("partitioning")
+        partition_enabled = isinstance(partition_cfg, dict) and bool(partition_cfg.get("enabled", False))
+        if not partition_enabled:
+            task_slug = _slug_task_token(task_group_id) or f"task_{{max(1, len(task_groups) + 1)}}"
+            if UPSTREAM_DAG_IDS and task_group_id in root_task_ids:
+                upstream_slug_parts = [_slug_task_token(uid) for uid in UPSTREAM_DAG_IDS]
+                upstream_slug_parts = [item for item in upstream_slug_parts if item]
+                joined_upstream_slug = "__".join(upstream_slug_parts)
+                root_order = int(root_task_order.get(task_group_id) or 1)
+                if joined_upstream_slug:
+                    task_id_value = _bounded_task_id(
+                        f"run_after__{{joined_upstream_slug}}__{{dag_slug}}__r{{root_order}}"
+                    )
+                else:
+                    task_id_value = _bounded_task_id(f"run__{{dag_slug}}__r{{root_order}}")
+            else:
+                task_id_value = f"run_{{task_group_id}}"
+            task_groups[task_group_id] = FFEngineOperator(
+                config_path=str(CONFIG_PATH),
+                task_group_id=task_group_id,
+                source_conn_id=source_conn_id,
+                target_conn_id=target_conn_id,
+                task_id=task_id_value,
+            )
+            continue
+        group_id = "flow__" + re.sub(r"[^A-Za-z0-9_]+", "_", task_group_id).strip("_").lower()
+        with TaskGroup(group_id=group_id) as flow_group:
+            @task(task_id="plan_partitions")
+            def _plan_partitions(
+                _config_path=str(CONFIG_PATH),
+                _task_group_id=task_group_id,
+                _source_conn_id=source_conn_id,
+                _target_conn_id=target_conn_id,
+            ):
+                return plan_partitions_for_task(
+                    config_path=_config_path,
+                    task_group_id=_task_group_id,
+                    source_conn_id=_source_conn_id,
+                    target_conn_id=_target_conn_id,
+                )
+
+            @task(task_id="prepare_target")
+            def _prepare_target(
+                _plan_specs,
+                _config_path=str(CONFIG_PATH),
+                _task_group_id=task_group_id,
+                _source_conn_id=source_conn_id,
+                _target_conn_id=target_conn_id,
+            ):
+                _ = _plan_specs
+                return prepare_target_for_task(
+                    config_path=_config_path,
+                    task_group_id=_task_group_id,
+                    source_conn_id=_source_conn_id,
+                    target_conn_id=_target_conn_id,
+                )
+
+            @task(task_id="run_partition")
+            def _run_partition(
+                partition_spec,
+                _config_path=str(CONFIG_PATH),
+                _task_group_id=task_group_id,
+                _source_conn_id=source_conn_id,
+                _target_conn_id=target_conn_id,
+            ):
+                return run_partition_for_task(
+                    config_path=_config_path,
+                    task_group_id=_task_group_id,
+                    source_conn_id=_source_conn_id,
+                    target_conn_id=_target_conn_id,
+                    partition_spec=partition_spec,
+                )
+
+            @task(task_id="aggregate")
+            def _aggregate_partition_payloads(results):
+                return aggregate_partition_payloads(results)
+
+            plan_ctx = _plan_partitions()
+            prepare_ctx = _prepare_target(plan_ctx)
+            run_payloads = _run_partition.expand(partition_spec=plan_ctx)
+            prepare_ctx >> run_payloads
+            _aggregate_partition_payloads(run_payloads)
+        task_groups[task_group_id] = flow_group
+
     for upstream, downstream in edges:
-        operators[upstream] >> operators[downstream]
+        task_groups[upstream] >> task_groups[downstream]
 
     if UPSTREAM_DAG_IDS:
+        upstream_triggers = {{}}
         upstream_waiters = {{}}
         for upstream_dag_id in UPSTREAM_DAG_IDS:
+            trigger_task_id = "trigger_upstream__" + re.sub(r"[^A-Za-z0-9_]+", "_", str(upstream_dag_id)).strip("_").lower()
+            upstream_triggers[upstream_dag_id] = TriggerDagRunOperator(
+                task_id=trigger_task_id,
+                trigger_dag_id=upstream_dag_id,
+                logical_date="{{{{ dag_run.logical_date }}}}",
+                wait_for_completion=False,
+                reset_dag_run=False,
+                skip_when_already_exists=False,
+            )
             waiter_task_id = "wait_upstream__" + re.sub(r"[^A-Za-z0-9_]+", "_", str(upstream_dag_id)).strip("_").lower()
             upstream_waiters[upstream_dag_id] = ExternalTaskSensor(
                 task_id=waiter_task_id,
@@ -887,26 +977,12 @@ with DAG(
                 poke_interval=60,
                 timeout=12 * 60 * 60,
             )
+            upstream_triggers[upstream_dag_id] >> upstream_waiters[upstream_dag_id]
 
-        task_ids_with_upstream = {{downstream for _upstream, downstream in edges}}
-        root_task_ids = [task_id for task_id in operators if task_id not in task_ids_with_upstream]
         for waiter in upstream_waiters.values():
             for root_task_id in root_task_ids:
-                waiter >> operators[root_task_id]
+                waiter >> task_groups[root_task_id]
 
-    if DOWNSTREAM_DAG_IDS:
-        task_ids_with_downstream = {{upstream for upstream, _downstream in edges}}
-        leaf_task_ids = [task_id for task_id in operators if task_id not in task_ids_with_downstream]
-        for downstream_dag_id in DOWNSTREAM_DAG_IDS:
-            trigger_task_id = "trigger_downstream__" + re.sub(r"[^A-Za-z0-9_]+", "_", str(downstream_dag_id)).strip("_").lower()
-            trigger = TriggerDagRunOperator(
-                task_id=trigger_task_id,
-                trigger_dag_id=downstream_dag_id,
-                wait_for_completion=False,
-                reset_dag_run=False,
-            )
-            for leaf_task_id in leaf_task_ids:
-                operators[leaf_task_id] >> trigger
 '''
 
 
@@ -1598,7 +1674,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                 "where": str(task.get("where") or "").strip() or None,
                 "batch_size": int(task.get("batch_size") or 10000),
                 "partitioning_enabled": bool(partitioning.get("enabled", False)),
-                "partitioning_mode": str(partitioning.get("mode") or "auto").strip() or "auto",
+                "partitioning_mode": str(partitioning.get("mode") or "auto_numeric").strip() or "auto_numeric",
                 "partitioning_column": str(partitioning.get("column") or "").strip() or None,
                 "partitioning_parts": int(partitioning.get("parts") or 2),
                 "partitioning_distinct_limit": int(partitioning.get("distinct_limit") or 16),
@@ -2138,6 +2214,7 @@ def delete_dag_bundle(
                         yaml.safe_dump(ref_cfg, sort_keys=False, allow_unicode=False),
                         encoding="utf-8",
                     )
+                    ref_entry["upstream_dag_ids"] = filtered
                     cleaned_reference_dags.append(ref_dag_id)
                 except Exception as exc:
                     warnings.append(
@@ -2199,15 +2276,13 @@ def delete_dag_bundle(
                 else:
                     warnings.append(f"Metadata file could not be deleted: {metadata_path.as_posix()}")
 
-        try:
-            warnings.extend(
-                _sync_scope_dag_dependency_render(
-                    project=project,
-                    domain=domain,
-                )
-            )
-        except Exception as exc:
-            warnings.append(f"DAG dependency render sync failed: {exc}")
+        if cleaned_reference_dags:
+            for ref_dag_id in cleaned_reference_dags:
+                ref_entry = scope_entries.get(ref_dag_id) or {}
+                try:
+                    _render_single_studio_dag_entry(ref_entry)
+                except Exception as exc:
+                    warnings.append(f"DAG render refresh failed for {ref_dag_id}: {exc}")
 
         return {
             "dag_id": did,
@@ -2260,7 +2335,7 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
         "batch_size": int(payload.get("batch_size", 10000)),
         "partitioning": {
             "enabled": bool(payload.get("partitioning_enabled", False)),
-            "mode": payload.get("partitioning_mode", "auto"),
+            "mode": payload.get("partitioning_mode", "auto_numeric"),
             "column": payload.get("partitioning_column"),
             "parts": int(payload.get("partitioning_parts", 2)),
             "distinct_limit": int(payload.get("partitioning_distinct_limit") or 16),
@@ -2320,7 +2395,7 @@ def build_task_dict_for_validation_from_task(
         "batch_size": int(task_payload.get("batch_size", 10000)),
         "partitioning": {
             "enabled": bool(task_payload.get("partitioning_enabled", False)),
-            "mode": task_payload.get("partitioning_mode", "auto"),
+            "mode": task_payload.get("partitioning_mode", "auto_numeric"),
             "column": task_payload.get("partitioning_column"),
             "parts": int(task_payload.get("partitioning_parts", 2)),
             "distinct_limit": int(task_payload.get("partitioning_distinct_limit") or 16),
@@ -2795,6 +2870,46 @@ def _resolve_schema_name(available_schemas: list[str], requested_schema: str) ->
     raise ValueError(f"Schema not found: {requested}")
 
 
+def _resolve_table_name(available_tables: list[str], requested_table: str) -> str:
+    requested = str(requested_table or "").strip()
+    if "." in requested:
+        requested = requested.rsplit(".", 1)[-1].strip()
+    requested = requested.strip('"').strip("'").strip()
+    if not requested:
+        raise ValueError("Table value cannot be empty.")
+    if requested in available_tables:
+        return requested
+
+    requested_lower = requested.lower()
+    case_insensitive_exact = [t for t in available_tables if str(t or "").lower() == requested_lower]
+    if len(case_insensitive_exact) == 1:
+        return case_insensitive_exact[0]
+
+    # Accept common UI/manual entry variations such as Event_Logs vs EventLogs.
+    def _canon(name: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+
+    requested_canon = _canon(requested)
+    if requested_canon:
+        canon_matches = [t for t in available_tables if _canon(str(t or "")) == requested_canon]
+        if len(canon_matches) == 1:
+            return canon_matches[0]
+        if len(canon_matches) > 1:
+            raise ValueError(
+                f"Table '{requested}' birden fazla kanonik eslesme verdi: {', '.join(canon_matches[:5])}"
+            )
+
+    prefix_matches = [t for t in available_tables if str(t or "").lower().startswith(requested_lower)]
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+    if len(prefix_matches) > 1:
+        raise ValueError(
+            f"Table '{requested}' birden fazla eslesme verdi: {', '.join(prefix_matches[:5])}"
+        )
+
+    raise ValueError(f"Table not found: {requested}")
+
+
 def discover_tables(
     conn_id: str,
     schema: str,
@@ -2832,7 +2947,11 @@ def discover_columns(conn_id: str, schema: str, table: str) -> list[dict[str, An
     params = AirflowConnectionAdapter.get_connection_params(conn_id)
     dialect = resolve_dialect(params["conn_type"])
     with DBSession(params, dialect) as session:
-        columns = dialect.get_table_schema(session.conn, schema, table)
+        available_schemas = dialect.list_schemas(session.conn)
+        resolved_schema = _resolve_schema_name(available_schemas, schema)
+        available_tables = dialect.list_tables(session.conn, resolved_schema)
+        resolved_table = _resolve_table_name(available_tables, table)
+        columns = dialect.get_table_schema(session.conn, resolved_schema, resolved_table)
 
     return [
         {
@@ -2970,7 +3089,13 @@ def create_or_update_dag(
             group_no = _extract_group_no(dag_path.stem, config_path)
         else:
             group_no = _next_group_no(flow_dir, flow_dag_dir)
-            dag_path = flow_dag_dir / _build_dag_filename(domain, level, flow, group_no)
+            dag_path = flow_dag_dir / _build_dag_filename(
+                project,
+                domain,
+                level,
+                flow,
+                group_no,
+            )
             _ensure_path_under_root(dag_path, gen_root)
             config_path = flow_dir / _build_yaml_filename(project, domain, level, flow, group_no)
 
@@ -3047,7 +3172,7 @@ def create_or_update_dag(
                 "batch_size": int(item.get("batch_size", 10000)),
                 "partitioning": {
                     "enabled": bool(item.get("partitioning_enabled", False)),
-                    "mode": item.get("partitioning_mode", "auto"),
+                    "mode": item.get("partitioning_mode", "auto_numeric"),
                     "column": item.get("partitioning_column") or None,
                     "parts": int(item.get("partitioning_parts", 2)),
                     "distinct_limit": int(item.get("partitioning_distinct_limit") or 16),
@@ -3174,16 +3299,8 @@ def create_or_update_dag(
                 config_path=config_path,
                 tags=tags,
                 upstream_dag_ids=dag_upstream_dag_ids,
-                downstream_dag_ids=[],
             )
             dag_path.write_text(dag_source, encoding="utf-8")
-            operation_warnings.extend(
-                _sync_scope_dag_dependency_render(
-                    project=project,
-                    domain=domain,
-                    strict_dag_id=dag_path.stem,
-                )
-            )
             if update:
                 pause_sync_warning = _sync_dag_paused_state(dag_path.stem, active=bool(scheduler.get("active", True)))
                 if pause_sync_warning:
