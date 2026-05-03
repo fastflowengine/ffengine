@@ -411,6 +411,33 @@ async function studioFetch(path, options) {
       WAIT_PREVIOUS: "wait_previous",
       CUSTOM: "custom",
     });
+    const TASK_TYPES = Object.freeze({
+      SOURCE_TARGET: "source_target",
+      SCRIPT_RUN: "script_run",
+      DAG: "dag",
+    });
+    const PARTITION_MODE_HINTS = Object.freeze({
+      auto_numeric: "MIN/MAX based numeric partitioning. Best for integer/decimal columns.",
+      auto_datetime: "MIN/MAX based datetime partitioning. Best for date/timestamp columns.",
+      percentile: "Uses percentile boundaries. If unsupported, falls back to auto_numeric.",
+      hash_mod: "Splits rows into modulo buckets (MOD/%). Good for evenly distributed keys.",
+      distinct: "Builds IN groups from DISTINCT values. May be expensive on high cardinality.",
+      explicit: "Manual WHERE fragments. Enter one partition filter per line.",
+    });
+    const PARTITION_COLUMN_REQUIRED_MODES = new Set([
+      "auto_numeric",
+      "auto_datetime",
+      "percentile",
+      "hash_mod",
+      "distinct",
+    ]);
+    const PARTITION_PARTS_REQUIRED_MODES = new Set([
+      "auto_numeric",
+      "auto_datetime",
+      "percentile",
+      "hash_mod",
+      "distinct",
+    ]);
     let customTagsState = [];
     let schedulerModeState = "manual";
     let schedulerAppliedState = null;
@@ -887,7 +914,9 @@ async function studioFetch(path, options) {
       modal.classList.add("open");
       modal.setAttribute("aria-hidden", "false");
       document.body.classList.add("scheduler-modal-open");
-      loadTimezoneOptions(el("scheduler_timezone").value || "", 300);
+      // Always preload full timezone list on open; filtering-by-current-value
+      // can collapse the datalist to a single option (e.g. Europe/Istanbul).
+      loadTimezoneOptions("", 300);
       el("scheduler_timezone").focus();
     }
 
@@ -986,6 +1015,20 @@ async function studioFetch(path, options) {
       );
       return normalizeDagDependencyIds(safeState.upstream_dag_ids)
         .filter((dagId) => optionIds.has(dagId));
+    }
+
+    function sortDagDependencyOptionsByDagId(items) {
+      const rows = Array.isArray(items) ? [...items] : [];
+      rows.sort((left, right) => {
+        const leftDagIdRaw = String((left && left.dag_id) || "").trim();
+        const rightDagIdRaw = String((right && right.dag_id) || "").trim();
+        const leftDagId = leftDagIdRaw.toLowerCase();
+        const rightDagId = rightDagIdRaw.toLowerCase();
+        const byNormalized = leftDagId.localeCompare(rightDagId);
+        if (byNormalized !== 0) return byNormalized;
+        return leftDagIdRaw.localeCompare(rightDagIdRaw);
+      });
+      return rows;
     }
 
     function summarizeDagDepsCompact(state) {
@@ -1096,6 +1139,7 @@ async function studioFetch(path, options) {
         dagDepsOptionsState = [];
         dagDepsReferencedByState = [];
         reconcileDagDepsAppliedState();
+        refreshAllDagTaskOptions();
         return null;
       }
 
@@ -1112,10 +1156,11 @@ async function studioFetch(path, options) {
         dagDepsOptionsState = [];
         dagDepsReferencedByState = [];
         reconcileDagDepsAppliedState();
+        refreshAllDagTaskOptions();
         return null;
       }
 
-      dagDepsOptionsState = Array.isArray(data.items) ? data.items : [];
+      dagDepsOptionsState = sortDagDependencyOptionsByDagId(data.items);
       dagDepsReferencedByState = Array.isArray(data.referenced_by) ? data.referenced_by : [];
 
       if (!dagDepsAppliedState) {
@@ -1123,7 +1168,42 @@ async function studioFetch(path, options) {
       } else {
         reconcileDagDepsAppliedState();
       }
+      refreshAllDagTaskOptions();
       return data;
+    }
+
+    function refreshDagTaskOptions(card) {
+      const selectNode = card && card.querySelector(".dag-task-dag-id");
+      if (!selectNode) return;
+      const currentValue = String(selectNode.value || "").trim();
+      const pending = String(card.dataset.pendingDagTaskDagId || "").trim();
+      const preferred = pending || currentValue;
+      const options = Array.isArray(dagDepsOptionsState) ? dagDepsOptionsState : [];
+      selectNode.innerHTML = "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = options.length ? "Select DAG" : "No DAG";
+      selectNode.appendChild(placeholder);
+      for (const item of options) {
+        const dagId = String(item && item.dag_id || "").trim();
+        if (!dagId) continue;
+        const opt = document.createElement("option");
+        opt.value = dagId;
+        opt.textContent = `${dagId} (${item.level || "-"} / ${item.flow || "-"})`;
+        selectNode.appendChild(opt);
+      }
+      if (preferred && options.some((item) => String(item && item.dag_id || "").trim() === preferred)) {
+        selectNode.value = preferred;
+      } else {
+        selectNode.value = "";
+      }
+      delete card.dataset.pendingDagTaskDagId;
+    }
+
+    function refreshAllDagTaskOptions() {
+      for (const card of getTaskCards()) {
+        refreshDagTaskOptions(card);
+      }
     }
 
     async function openDagDepsModal() {
@@ -1165,12 +1245,13 @@ async function studioFetch(path, options) {
 
     function pushToast(message, variant = "success", persistent = false) {
       const container = el("toast_container");
-      if (!container || !message) return;
+      const normalizedMessage = normalizeApiDetail(message);
+      if (!container || !normalizedMessage) return;
       const node = document.createElement("div");
       node.className = `toast ${variant === "error" ? "error" : "success"}`;
       const text = document.createElement("div");
       text.className = "toast-message";
-      text.textContent = message;
+      text.textContent = normalizedMessage;
       const close = document.createElement("button");
       close.type = "button";
       close.className = "toast-close";
@@ -1185,6 +1266,53 @@ async function studioFetch(path, options) {
       }
     }
 
+    function normalizeApiDetail(detail) {
+      if (detail == null) return "";
+      if (typeof detail === "string") return detail.trim();
+      if (Array.isArray(detail)) {
+        const parts = detail
+          .map((item) => {
+            if (item == null) return "";
+            if (typeof item === "string") return item.trim();
+            if (typeof item === "object") {
+              const msg = String(item.msg || item.message || "").trim();
+              const locRaw = Array.isArray(item.loc) ? item.loc.join(".") : String(item.loc || "").trim();
+              const loc = locRaw ? `${locRaw}: ` : "";
+              const direct = `${loc}${msg}`.trim();
+              if (direct) return direct;
+              try {
+                return JSON.stringify(item);
+              } catch (_err) {
+                return String(item);
+              }
+            }
+            return String(item).trim();
+          })
+          .filter(Boolean);
+        return parts.join(" | ");
+      }
+      if (typeof detail === "object") {
+        const nestedDetail = detail.detail;
+        if (nestedDetail != null && nestedDetail !== detail) {
+          const nested = normalizeApiDetail(nestedDetail);
+          if (nested) return nested;
+        }
+        const msg = String(detail.message || detail.msg || "").trim();
+        if (msg) return msg;
+        try {
+          return JSON.stringify(detail);
+        } catch (_err) {
+          return String(detail);
+        }
+      }
+      return String(detail).trim();
+    }
+
+    function apiErrorMessage(data, fallbackMessage) {
+      const normalized = normalizeApiDetail(data && data.detail);
+      return normalized || fallbackMessage;
+    }
+
     function setOperationBusy(active, label) {
       isBusy = !!active;
       const progress = el("operation_progress");
@@ -1196,7 +1324,7 @@ async function studioFetch(path, options) {
       if (progressLabel) {
         progressLabel.textContent = active ? (label || "Operation in progress") : "";
       }
-      for (const btn of document.querySelectorAll(".btn-create-dag, #btn_update_top, #btn_promote_revision, #btn_add_task, #btn_refresh_revisions, #btn_delete_dag, #btn_cancel_delete_dag, #btn_confirm_delete_dag, #btn_cancel_scheduler_modal, #btn_apply_scheduler_modal, #btn_cancel_dag_deps_modal, #btn_apply_dag_deps_modal, #btn_add_dag_dependency, #btn_cancel_task_delete, #btn_confirm_task_delete, .btn-delete-task")) {
+      for (const btn of document.querySelectorAll(".btn-create-dag, #btn_update_top, #btn_promote_revision, #btn_add_task, #btn_refresh_revisions, #btn_delete_dag, #btn_cancel_delete_dag, #btn_confirm_delete_dag, #btn_cancel_scheduler_modal, #btn_apply_scheduler_modal, #btn_cancel_dag_deps_modal, #btn_apply_dag_deps_modal, #btn_add_dag_dependency, #btn_cancel_task_delete, #btn_confirm_task_delete, .btn-delete-task, .task-type-chip")) {
         btn.disabled = !!active;
       }
       const schedulerCompactPanel = el("scheduler_compact_panel");
@@ -1453,7 +1581,7 @@ async function studioFetch(path, options) {
           studioUrl(`/api/delete-dag?dag_id=${encodeURIComponent(dagId)}${cleanupFlag}`)
         );
         if (!data || !data.ok) {
-          pushToast(data && data.detail ? data.detail : "DAG deletion failed.", "error", true);
+          pushToast(apiErrorMessage(data, "DAG deletion failed."), "error", true);
           return;
         }
         closeDeleteDagModal();
@@ -1563,7 +1691,7 @@ async function studioFetch(path, options) {
         );
         if (!data || !data.ok) {
           setUpdateModeStatus("Revision promote failed.", "warn");
-          pushToast(data && data.detail ? data.detail : "Revision promote failed.", "error", true);
+          pushToast(apiErrorMessage(data, "Revision promote failed."), "error", true);
           return;
         }
         setUpdateModeStatus(`Revision activated: ${revisionId}`, "ok");
@@ -1803,6 +1931,110 @@ async function studioFetch(path, options) {
         return;
       }
       fillOptions(listId, data.items || []);
+    }
+
+    function setPartitionColumnOptions(selectNode, items, preferredValue, placeholderText) {
+      if (!selectNode) return;
+      const preferred = String(preferredValue || "").trim();
+      const normalized = Array.from(
+        new Set(
+          (Array.isArray(items) ? items : [])
+            .map((x) => String(x || "").trim())
+            .filter(Boolean)
+        )
+      ).sort((a, b) => a.localeCompare(b));
+      if (preferred && !normalized.includes(preferred)) {
+        normalized.unshift(preferred);
+      }
+
+      selectNode.innerHTML = "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = placeholderText || "Select source column";
+      selectNode.appendChild(placeholder);
+      for (const name of normalized) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        selectNode.appendChild(opt);
+      }
+      if (preferred && normalized.includes(preferred)) {
+        selectNode.value = preferred;
+      } else {
+        selectNode.value = "";
+      }
+    }
+
+    function normalizeRelationIdentifier(raw) {
+      let value = String(raw || "").trim();
+      if (!value) return "";
+      if (value.includes(".")) {
+        const parts = value.split(".");
+        value = String(parts[parts.length - 1] || "").trim();
+      }
+      return value.replace(/^["']+|["']+$/g, "").trim();
+    }
+
+    async function loadPartitionColumnOptions(card) {
+      const selectNode = card && card.querySelector(".partitioning-column");
+      if (!selectNode) return;
+
+      const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim();
+      const sourceType = String(card.querySelector(".source-type")?.value || "table").trim();
+      const connId = String(el("source_conn_id")?.value || "").trim();
+      const schema = String(card.querySelector(".source-schema")?.value || "").trim();
+      const table = normalizeRelationIdentifier(card.querySelector(".source-table")?.value || "");
+      const requestKey = `${sourceType}|${connId}|${schema}|${table}`.toLowerCase();
+      card.dataset.partitionColumnRequestKey = requestKey;
+
+      const pending = String(card.dataset.pendingPartitionColumn || "").trim();
+      const preferred = pending || String(selectNode.value || "").trim();
+
+      if (taskType !== TASK_TYPES.SOURCE_TARGET) {
+        setPartitionColumnOptions(selectNode, [], "", "Column selection is available only for Source Target tasks.");
+        syncPartitionState(card);
+        return;
+      }
+      if (sourceType !== "table" && sourceType !== "view") {
+        setPartitionColumnOptions(selectNode, [], "", "Column selection is available only for table source.");
+        syncPartitionState(card);
+        return;
+      }
+      if (!connId || !schema || !table) {
+        setPartitionColumnOptions(selectNode, [], "", "Select source schema and table first.");
+        syncPartitionState(card);
+        return;
+      }
+
+      try {
+        const path = `/api/columns?conn_id=${encodeURIComponent(connId)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`;
+        const resp = await studioFetch(path);
+        const data = await parseJsonSafe(resp);
+        const stillCurrent = card.dataset.partitionColumnRequestKey === requestKey;
+        if (!stillCurrent) return;
+        if (!resp.ok || !data.ok) {
+          setPartitionColumnOptions(selectNode, [], "", "Columns could not be loaded.");
+          syncPartitionState(card);
+          return;
+        }
+
+        const names = (Array.isArray(data.items) ? data.items : [])
+          .map((item) => String(item && item.name ? item.name : "").trim())
+          .filter(Boolean);
+        setPartitionColumnOptions(selectNode, names, preferred, "Select source column");
+        delete card.dataset.pendingPartitionColumn;
+        syncPartitionState(card);
+      } catch (_err) {
+        if (card.dataset.partitionColumnRequestKey !== requestKey) return;
+        setPartitionColumnOptions(selectNode, [], "", "Columns could not be loaded.");
+        syncPartitionState(card);
+      }
+    }
+
+    function refreshAllPartitionColumnOptions() {
+      for (const card of getTaskCards()) {
+        loadPartitionColumnOptions(card);
+      }
     }
 
     const pickerTemp = {
@@ -2088,11 +2320,13 @@ async function studioFetch(path, options) {
         fillConnectionSelect("source_conn_id", items, "ffengine_source");
         fillConnectionSelect("target_conn_id", items, "ffengine_target");
         refreshTaskCardHeaders();
+        refreshAllPartitionColumnOptions();
       } catch (err) {
         logDebug("connection list load failed", { ok: false, detail: `Connection list could not be loaded: ${String(err && err.message ? err.message : err)}` });
         fillConnectionSelect("source_conn_id", [], "");
         fillConnectionSelect("target_conn_id", [], "");
         refreshTaskCardHeaders();
+        refreshAllPartitionColumnOptions();
       }
     }
 
@@ -2100,11 +2334,48 @@ async function studioFetch(path, options) {
       return Array.from(document.querySelectorAll("#tasks_container .task-card"));
     }
 
+    function syncTaskTypeSegment(card) {
+      const currentType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim() || TASK_TYPES.SOURCE_TARGET;
+      const chips = card.querySelectorAll(".task-type-chip");
+      for (const chip of chips) {
+        const chipType = String(chip.getAttribute("data-task-type") || "").trim();
+        const isActive = chipType === currentType;
+        chip.classList.toggle("active", isActive);
+        chip.setAttribute("aria-pressed", isActive ? "true" : "false");
+      }
+    }
+
+    function bindTaskTypeSegment(card) {
+      const typeSelect = card.querySelector(".task-type");
+      const chips = card.querySelectorAll(".task-type-chip");
+      const segment = card.querySelector(".task-type-segment");
+      if (!typeSelect || !chips.length) return;
+      if (segment) {
+        segment.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+        segment.addEventListener("mousedown", (ev) => ev.stopPropagation());
+        segment.addEventListener("click", (ev) => ev.stopPropagation());
+      }
+      for (const chip of chips) {
+        chip.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const nextType = String(chip.getAttribute("data-task-type") || "").trim();
+          if (!nextType || nextType === typeSelect.value) return;
+          typeSelect.value = nextType;
+          typeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+      }
+    }
+
     function setTaskCardCollapsed(card, collapsed) {
       const head = card.querySelector(".task-head");
+      const toggle = card.querySelector(".task-collapse-toggle");
       card.classList.toggle("collapsed", !!collapsed);
       if (head) {
         head.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      }
+      if (toggle) {
+        toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
       }
     }
 
@@ -2121,16 +2392,12 @@ async function studioFetch(path, options) {
     }
 
     function bindTaskCollapse(card) {
-      const head = card.querySelector(".task-head");
-      if (!head) return;
-      head.addEventListener("click", () => {
+      const toggle = card.querySelector(".task-collapse-toggle");
+      if (!toggle) return;
+      toggle.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
         toggleTaskCardCollapsed(card);
-      });
-      head.addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter" || ev.key === " ") {
-          ev.preventDefault();
-          toggleTaskCardCollapsed(card);
-        }
       });
     }
 
@@ -2145,6 +2412,7 @@ async function studioFetch(path, options) {
       for (let i = 0; i < cards.length; i += 1) {
         cards[i].querySelector(".task-title").textContent = `Task #${i + 1}`;
         cards[i].querySelector(".btn-delete-task").disabled = cards.length <= 1;
+        syncTaskTypeState(cards[i]);
         const identity = syncTaskGroupState(cards[i], i + 1);
         cards[i].dataset.currentTaskGroupId = identity.task_group_id;
         newTaskIds.push(identity.task_group_id);
@@ -2256,9 +2524,82 @@ async function studioFetch(path, options) {
       updateBindingsVisibility(card);
     }
 
+    function syncTaskTypeState(card) {
+      const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim() || TASK_TYPES.SOURCE_TARGET;
+      syncTaskTypeSegment(card);
+      card.classList.toggle("single-pane-task", taskType !== TASK_TYPES.SOURCE_TARGET);
+      const sourceTargetFields = card.querySelector(".source-target-fields");
+      const scriptRunFields = card.querySelector(".script-run-fields");
+      const dagTaskFields = card.querySelector(".dag-task-fields");
+      const targetCard = card.querySelector(".target-card");
+      const whereClauseWrap = card.querySelector(".where-clause-wrap");
+      const whereInput = card.querySelector(".where");
+
+      sourceTargetFields?.classList.toggle("hidden", taskType !== TASK_TYPES.SOURCE_TARGET);
+      scriptRunFields?.classList.toggle("hidden", taskType !== TASK_TYPES.SCRIPT_RUN);
+      dagTaskFields?.classList.toggle("hidden", taskType !== TASK_TYPES.DAG);
+      targetCard?.classList.toggle("hidden", taskType !== TASK_TYPES.SOURCE_TARGET);
+      whereClauseWrap?.classList.toggle("hidden", taskType !== TASK_TYPES.SOURCE_TARGET);
+      if (whereInput) whereInput.disabled = taskType !== TASK_TYPES.SOURCE_TARGET;
+
+      const modeSelect = card.querySelector(".dependency-mode");
+      const tabButtons = Array.from(card.querySelectorAll(".tab-btn"));
+      const panels = Array.from(card.querySelectorAll(".tab-panel"));
+      const allowAllTabs = taskType === TASK_TYPES.SOURCE_TARGET;
+      const allowScriptFilterTab = taskType === TASK_TYPES.SCRIPT_RUN;
+      for (const btn of tabButtons) {
+        const tabId = String(btn.getAttribute("data-tab") || "");
+        const keep = allowAllTabs || tabId === "dependencies" || (allowScriptFilterTab && tabId === "filter");
+        btn.classList.toggle("hidden", !keep);
+      }
+      for (const panel of panels) {
+        const panelId = String(panel.getAttribute("data-tab-panel") || "");
+        const keep = allowAllTabs || panelId === "dependencies" || (allowScriptFilterTab && panelId === "filter");
+        panel.classList.toggle("hidden", !keep);
+      }
+
+      if (!allowAllTabs) {
+        const fallbackTab = allowScriptFilterTab ? "filter" : "dependencies";
+        const depBtn = tabButtons.find((btn) => String(btn.getAttribute("data-tab") || "") === fallbackTab);
+        const depPanel = panels.find((panel) => String(panel.getAttribute("data-tab-panel") || "") === fallbackTab);
+        for (const btn of tabButtons) btn.classList.remove("active");
+        for (const panel of panels) panel.classList.remove("active");
+        if (depBtn) depBtn.classList.add("active");
+        if (depPanel) depPanel.classList.add("active");
+      } else if (!tabButtons.some((btn) => btn.classList.contains("active"))) {
+        const firstVisible = tabButtons.find((btn) => !btn.classList.contains("hidden"));
+        if (firstVisible) {
+          firstVisible.classList.add("active");
+          const target = firstVisible.getAttribute("data-tab");
+          const panel = card.querySelector(`.tab-panel[data-tab-panel="${target}"]`);
+          if (panel) panel.classList.add("active");
+        }
+      }
+
+      const sourceTypeSelect = card.querySelector(".source-type");
+      const mappingModeSelect = card.querySelector(".column-mapping-mode");
+      const scriptEnvSelect = card.querySelector(".script-run-environment");
+      const scriptSqlInput = card.querySelector(".script-sql");
+      const dagTaskSelect = card.querySelector(".dag-task-dag-id");
+
+      if (sourceTypeSelect) sourceTypeSelect.disabled = taskType !== TASK_TYPES.SOURCE_TARGET;
+      if (mappingModeSelect) mappingModeSelect.disabled = taskType !== TASK_TYPES.SOURCE_TARGET || sourceTypeSelect?.value === "sql";
+      if (scriptEnvSelect) scriptEnvSelect.disabled = taskType !== TASK_TYPES.SCRIPT_RUN;
+      if (scriptSqlInput) scriptSqlInput.disabled = taskType !== TASK_TYPES.SCRIPT_RUN;
+      if (dagTaskSelect) dagTaskSelect.disabled = taskType !== TASK_TYPES.DAG;
+
+      if (taskType === TASK_TYPES.DAG) {
+        refreshDagTaskOptions(card);
+      }
+      if (modeSelect && taskType !== TASK_TYPES.SOURCE_TARGET) {
+        modeSelect.disabled = false;
+      }
+    }
+
     function setTaskCardValues(card, values, fallbackIndex = 1) {
+      const taskType = values.task_type || TASK_TYPES.SOURCE_TARGET;
       const sourceType = values.source_type || "table";
-      const partitioningMode = values.partitioning_mode || "auto";
+      const partitioningMode = values.partitioning_mode || "auto_numeric";
       const loadedTaskGroupId = String(values.task_group_id || "").trim();
       const initialDependsOn = normalizeDependsOnList(values.depends_on || []);
       if (loadedTaskGroupId) {
@@ -2272,10 +2613,15 @@ async function studioFetch(path, options) {
       setCardDependencyMode(card, DEPENDENCY_MODES.PARALLEL);
       setCardCustomDependsOn(card, []);
       card.dataset.loadedSignature = "";
+      card.querySelector(".task-type").value = taskType;
       card.querySelector(".source-schema").value = values.source_schema || "";
       card.querySelector(".source-table").value = values.source_table || "";
       card.querySelector(".source-type").value = sourceType === "view" ? "table" : sourceType;
       card.querySelector(".source-inline-sql").value = values.inline_sql || "";
+      card.querySelector(".script-run-environment").value = values.script_run_environment || "source";
+      card.querySelector(".script-sql").value = values.script_sql || "";
+      card.querySelector(".dag-task-dag-id").value = values.dag_task_dag_id || "";
+      card.dataset.pendingDagTaskDagId = String(values.dag_task_dag_id || "").trim();
       card.querySelector(".target-schema").value = values.target_schema || "";
       card.querySelector(".target-table").value = values.target_table || "";
       card.querySelector(".load-method").value = values.load_method || "create_if_not_exists_or_truncate";
@@ -2287,15 +2633,25 @@ async function studioFetch(path, options) {
       const partitioningModeSelect = card.querySelector(".partitioning-mode");
       partitioningModeSelect.value = partitioningMode;
       if (partitioningModeSelect.value !== partitioningMode) {
-        partitioningModeSelect.value = "auto";
+        partitioningModeSelect.value = "auto_numeric";
       }
-      card.querySelector(".partitioning-column").value = values.partitioning_column || "";
+      const partitionColumn = String(values.partitioning_column || "").trim();
+      const partitionColumnSelect = card.querySelector(".partitioning-column");
+      partitionColumnSelect.value = partitionColumn;
+      if (partitionColumn) {
+        card.dataset.pendingPartitionColumn = partitionColumn;
+      } else {
+        delete card.dataset.pendingPartitionColumn;
+      }
+      loadPartitionColumnOptions(card);
+      refreshDagTaskOptions(card);
       card.querySelector(".partitioning-parts").value = String(values.partitioning_parts || 2);
       card.querySelector(".partitioning-distinct-limit").value = String(
         asPositiveInt(values.partitioning_distinct_limit, 16)
       );
       card.querySelector(".partitioning-ranges").value = rangesToMultilineText(values.partitioning_ranges || []);
       setBindingsFromValues(card, values.bindings || []);
+      syncTaskTypeState(card);
       toggleSourceMode(card);
       if (loadedTaskGroupId) {
         card.dataset.loadedSignature = buildTaskGroupFormula(card, fallbackIndex);
@@ -2306,6 +2662,8 @@ async function studioFetch(path, options) {
     }
 
     function toggleSourceMode(card) {
+      const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim();
+      if (taskType !== TASK_TYPES.SOURCE_TARGET) return;
       const sourceType = card.querySelector(".source-type").value;
       const sqlWrap = card.querySelector(".source-sql-wrap");
       const sqlText = card.querySelector(".source-inline-sql");
@@ -2325,6 +2683,7 @@ async function studioFetch(path, options) {
     }
 
     function buildTaskGroupFormula(card, fallbackIndex) {
+      const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim() || TASK_TYPES.SOURCE_TARGET;
       const sourceType = card.querySelector(".source-type").value;
       const sourceDbVal = (el("source_conn_id").value || "").trim();
       const targetDbVal = (el("target_conn_id").value || "").trim();
@@ -2333,8 +2692,17 @@ async function studioFetch(path, options) {
       const loadMethodVal = card.querySelector(".load-method").value.trim();
       const targetSchemaVal = card.querySelector(".target-schema").value.trim();
       const targetTableVal = card.querySelector(".target-table").value.trim();
-      const taskGroupSourceSchema = sourceType === "sql" ? "sql" : sourceSchemaVal;
-      const taskGroupSourceTable = sourceType === "sql" ? "query" : sourceTableVal;
+      const scriptEnvVal = (card.querySelector(".script-run-environment")?.value || "source").trim();
+      const dagTaskDagId = (card.querySelector(".dag-task-dag-id")?.value || "").trim();
+      const taskGroupSourceSchema = taskType === TASK_TYPES.SCRIPT_RUN
+        ? "script"
+        : (taskType === TASK_TYPES.DAG ? "dag" : (sourceType === "sql" ? "sql" : sourceSchemaVal));
+      const taskGroupSourceTable = taskType === TASK_TYPES.SCRIPT_RUN
+        ? (scriptEnvVal || "source")
+        : (taskType === TASK_TYPES.DAG ? (dagTaskDagId || "dag") : (sourceType === "sql" ? "query" : sourceTableVal));
+      const taskGroupLoadMethod = taskType === TASK_TYPES.SCRIPT_RUN
+        ? "script"
+        : (taskType === TASK_TYPES.DAG ? "dag" : loadMethodVal);
       return [
         String(fallbackIndex),
         slugify(sourceDbVal, "source"),
@@ -2342,7 +2710,7 @@ async function studioFetch(path, options) {
         slugify(taskGroupSourceTable, "table"),
         "to",
         slugify(targetDbVal, "target"),
-        slugify(loadMethodVal, "method"),
+        slugify(taskGroupLoadMethod, "method"),
         slugify(targetSchemaVal, "tgt"),
         slugify(targetTableVal, "table"),
       ].join("_");
@@ -2646,8 +3014,23 @@ async function studioFetch(path, options) {
     }
 
     function syncMappingState(card) {
+      const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim() || TASK_TYPES.SOURCE_TARGET;
       const sourceType = card.querySelector(".source-type").value;
       const modeSelect = card.querySelector(".column-mapping-mode");
+      const mappingGeneratedPathWrap = card.querySelector(".mapping-generated-path-wrap");
+      const mappingContentWrap = card.querySelector(".mapping-content-wrap");
+      const mappingActions = card.querySelector(".mapping-actions");
+      const generatedPathInput = card.querySelector(".mapping-generated-path");
+      if (taskType !== TASK_TYPES.SOURCE_TARGET) {
+        modeSelect.disabled = true;
+        modeSelect.setAttribute("aria-disabled", "true");
+        mappingGeneratedPathWrap.classList.add("hidden");
+        mappingContentWrap.classList.add("hidden");
+        mappingActions.classList.add("hidden");
+        generatedPathInput.value = "";
+        setMappingStatus(card, "", false);
+        return;
+      }
       const isSql = sourceType === "sql";
       if (isSql && modeSelect.value !== "mapping_file") {
         modeSelect.value = "mapping_file";
@@ -2656,14 +3039,10 @@ async function studioFetch(path, options) {
       modeSelect.setAttribute("aria-disabled", isSql ? "true" : "false");
 
       const isMappingFileMode = modeSelect.value === "mapping_file";
-      const mappingGeneratedPathWrap = card.querySelector(".mapping-generated-path-wrap");
-      const mappingContentWrap = card.querySelector(".mapping-content-wrap");
-      const mappingActions = card.querySelector(".mapping-actions");
       mappingGeneratedPathWrap.classList.toggle("hidden", !isMappingFileMode);
       mappingContentWrap.classList.toggle("hidden", !isMappingFileMode);
       mappingActions.classList.toggle("hidden", !isMappingFileMode);
 
-      const generatedPathInput = card.querySelector(".mapping-generated-path");
       generatedPathInput.value = isMappingFileMode ? buildGeneratedMappingDisplayPath(card) : "";
       if (isSql) {
         setMappingStatus(card, "mapping_file mode is required for SQL source.", false);
@@ -2673,6 +3052,11 @@ async function studioFetch(path, options) {
     }
 
     async function generateMappingForCard(card) {
+      const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim();
+      if (taskType !== TASK_TYPES.SOURCE_TARGET) {
+        setMappingStatus(card, "Mapping is available only for Source Target tasks.", true);
+        return;
+      }
       const sourceType = card.querySelector(".source-type").value;
       const taskNo = Math.max(1, getTaskCards().indexOf(card) + 1);
       const taskIdentity = resolveTaskIdentity(card, taskNo);
@@ -2697,7 +3081,7 @@ async function studioFetch(path, options) {
       try {
         const data = await postJson(studioUrl("/api/mapping/generate"), payload);
         if (!data || !data.ok) {
-          setMappingStatus(card, data && (data.detail || "Mapping uretilemedi."), true);
+          setMappingStatus(card && data ? apiErrorMessage(data, "Mapping uretilemedi.") : "Mapping uretilemedi.", true);
           return;
         }
         if (data.generated_mapping_file) {
@@ -2727,11 +3111,13 @@ async function studioFetch(path, options) {
     }
 
     function syncPartitionState(card) {
+      const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim() || TASK_TYPES.SOURCE_TARGET;
       const enabledInput = card.querySelector(".partitioning-enabled");
       const modeSelect = card.querySelector(".partitioning-mode");
       const modeRowWrap = card.querySelector(".partitioning-mode-wrap");
       const columnWrap = card.querySelector(".partitioning-column-wrap");
       const modeWrap = card.querySelector(".partitioning-mode-field-wrap");
+      const modeHint = card.querySelector(".partitioning-mode-hint");
       const secondaryWrap = card.querySelector(".partitioning-secondary-wrap");
       const partsWrap = card.querySelector(".partitioning-parts-wrap");
       const distinctLimitWrap = card.querySelector(".partitioning-distinct-limit-wrap");
@@ -2742,10 +3128,15 @@ async function studioFetch(path, options) {
       const explicitInput = card.querySelector(".partitioning-ranges");
 
       const enabled = !!enabledInput.checked;
-      const mode = String(modeSelect.value || "auto").trim() || "auto";
+      if (taskType !== TASK_TYPES.SOURCE_TARGET) {
+        enabledInput.checked = false;
+      }
+      const mode = String(modeSelect.value || "auto_numeric").trim() || "auto_numeric";
       const isExplicit = mode === "explicit";
       const isDistinct = mode === "distinct";
-      const isHashMod = mode === "hash_mod";
+      const modeHintText = PARTITION_MODE_HINTS[mode] || "";
+      const columnRequired = PARTITION_COLUMN_REQUIRED_MODES.has(mode);
+      const partsRequired = PARTITION_PARTS_REQUIRED_MODES.has(mode);
 
       const setDisabled = (node, disabled) => {
         if (!node) return;
@@ -2757,25 +3148,37 @@ async function studioFetch(path, options) {
         node.classList.toggle("hidden", !!hidden);
       };
 
-      const showMode = enabled;
-      const showColumn = enabled && !isExplicit;
-      const showParts = enabled && (isDistinct || isHashMod);
-      const showDistinctLimit = enabled && isDistinct;
-      const showExplicit = enabled && isExplicit;
+      const enablePartitioningUi = taskType === TASK_TYPES.SOURCE_TARGET;
+      const showMode = enablePartitioningUi && enabled;
+      const showColumn = enablePartitioningUi && enabled && columnRequired;
+      const showParts = enablePartitioningUi && enabled && partsRequired;
+      const showDistinctLimit = enablePartitioningUi && enabled && isDistinct;
+      const showExplicit = enablePartitioningUi && enabled && isExplicit;
+      const showModeHint = enablePartitioningUi && enabled && !!modeHintText;
 
       setHidden(modeWrap, !showMode);
+      setHidden(modeHint, !showModeHint);
       setHidden(columnWrap, !showColumn);
       setHidden(partsWrap, !showParts);
       setHidden(distinctLimitWrap, !showDistinctLimit);
       setHidden(explicitWrap, !showExplicit);
-      setHidden(modeRowWrap, !enabled || (!showMode && !showColumn));
-      setHidden(secondaryWrap, !enabled || (!showParts && !showDistinctLimit));
+      setHidden(modeRowWrap, !enablePartitioningUi || !enabled || (!showMode && !showColumn));
+      setHidden(secondaryWrap, !enablePartitioningUi || !enabled || (!showParts && !showDistinctLimit));
+      if (modeHint) {
+        modeHint.textContent = modeHintText;
+      }
 
-      setDisabled(modeSelect, !showMode);
-      setDisabled(columnInput, !showColumn);
+      setDisabled(modeSelect, !enablePartitioningUi || !showMode);
+      setDisabled(columnInput, !showColumn || (columnInput.options && columnInput.options.length <= 1));
       setDisabled(partsInput, !showParts);
       setDisabled(distinctLimitInput, !showDistinctLimit);
       setDisabled(explicitInput, !showExplicit);
+      enabledInput.disabled = !enablePartitioningUi;
+      enabledInput.setAttribute("aria-disabled", enablePartitioningUi ? "false" : "true");
+      columnInput.required = !!showColumn;
+      partsInput.required = !!showParts;
+      distinctLimitInput.required = !!showDistinctLimit;
+      explicitInput.required = !!showExplicit;
     }
 
     function bindPartitionState(card) {
@@ -2804,17 +3207,35 @@ async function studioFetch(path, options) {
     }
 
     function bindTaskAutocomplete(card) {
+      const taskTypeSelect = card.querySelector(".task-type");
       const sourceSchemaInput = card.querySelector(".source-schema");
       const sourceTableInput = card.querySelector(".source-table");
       const targetSchemaInput = card.querySelector(".target-schema");
       const targetTableInput = card.querySelector(".target-table");
       const sourceTypeSelect = card.querySelector(".source-type");
       const loadMethodSelect = card.querySelector(".load-method");
+      const scriptEnvSelect = card.querySelector(".script-run-environment");
+      const scriptSqlInput = card.querySelector(".script-sql");
+      const dagTaskDagSelect = card.querySelector(".dag-task-dag-id");
+      const schedulePartitionColumnRefresh = () => {
+        clearTimeout(card._ffPartitionColumnTimer);
+        card._ffPartitionColumnTimer = setTimeout(() => {
+          loadPartitionColumnOptions(card);
+        }, 220);
+      };
+
+      taskTypeSelect.addEventListener("change", () => {
+        syncTaskTypeState(card);
+        syncPartitionState(card);
+        syncMappingState(card);
+        refreshTaskCardHeaders();
+      });
 
       sourceTypeSelect.addEventListener("change", () => {
         toggleSourceMode(card);
         refreshTaskCardHeaders();
         syncMappingState(card);
+        schedulePartitionColumnRefresh();
       });
 
       sourceSchemaInput.addEventListener("input", () => {
@@ -2827,8 +3248,10 @@ async function studioFetch(path, options) {
             "source_schema_options",
             "source_conn_id"
           );
+          loadPartitionColumnOptions(card);
         }, 220);
       });
+      sourceSchemaInput.addEventListener("change", () => schedulePartitionColumnRefresh());
 
       sourceTableInput.addEventListener("input", () => {
         if (sourceTypeSelect.value === "sql") return;
@@ -2840,8 +3263,10 @@ async function studioFetch(path, options) {
             sourceTableInput.value.trim(),
             "source_table_options"
           );
+          loadPartitionColumnOptions(card);
         }, 220);
       });
+      sourceTableInput.addEventListener("change", () => schedulePartitionColumnRefresh());
 
       targetSchemaInput.addEventListener("input", () => {
         refreshTaskCardHeaders();
@@ -2871,6 +3296,12 @@ async function studioFetch(path, options) {
       sourceSchemaInput.addEventListener("input", () => refreshTaskCardHeaders());
       sourceTableInput.addEventListener("input", () => refreshTaskCardHeaders());
       loadMethodSelect.addEventListener("change", () => refreshTaskCardHeaders());
+      scriptEnvSelect.addEventListener("change", () => refreshTaskCardHeaders());
+      scriptSqlInput.addEventListener("input", () => refreshTaskCardHeaders());
+      dagTaskDagSelect.addEventListener("change", () => {
+        refreshTaskCardHeaders();
+        syncTaskTypeState(card);
+      });
     }
 
     function addTaskCard(values = {}, options = {}) {
@@ -2879,6 +3310,7 @@ async function studioFetch(path, options) {
       const fallbackIndex = getTaskCards().length + 1;
       applyFriendlyLoadMethodLabels(node);
       bindBindingsSection(node);
+      bindTaskTypeSegment(node);
       bindTaskCollapse(node);
       setTaskCardValues(node, values, fallbackIndex);
       bindTaskTabs(node);
@@ -3024,7 +3456,7 @@ async function studioFetch(path, options) {
         );
         if (!data || !data.ok) {
           setUpdateModeStatus("Update failed.", "warn");
-          pushToast(data && data.detail ? data.detail : "Update failed.", "error", true);
+          pushToast(apiErrorMessage(data, "Update failed."), "error", true);
           return;
         }
         currentUpdateDagId = String(data.dag_id || dagId || "").trim();
@@ -3056,7 +3488,7 @@ async function studioFetch(path, options) {
       try {
         const data = await postJson(studioUrl("/api/create-dag"), collectPayload());
         if (!data || !data.ok) {
-          pushToast(data && data.detail ? data.detail : "Create failed.", "error", true);
+          pushToast(apiErrorMessage(data, "Create failed."), "error", true);
           return;
         }
         const dagId = String(data.dag_id || "").trim() || dagIdFromDagPath(data.dag_path);
@@ -3097,12 +3529,16 @@ async function studioFetch(path, options) {
     }
 
     function collectTaskPayload(card, index, taskIds) {
+      const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim() || TASK_TYPES.SOURCE_TARGET;
       const sourceType = card.querySelector(".source-type").value;
       const sourceSchemaVal = card.querySelector(".source-schema").value.trim();
       const sourceTableVal = card.querySelector(".source-table").value.trim();
       const targetSchemaVal = card.querySelector(".target-schema").value.trim();
       const targetTableVal = card.querySelector(".target-table").value.trim();
       const inlineSqlVal = card.querySelector(".source-inline-sql").value.trim();
+      const scriptRunEnvironment = String(card.querySelector(".script-run-environment")?.value || "source").trim();
+      const scriptSqlVal = String(card.querySelector(".script-sql")?.value || "").trim();
+      const dagTaskDagId = String(card.querySelector(".dag-task-dag-id")?.value || "").trim();
       const identity = resolveTaskIdentity(card, index);
       const normalizedTaskIds = Array.isArray(taskIds) ? taskIds : [];
       const selfTaskId = String(normalizedTaskIds[index - 1] || identity.task_group_id || "").trim();
@@ -3122,6 +3558,7 @@ async function studioFetch(path, options) {
         );
       }
       const partitioningMode = card.querySelector(".partitioning-mode").value;
+      const partitioningEnabled = taskType === TASK_TYPES.SOURCE_TARGET && !!card.querySelector(".partitioning-enabled").checked;
       const partitioningDistinctLimit = asPositiveInt(
         card.querySelector(".partitioning-distinct-limit").value,
         16
@@ -3129,8 +3566,23 @@ async function studioFetch(path, options) {
       const partitioningRanges = partitioningMode === "explicit"
         ? parseExplicitWhereList(card.querySelector(".partitioning-ranges").value)
         : [];
-      const normalizedSourceSchema = sourceType === "sql" ? undefined : sourceSchemaVal;
-      const normalizedSourceTable = sourceType === "sql" ? undefined : sourceTableVal;
+      const partitioningColumn = partitioningEnabled && PARTITION_COLUMN_REQUIRED_MODES.has(partitioningMode)
+        ? card.querySelector(".partitioning-column").value.trim() || undefined
+        : undefined;
+      const partitioningParts = partitioningEnabled && PARTITION_PARTS_REQUIRED_MODES.has(partitioningMode)
+        ? Number(card.querySelector(".partitioning-parts").value || 2)
+        : undefined;
+      const partitioningDistinctLimitValue = partitioningEnabled && partitioningMode === "distinct"
+        ? partitioningDistinctLimit
+        : undefined;
+      const normalizedSourceSchema = taskType === TASK_TYPES.SOURCE_TARGET && sourceType !== "sql" ? sourceSchemaVal : undefined;
+      const normalizedSourceTable = taskType === TASK_TYPES.SOURCE_TARGET && sourceType !== "sql" ? sourceTableVal : undefined;
+      const normalizedTargetSchema = taskType === TASK_TYPES.SOURCE_TARGET
+        ? (targetSchemaVal || undefined)
+        : (targetSchemaVal || "script_tgt");
+      const normalizedTargetTable = taskType === TASK_TYPES.SOURCE_TARGET
+        ? (targetTableVal || undefined)
+        : (targetTableVal || "script_task");
       const bindings = getBindingRows(card)
         .map((row) => {
           const bindingSource = row.querySelector(".binding-source").value;
@@ -3149,25 +3601,29 @@ async function studioFetch(path, options) {
         })
         .filter((item) => item.variable_name);
       return {
+        task_type: taskType,
         task_group_id: identity.task_group_id,
         source_schema: normalizedSourceSchema,
         source_table: normalizedSourceTable,
         source_type: sourceType,
-        inline_sql: sourceType === "sql" ? (inlineSqlVal || undefined) : undefined,
-        target_schema: targetSchemaVal,
-        target_table: targetTableVal,
+        inline_sql: taskType === TASK_TYPES.SOURCE_TARGET && sourceType === "sql" ? (inlineSqlVal || undefined) : undefined,
+        script_run_environment: taskType === TASK_TYPES.SCRIPT_RUN ? (scriptRunEnvironment || undefined) : undefined,
+        script_sql: taskType === TASK_TYPES.SCRIPT_RUN ? (scriptSqlVal || undefined) : undefined,
+        dag_task_dag_id: taskType === TASK_TYPES.DAG ? (dagTaskDagId || undefined) : undefined,
+        target_schema: normalizedTargetSchema,
+        target_table: normalizedTargetTable,
         load_method: card.querySelector(".load-method").value,
         column_mapping_mode: card.querySelector(".column-mapping-mode").value,
-        mapping_content: card.querySelector(".column-mapping-mode").value === "mapping_file"
+        mapping_content: taskType === TASK_TYPES.SOURCE_TARGET && card.querySelector(".column-mapping-mode").value === "mapping_file"
           ? (card.querySelector(".mapping-content").value || "").trim() || undefined
           : undefined,
-        where: card.querySelector(".where").value.trim() || undefined,
+        where: taskType === TASK_TYPES.SOURCE_TARGET ? (card.querySelector(".where").value.trim() || undefined) : undefined,
         batch_size: Number(card.querySelector(".batch-size").value || 10000),
-        partitioning_enabled: !!card.querySelector(".partitioning-enabled").checked,
+        partitioning_enabled: partitioningEnabled,
         partitioning_mode: partitioningMode,
-        partitioning_column: card.querySelector(".partitioning-column").value.trim() || undefined,
-        partitioning_parts: Number(card.querySelector(".partitioning-parts").value || 2),
-        partitioning_distinct_limit: partitioningDistinctLimit,
+        partitioning_column: partitioningColumn,
+        partitioning_parts: partitioningParts,
+        partitioning_distinct_limit: partitioningDistinctLimitValue,
         partitioning_ranges: partitioningRanges,
         bindings: bindings.length ? bindings : undefined,
         depends_on: dependsOn,
@@ -3194,10 +3650,14 @@ async function studioFetch(path, options) {
         source_conn_id: el("source_conn_id").value,
         target_conn_id: el("target_conn_id").value,
         task_group_id: firstTask.task_group_id,
+        task_type: firstTask.task_type,
         source_schema: firstTask.source_schema,
         source_table: firstTask.source_table,
         source_type: firstTask.source_type,
         inline_sql: firstTask.inline_sql,
+        script_run_environment: firstTask.script_run_environment,
+        script_sql: firstTask.script_sql,
+        dag_task_dag_id: firstTask.dag_task_dag_id,
         target_schema: firstTask.target_schema,
         target_table: firstTask.target_table,
         load_method: firstTask.load_method,
@@ -3288,7 +3748,10 @@ async function studioFetch(path, options) {
     el("btn_add_domain").onclick = () => addDraftFolder("domain");
     el("btn_add_level").onclick = () => addDraftFolder("level");
     el("btn_add_flow").onclick = () => addDraftFolder("flow");
-    el("source_conn_id").addEventListener("change", () => refreshTaskCardHeaders());
+    el("source_conn_id").addEventListener("change", () => {
+      refreshTaskCardHeaders();
+      refreshAllPartitionColumnOptions();
+    });
     el("target_conn_id").addEventListener("change", () => refreshTaskCardHeaders());
     const customTagsInput = el("custom_tags_input");
     if (customTagsInput) {

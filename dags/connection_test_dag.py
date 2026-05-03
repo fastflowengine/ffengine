@@ -6,14 +6,10 @@ Her task ilgili DB'den ff_test_data tablosundaki satır sayısını okur.
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 from airflow.sdk import DAG
-
-try:
-    from airflow.providers.standard.operators.python import PythonOperator
-except ImportError:  # pragma: no cover
-    from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 
 from ffengine.airflow.operator import resolve_dialect
 from ffengine.db.airflow_adapter import AirflowConnectionAdapter
@@ -45,7 +41,7 @@ def _count_rows(*, conn_id: str, label: str) -> dict[str, int | str]:
 with DAG(
     dag_id="ffengine_connection_test",
     schedule=None,
-    start_date=datetime(2024, 1, 1),
+    start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     tags=["ffengine", "test"],
     doc_md=(
@@ -73,4 +69,5 @@ with DAG(
         op_kwargs={"conn_id": ORACLE_CONN_ID, "label": "oracle"},
     )
 
-    [test_postgres, test_mssql, test_oracle]
+    # Intentionally no dependency edges: connection checks should run in parallel.
+    parallel_connection_checks = [test_postgres, test_mssql, test_oracle]

@@ -101,6 +101,8 @@ def test_index_html_ok(client):
     assert "Select Target DB Connection" in r.text
     assert "folder_picker_modal" in r.text
     assert "Group No" not in r.text
+    assert "Source Target" in r.text
+    assert "Script" in r.text
     assert "Filter & Bindings" in r.text
     assert "Task Group ID (Optional)" not in r.text
     assert "task-group-id-readonly" in r.text
@@ -407,9 +409,10 @@ def test_create_dag_writes_files(client, studio_paths):
     assert dag_py.is_file()
     dag_source = dag_py.read_text(encoding="utf-8")
     assert ss.STUDIO_DAG_MARKER in dag_source
-    assert "yaml.safe_load" in dag_source
-    assert "FFEngineOperator" in dag_source
-    assert "_resolve_task_dependencies" in dag_source
+    assert "from ffengine.airflow.generated_factory import build_generated_dag" in dag_source
+    assert "RAW_CONFIG = {" in dag_source
+    assert "yaml.safe_load(" not in dag_source
+    assert "CONFIG_PATH.read_text(" not in dag_source
     assert yaml_name in dag_source
 
 
@@ -737,6 +740,76 @@ def test_create_dag_rejects_unused_binding(client, studio_paths):
     payload.update(
         {
             "where": "id > 10",
+            "bindings": [
+                {
+                    "variable_name": "unused_param",
+                    "binding_source": "default",
+                    "default_value": "1",
+                }
+            ],
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "unused" in r.text
+
+
+def test_create_dag_script_run_with_bindings_persists_yaml(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "task_type": "script_run",
+            "script_run_environment": "target",
+            "script_sql": "DELETE FROM dwh.orders_stg WHERE updated_at >= :last_sync",
+            "bindings": [
+                {
+                    "variable_name": "last_sync",
+                    "binding_source": "airflow_variable",
+                    "airflow_variable_key": "etl.last_sync",
+                }
+            ],
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+
+    flow = Path(r.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+    )
+    task = cfg["flow_tasks"][0]
+    assert task["task_type"] == "script_run"
+    assert task["script_sql"] == "DELETE FROM dwh.orders_stg WHERE updated_at >= :last_sync"
+    assert task["bindings"][0]["variable_name"] == "last_sync"
+
+    dag_source = Path(r.json()["dag_path"]).read_text(encoding="utf-8")
+    assert "from ffengine.airflow.generated_factory import build_generated_dag" in dag_source
+    assert "RAW_CONFIG = {" in dag_source
+    assert "script_sql" in dag_source
+
+
+def test_create_dag_script_run_rejects_missing_binding_for_script_param(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "task_type": "script_run",
+            "script_run_environment": "target",
+            "script_sql": "DELETE FROM dwh.orders_stg WHERE updated_at >= :last_sync",
+            "bindings": [],
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "without binding definition" in r.text
+
+
+def test_create_dag_script_run_rejects_unused_binding(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "task_type": "script_run",
+            "script_run_environment": "target",
+            "script_sql": "DELETE FROM dwh.orders_stg",
             "bindings": [
                 {
                     "variable_name": "unused_param",
@@ -1150,25 +1223,12 @@ def test_create_update_roundtrip_dag_dependencies(client, studio_paths):
     assert (cfg2.get("dag_dependencies") or {}).get("upstream_dag_ids") == [dag1]
 
     dag2_source = Path(r2.json()["dag_path"]).read_text(encoding="utf-8")
+    assert "from ffengine.airflow.generated_factory import build_generated_dag" in dag2_source
+    assert "RAW_CONFIG = {" in dag2_source
+    assert "raw_config_snapshot=RAW_CONFIG" in dag2_source
+    assert "yaml.safe_load(" not in dag2_source
+    assert "CONFIG_PATH.read_text(" not in dag2_source
     assert f'UPSTREAM_DAG_IDS = ["{dag1}"]' in dag2_source
-    assert "def _bounded_task_id(value: str, max_len: int = 250) -> str:" in dag2_source
-    assert 'suffix = "__h_" + hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:8]' in dag2_source
-    assert 'trigger_task_id = "trigger_upstream__" +' in dag2_source
-    assert "upstream_triggers[upstream_dag_id] = TriggerDagRunOperator(" in dag2_source
-    assert "trigger_dag_id=upstream_dag_id" in dag2_source
-    assert 'logical_date="{{ dag_run.logical_date }}"' in dag2_source
-    assert "skip_when_already_exists=False" in dag2_source
-    assert "reset_dag_run=False" in dag2_source
-    assert "upstream_triggers[upstream_dag_id] >> upstream_waiters[upstream_dag_id]" in dag2_source
-    assert "dag_slug = _slug_task_token(DAG_ID) or \"dag\"" in dag2_source
-    assert "root_task_order = {task_id: idx + 1 for idx, task_id in enumerate(root_task_ids)}" in dag2_source
-    assert 'task_id_value = _bounded_task_id(' in dag2_source
-    assert 'f"run_after__{joined_upstream_slug}__{dag_slug}__r{root_order}"' in dag2_source
-    assert 'joined_upstream_slug = "__".join(upstream_slug_parts)' in dag2_source
-    assert "task_id=task_id_value" in dag2_source
-    assert "waiter >> task_groups[root_task_id]" in dag2_source
-    assert 'failed_states=["failed"]' in dag2_source
-    assert "upstream_failed" not in dag2_source
 
     dag1_source = dag1_path.read_text(encoding="utf-8")
     assert "DOWNSTREAM_DAG_IDS" not in dag1_source
@@ -1211,9 +1271,7 @@ def test_dependency_render_contains_multi_upstream_join_logic(client, studio_pat
 
     dag3_source = Path(r3.json()["dag_path"]).read_text(encoding="utf-8")
     assert f'UPSTREAM_DAG_IDS = ["{dag1}", "{dag2}"]' in dag3_source
-    assert "upstream_slug_parts = [_slug_task_token(uid) for uid in UPSTREAM_DAG_IDS]" in dag3_source
-    assert 'joined_upstream_slug = "__".join(upstream_slug_parts)' in dag3_source
-    assert 'f"run_after__{joined_upstream_slug}__{dag_slug}__r{root_order}"' in dag3_source
+    assert "raw_config_snapshot=RAW_CONFIG" in dag3_source
 
 
 def test_create_dag_rejects_unknown_dag_dependency(client, studio_paths):
@@ -1584,7 +1642,11 @@ def test_promote_rolls_back_when_parse_verification_fails(client, studio_paths, 
     create_revision = next((x["revision_id"] for x in r_rev.json()["items"] if x.get("source") == "create_initial"), "")
     assert create_revision
 
-    with patch.object(ss, "_wait_for_parse_refresh", return_value=False):
+    with patch.object(ss, "_wait_for_parse_refresh", return_value=False), patch.object(
+        ss,
+        "_active_bundle_hash_or_empty",
+        return_value="hash_mismatch",
+    ):
         r_promote = client.post(
             f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id={create_revision}",
             json={},
@@ -1592,6 +1654,134 @@ def test_promote_rolls_back_when_parse_verification_fails(client, studio_paths, 
     assert r_promote.status_code == 422
     assert "rolled back" in r_promote.text
     assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
+
+
+def test_promote_succeeds_when_parse_timeout_but_target_bundle_is_active(client, studio_paths, monkeypatch):
+    monkeypatch.setenv("FFENGINE_STUDIO_PROMOTE_VERIFY_PARSE", "1")
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
+    cfg_path = Path(r1.json()["config_path"])
+    flow_dir = Path(r1.json()["flow_dir"])
+
+    payload["load_method"] = "replace"
+    r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
+    assert r2.status_code == 200, r2.text
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
+
+    r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
+    assert r_rev.status_code == 200, r_rev.text
+    create_revision = next((x["revision_id"] for x in r_rev.json()["items"] if x.get("source") == "create_initial"), "")
+    assert create_revision
+
+    history_root = flow_dir / ".flow_studio_history" / dag_id
+    create_manifest = json.loads((history_root / create_revision / "manifest.json").read_text(encoding="utf-8"))
+    create_bundle_hash = str((create_manifest.get("hashes") or {}).get("bundle") or "")
+    assert create_bundle_hash
+
+    with patch.object(ss, "_wait_for_parse_refresh", return_value=False), patch.object(
+        ss,
+        "_active_bundle_hash_or_empty",
+        return_value=create_bundle_hash,
+    ):
+        r_promote = client.post(
+            f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id={create_revision}",
+            json={},
+        )
+
+    assert r_promote.status_code == 200, r_promote.text
+    body = r_promote.json()
+    warnings = [str(x) for x in body.get("warnings", [])]
+    assert any("parse refresh timeout" in w.lower() for w in warnings)
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "append"
+
+
+def test_promote_uses_recalculated_hash_when_manifest_hash_is_stale(client, studio_paths, monkeypatch):
+    monkeypatch.setenv("FFENGINE_STUDIO_PROMOTE_VERIFY_PARSE", "1")
+    payload = _minimal_table_payload()
+    r1 = client.post("/api/create-dag", json=payload)
+    assert r1.status_code == 201, r1.text
+    dag_id = Path(r1.json()["dag_path"]).stem
+    cfg_path = Path(r1.json()["config_path"])
+    flow_dir = Path(r1.json()["flow_dir"])
+
+    payload["load_method"] = "replace"
+    r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
+    assert r2.status_code == 200, r2.text
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
+
+    r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
+    assert r_rev.status_code == 200, r_rev.text
+    create_revision = next((x["revision_id"] for x in r_rev.json()["items"] if x.get("source") == "create_initial"), "")
+    assert create_revision
+
+    history_root = flow_dir / ".flow_studio_history" / dag_id
+    rev_dir = history_root / create_revision
+    manifest_path = rev_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.setdefault("hashes", {})
+    manifest["hashes"]["bundle"] = "stale_manifest_hash"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+
+    rev_bundle = ss._load_bundle_from_revision(rev_dir)
+    recalculated_hash = ss._bundle_hash_from_loaded_bundle(rev_bundle)
+    assert recalculated_hash and recalculated_hash != "stale_manifest_hash"
+
+    with patch.object(ss, "_wait_for_parse_refresh", return_value=False), patch.object(
+        ss,
+        "_active_bundle_hash_or_empty",
+        return_value=recalculated_hash,
+    ):
+        r_promote = client.post(
+            f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id={create_revision}",
+            json={},
+        )
+
+    assert r_promote.status_code == 200, r_promote.text
+    body = r_promote.json()
+    warnings = [str(x) for x in body.get("warnings", [])]
+    assert any("manifest hash mismatch" in w.lower() for w in warnings)
+    assert body.get("active_revision_id") == create_revision
+    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "append"
+
+
+def test_wait_for_parse_refresh_timeout_from_env(monkeypatch):
+    monkeypatch.setenv("FFENGINE_STUDIO_PROMOTE_VERIFY_PARSE", "1")
+    monkeypatch.setenv("FFENGINE_STUDIO_PROMOTE_VERIFY_INTERVAL_SECONDS", "1")
+
+    before_state = {
+        "dag_version_id": "1",
+        "version_number": 1,
+        "dag_hash": "same",
+        "serialized_last_updated": "t1",
+    }
+
+    def _run_with_timeout(timeout_value: str) -> bool:
+        monkeypatch.setenv("FFENGINE_STUDIO_PROMOTE_VERIFY_TIMEOUT_SECONDS", timeout_value)
+        elapsed = {"v": 0.0}
+
+        def _mono() -> float:
+            return float(elapsed["v"])
+
+        def _sleep(seconds: float) -> None:
+            elapsed["v"] += float(seconds)
+
+        def _parse_state(_dag_id: str) -> dict[str, Any]:
+            # Simulate slow Airflow parse refresh: state changes only after 50s.
+            if elapsed["v"] < 50.0:
+                return dict(before_state)
+            changed = dict(before_state)
+            changed["dag_hash"] = "changed"
+            return changed
+
+        monkeypatch.setattr(ss.time, "monotonic", _mono)
+        monkeypatch.setattr(ss.time, "sleep", _sleep)
+        monkeypatch.setattr(ss, "_airflow_parse_state", _parse_state)
+        return bool(ss._wait_for_parse_refresh("demo_dag", before_state))
+
+    assert _run_with_timeout("35") is False
+    assert _run_with_timeout("60") is True
 
 
 def test_update_dag_rejects_dag_id_payload_flow_mismatch(client, studio_paths):
@@ -2137,6 +2327,260 @@ def test_dag_payload_accepts_auto_datetime_partitioning_mode():
         partitioning_mode="auto_datetime",
     )
     assert payload.partitioning_mode == "auto_datetime"
+
+
+def test_dag_payload_default_task_type_is_source_target():
+    payload = DagUpsertPayload(
+        project="p",
+        domain="d",
+        level="level1",
+        flow="src_to_stg",
+        source_conn_id="a",
+        target_conn_id="b",
+        source_schema="s",
+        source_table="tbl",
+        target_schema="t",
+        target_table="x",
+        source_type="table",
+    )
+    assert payload.task_type == "source_target"
+
+
+def test_dag_payload_rejects_invalid_task_type():
+    with pytest.raises(ValidationError):
+        DagUpsertPayload(
+            project="p",
+            domain="d",
+            level="level1",
+            flow="src_to_stg",
+            source_conn_id="a",
+            target_conn_id="b",
+            source_schema="s",
+            source_table="tbl",
+            target_schema="t",
+            target_table="x",
+            source_type="table",
+            task_type="invalid_type",
+        )
+
+
+def test_dag_payload_script_run_requires_environment_and_sql():
+    with pytest.raises(ValidationError):
+        DagUpsertPayload(
+            project="p",
+            domain="d",
+            level="level1",
+            flow="src_to_stg",
+            source_conn_id="a",
+            target_conn_id="b",
+            source_schema="s",
+            source_table="tbl",
+            target_schema="t",
+            target_table="x",
+            source_type="table",
+            task_type="script_run",
+            script_sql="DELETE FROM foo",
+        )
+
+    with pytest.raises(ValidationError):
+        DagUpsertPayload(
+            project="p",
+            domain="d",
+            level="level1",
+            flow="src_to_stg",
+            source_conn_id="a",
+            target_conn_id="b",
+            source_schema="s",
+            source_table="tbl",
+            target_schema="t",
+            target_table="x",
+            source_type="table",
+            task_type="script_run",
+            script_run_environment="source",
+            script_sql="",
+        )
+
+
+def test_dag_payload_script_run_accepts_stored_procedure_text():
+    payload = DagUpsertPayload(
+        project="p",
+        domain="d",
+        level="level1",
+        flow="src_to_stg",
+        source_conn_id="a",
+        target_conn_id="b",
+        source_schema="s",
+        source_table="tbl",
+        target_schema="t",
+        target_table="x",
+        source_type="table",
+        task_type="script_run",
+        script_run_environment="target",
+        script_sql="EXEC dbo.usp_refresh_warehouse @run_id = 1",
+    )
+    assert payload.task_type == "script_run"
+    assert payload.script_run_environment == "target"
+    assert "EXEC dbo.usp_refresh_warehouse" in payload.script_sql
+
+
+def test_dag_payload_dag_task_requires_dag_id():
+    with pytest.raises(ValidationError):
+        DagUpsertPayload(
+            project="p",
+            domain="d",
+            level="level1",
+            flow="src_to_stg",
+            source_conn_id="a",
+            target_conn_id="b",
+            source_schema="s",
+            source_table="tbl",
+            target_schema="t",
+            target_table="x",
+            source_type="table",
+            task_type="dag",
+            dag_task_dag_id="",
+        )
+
+
+def test_create_dag_persists_default_source_target_task_type(client, studio_paths):
+    payload = _minimal_table_payload()
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    config_path = Path(r.json()["config_path"])
+    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert cfg["flow_tasks"][0]["task_type"] == "source_target"
+
+    dag_id = Path(r.json()["dag_path"]).stem
+    r2 = client.get(f"/api/dag-config?dag_id={dag_id}")
+    assert r2.status_code == 200, r2.text
+    task = (r2.json().get("payload") or {}).get("flow_tasks")[0]
+    assert task["task_type"] == "source_target"
+
+
+def test_create_dag_script_run_accepts_sql_and_sp_and_roundtrips(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "task_type": "script_run",
+            "script_run_environment": "target",
+            "script_sql": "EXEC dbo.usp_housekeeping @mode = 'truncate'",
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    config_path = Path(body["config_path"])
+    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    task = cfg["flow_tasks"][0]
+    assert task["task_type"] == "script_run"
+    assert task["script_run_environment"] == "target"
+    assert task["script_sql"] == "EXEC dbo.usp_housekeeping @mode = 'truncate'"
+
+    dag_id = Path(body["dag_path"]).stem
+    r2 = client.get(f"/api/dag-config?dag_id={dag_id}")
+    assert r2.status_code == 200, r2.text
+    preload_task = ((r2.json().get("payload") or {}).get("flow_tasks") or [])[0]
+    assert preload_task["task_type"] == "script_run"
+    assert preload_task["script_run_environment"] == "target"
+    assert preload_task["script_sql"] == "EXEC dbo.usp_housekeeping @mode = 'truncate'"
+
+
+def test_create_dag_script_run_does_not_require_target_schema_or_table(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "task_type": "script_run",
+            "script_run_environment": "source",
+            "script_sql": "DELETE FROM public.orders WHERE id > 0",
+            "target_schema": None,
+            "target_table": None,
+            "flow_tasks": [
+                {
+                    "task_type": "script_run",
+                    "script_run_environment": "source",
+                    "script_sql": "DELETE FROM public.orders WHERE id > 0",
+                }
+            ],
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+
+
+def test_bulk_backfill_legacy_task_type_is_idempotent_and_preserves_existing(studio_paths):
+    proj_root, _ = studio_paths
+    marker = "_ffengine_task_type_backfilled_once"
+    if hasattr(ss._bulk_backfill_legacy_task_types_once, marker):
+        delattr(ss._bulk_backfill_legacy_task_types_once, marker)
+
+    flow_dir = proj_root / "webhook" / "legacy" / "level1" / "src_to_stg"
+    flow_dir.mkdir(parents=True, exist_ok=True)
+    yaml_path = flow_dir / "legacy_legacy_level1_src_to_stg_group_1.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "source_db_var": "src_c",
+                "target_db_var": "tgt_c",
+                "flow_tasks": [
+                    {
+                        "task_group_id": "legacy_task_missing_type",
+                        "source_schema": "public",
+                        "source_table": "orders",
+                        "source_type": "table",
+                        "target_schema": "dwh",
+                        "target_table": "orders_stg",
+                        "load_method": "append",
+                        "column_mapping_mode": "source",
+                        "batch_size": 10000,
+                        "partitioning": {
+                            "enabled": False,
+                            "mode": "auto_numeric",
+                            "column": None,
+                            "parts": 2,
+                            "ranges": [],
+                        },
+                    },
+                    {
+                        "task_group_id": "legacy_script_task",
+                        "task_type": "script_run",
+                        "script_run_environment": "target",
+                        "script_sql": "DELETE FROM dwh.orders_stg",
+                        "source_schema": "public",
+                        "source_table": "orders",
+                        "source_type": "table",
+                        "target_schema": "dwh",
+                        "target_table": "orders_stg",
+                        "load_method": "append",
+                        "column_mapping_mode": "source",
+                        "batch_size": 10000,
+                        "partitioning": {
+                            "enabled": False,
+                            "mode": "auto_numeric",
+                            "column": None,
+                            "parts": 2,
+                            "ranges": [],
+                        },
+                    },
+                ],
+            },
+            sort_keys=False,
+            allow_unicode=False,
+        ),
+        encoding="utf-8",
+    )
+
+    ss._bulk_backfill_legacy_task_types_once()
+    cfg1 = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert cfg1["flow_tasks"][0]["task_type"] == "source_target"
+    assert cfg1["flow_tasks"][1]["task_type"] == "script_run"
+    first_pass = yaml.safe_dump(cfg1, sort_keys=False, allow_unicode=False)
+
+    if hasattr(ss._bulk_backfill_legacy_task_types_once, marker):
+        delattr(ss._bulk_backfill_legacy_task_types_once, marker)
+    ss._bulk_backfill_legacy_task_types_once()
+    cfg2 = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    second_pass = yaml.safe_dump(cfg2, sort_keys=False, allow_unicode=False)
+    assert second_pass == first_pass
 
 
 def test_api_key_required_when_env_set(client, studio_paths, monkeypatch):

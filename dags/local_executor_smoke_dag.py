@@ -12,11 +12,7 @@ import time
 from datetime import datetime, timezone
 
 from airflow.sdk import DAG
-
-try:
-    from airflow.providers.standard.operators.python import PythonOperator
-except ImportError:  # pragma: no cover
-    from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 
 
 def _parallel_probe(task_name: str, sleep_seconds: int = 20) -> dict[str, str | int]:
@@ -45,7 +41,7 @@ def _parallel_probe(task_name: str, sleep_seconds: int = 20) -> dict[str, str | 
 with DAG(
     dag_id="ffengine_local_executor_smoke",
     schedule=None,
-    start_date=datetime(2024, 1, 1),
+    start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     tags=["ffengine", "smoke", "localexecutor"],
     doc_md=(
@@ -69,4 +65,5 @@ with DAG(
         op_kwargs={"task_name": "probe_c", "sleep_seconds": 20},
     )
 
-    [probe_a, probe_b, probe_c]
+    # Intentionally no dependency edges: all probes should run in parallel.
+    parallel_probes = [probe_a, probe_b, probe_c]
