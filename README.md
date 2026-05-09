@@ -69,15 +69,16 @@ ETL Studio now uses a hard-switched hierarchical model for YAML and DAG generati
 
 - Projects root (required shape): `FFENGINE_STUDIO_PROJECTS_ROOT/<project>/<domain>/<level>/<flow>/`
 - YAML naming:
-  `<project>_<domain>_<level>_<flow>_group_<n>.yaml` (`n` is positive integer)
+  `<project>_<domain>_<level>_<flow>_<n>.yaml` (`n` is positive integer)
 - DAG root mirrors the same hierarchy:
   `FFENGINE_STUDIO_DAG_ROOT/<project>/<domain>/<level>/<flow>/`
 - DAG naming standard:
-  `<domain>_to_<flow_target>_<level>_group_<n>_dag.py`
-- One DAG Python file per group under the flow path; each DAG parses its own YAML and creates `FFEngineOperator` tasks from `etl_tasks`.
+  `<project>_<domain>_<level>_<flow>_<n>_dag.py`
+- One DAG Python file per flow sequence under the flow path; generated DAGs are thin wrappers that call `build_generated_dag(...)` with embedded `RAW_CONFIG`.
 - Update mode deep-link:
   `/etl-studio/?dag_id=<dag_id>` opens ETL Studio with DAG config preload.
 - Legacy DAG IDs (`ffengine_config_*`, `ffengine_*`) are read-only for update mode; ETL Studio shows a migration guard instead of silent fallback.
+- Legacy naming (`..._group_<n>_dag`, `..._group_<n>.yaml`) remains supported for existing DAGs; no automatic retroactive rename is applied.
 
 ## ETL Studio Form Notes
 

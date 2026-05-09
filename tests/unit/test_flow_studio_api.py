@@ -401,10 +401,10 @@ def test_create_dag_writes_files(client, studio_paths):
     assert "user_tags" in meta
     assert "auto_tags" in meta
     dag_py = Path(body["dag_path"])
-    yaml_name = "webhook_whk_level1_src_to_stg_group_1.yaml"
+    yaml_name = "webhook_whk_level1_src_to_stg_1.yaml"
     assert (flow / yaml_name).is_file()
     assert dag_py.as_posix().endswith(
-        "/dags/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_1_dag.py"
+        "/dags/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_1_dag.py"
     )
     assert dag_py.is_file()
     dag_source = dag_py.read_text(encoding="utf-8")
@@ -449,7 +449,7 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
 
     flow = Path(r.json()["flow_dir"])
     cfg = yaml.safe_load(
-        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
     )
     task = cfg["flow_tasks"][0]
 
@@ -511,7 +511,7 @@ def test_create_dag_distinct_mode_persists_distinct_limit(client, studio_paths):
 
     flow = Path(r.json()["flow_dir"])
     cfg = yaml.safe_load(
-        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
     )
     task = cfg["flow_tasks"][0]
     assert task["partitioning"]["mode"] == "distinct"
@@ -600,7 +600,7 @@ def test_create_dag_sql_source_persists_inline_sql(client, studio_paths):
 
     flow = Path(r.json()["flow_dir"])
     cfg = yaml.safe_load(
-        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
     )
     task = cfg["flow_tasks"][0]
 
@@ -713,7 +713,7 @@ def test_create_dag_with_bindings_persists_yaml(client, studio_paths):
 
     flow = Path(r.json()["flow_dir"])
     cfg = yaml.safe_load(
-        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
     )
     task = cfg["flow_tasks"][0]
     assert task["where"] == "updated_at >= :last_sync"
@@ -775,7 +775,7 @@ def test_create_dag_script_run_with_bindings_persists_yaml(client, studio_paths)
 
     flow = Path(r.json()["flow_dir"])
     cfg = yaml.safe_load(
-        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
     )
     task = cfg["flow_tasks"][0]
     assert task["task_type"] == "script_run"
@@ -854,7 +854,7 @@ def test_create_dag_custom_tags_normalized_and_merged(client, studio_paths):
     body = r.json()
     flow = Path(body["flow_dir"])
 
-    cfg = yaml.safe_load((flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8"))
+    cfg = yaml.safe_load((flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8"))
     assert cfg["custom_tags"] == ["team-a", "level1", "nightly", "odd_tag"]
     assert cfg["flow_tasks"][0]["tags"] == [
         "webhook",
@@ -908,10 +908,10 @@ def test_dag_filename_fallback_when_flow_not_to_pattern(client, studio_paths):
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 201
     dag_py = Path(r.json()["dag_path"])
-    assert dag_py.name == "webhook_whk_level1_delta_sync_group_1_dag.py"
+    assert dag_py.name == "webhook_whk_level1_delta_sync_1_dag.py"
 
 
-def test_create_dag_same_flow_creates_group_based_dags_and_yamls(client, studio_paths):
+def test_create_dag_same_flow_creates_numbered_dags_and_yamls(client, studio_paths):
     p1 = _minimal_table_payload()
     p2 = _minimal_table_payload()
     p2["source_table"] = "customers"
@@ -927,10 +927,10 @@ def test_create_dag_same_flow_creates_group_based_dags_and_yamls(client, studio_
     assert body1["dag_path"] != body2["dag_path"]
 
     flow = Path(body1["flow_dir"])
-    assert (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").is_file()
-    assert (flow / "webhook_whk_level1_src_to_stg_group_2.yaml").is_file()
-    assert Path(body1["dag_path"]).name == "webhook_whk_level1_src_to_stg_group_1_dag.py"
-    assert Path(body2["dag_path"]).name == "webhook_whk_level1_src_to_stg_group_2_dag.py"
+    assert (flow / "webhook_whk_level1_src_to_stg_1.yaml").is_file()
+    assert (flow / "webhook_whk_level1_src_to_stg_2.yaml").is_file()
+    assert Path(body1["dag_path"]).name == "webhook_whk_level1_src_to_stg_1_dag.py"
+    assert Path(body2["dag_path"]).name == "webhook_whk_level1_src_to_stg_2_dag.py"
 
 
 def test_update_dag_keeps_legacy_dag_id_and_path(client, studio_paths):
@@ -1015,13 +1015,15 @@ def test_create_dag_group_no_increments_with_mixed_legacy_and_new_dag_names(clie
 
     legacy_dag = legacy_dag_dir / "whk_to_stg_level1_group_3_dag.py"
     legacy_dag.write_text("# legacy dag\n", encoding="utf-8")
+    new_style_dag = legacy_dag_dir / "webhook_whk_level1_src_to_stg_4_dag.py"
+    new_style_dag.write_text("# new style dag\n", encoding="utf-8")
 
     payload = _minimal_table_payload()
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 201, r.text
     dag_name = Path(r.json()["dag_path"]).name
-    assert dag_name == "webhook_whk_level1_src_to_stg_group_4_dag.py"
-    assert (flow_dir / "webhook_whk_level1_src_to_stg_group_4.yaml").is_file()
+    assert dag_name == "webhook_whk_level1_src_to_stg_5_dag.py"
+    assert (flow_dir / "webhook_whk_level1_src_to_stg_5.yaml").is_file()
 
 
 def test_update_dag_requires_dag_id_query(client, studio_paths):
@@ -1933,13 +1935,13 @@ def test_timeline_mocked(client):
 
 def test_dag_config_mocked_success(client):
     mocked = {
-        "dag_id": "webhook_whk_level1_src_to_stg_group_1_dag",
+        "dag_id": "webhook_whk_level1_src_to_stg_1_dag",
         "payload": {"project": "webhook"},
-        "dag_path": "/opt/airflow/dags/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_1_dag.py",
-        "config_path": "/opt/airflow/projects/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_1.yaml",
+        "dag_path": "/opt/airflow/dags/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_1_dag.py",
+        "config_path": "/opt/airflow/projects/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_1.yaml",
     }
     with patch.object(api_app_module, "resolve_dag_config_for_update", return_value=mocked):
-        r = client.get("/api/dag-config?dag_id=webhook_whk_level1_src_to_stg_group_1_dag")
+        r = client.get("/api/dag-config?dag_id=webhook_whk_level1_src_to_stg_1_dag")
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
@@ -1987,7 +1989,7 @@ def test_resolve_dag_config_returns_empty_custom_tags_when_yaml_missing_field(cl
     assert r.status_code == 201, r.text
     dag_id = Path(r.json()["dag_path"]).stem
     flow = Path(r.json()["flow_dir"])
-    yaml_path = flow / "webhook_whk_level1_src_to_stg_group_1.yaml"
+    yaml_path = flow / "webhook_whk_level1_src_to_stg_1.yaml"
     cfg = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
     cfg.pop("custom_tags", None)
     yaml_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=False), encoding="utf-8")
@@ -2181,7 +2183,7 @@ def test_update_dag_sql_mapping_task_group_change_moves_active_path_to_new_file(
     assert r2.status_code == 200, r2.text
     new_path = flow / "mapping" / "1_custom_sql_orders_task.yaml"
     assert new_path.is_file()
-    cfg = yaml.safe_load((flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8"))
+    cfg = yaml.safe_load((flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8"))
     assert cfg["flow_tasks"][0]["mapping_file"] == "mapping/1_custom_sql_orders_task.yaml"
 
 

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flow Studio</title>
-  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=41">
+  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=45">
 </head>
 <body class="flow-studio-root" data-ui-variant="current">
   <div id="operation_progress" class="operation-progress hidden" role="status" aria-live="polite" aria-busy="false">
@@ -174,17 +174,33 @@
 
     <template id="task_card_template">
       <div class="task-card">
-        <div class="task-head" role="button" tabindex="0" aria-expanded="true">
+        <div class="task-head">
+          <button class="task-collapse-toggle" type="button" aria-label="Toggle task details" aria-expanded="true">
+            <span class="task-collapse-icon">></span>
+          </button>
           <div class="task-head-main">
             <h3 class="task-title">Task #1</h3>
             <div class="task-group-id-readonly muted-note">task_group_id</div>
           </div>
-          <button class="btn btn-danger btn-delete-task" type="button">Delete</button>
+          <div class="task-head-actions">
+            <div class="task-type-segment" role="group" aria-label="Task Type">
+              <button class="task-type-chip active" type="button" data-task-type="source_target" aria-pressed="true">Source Target</button>
+              <button class="task-type-chip" type="button" data-task-type="script_run" aria-pressed="false">Script</button>
+              <button class="task-type-chip" type="button" data-task-type="dag" aria-pressed="false">DAG</button>
+              <select class="task-type task-type-native" title="Choose task behavior type.">
+                <option value="source_target">Source Target</option>
+                <option value="script_run">Script</option>
+                <option value="dag">DAG</option>
+              </select>
+            </div>
+            <button class="btn btn-danger btn-delete-task" type="button">Delete</button>
+          </div>
         </div>
         <div class="task-content">
           <div class="task-layout">
             <div class="sub-card source-card">
             <h4>Source</h4>
+            <div class="source-target-fields">
             <label>
               <span class="global-control-label">Source Type</span>
               <select class="source-type" title="Choose table data or a custom SQL query.">
@@ -208,6 +224,32 @@
               <label>
                 <span class="global-control-label">Source Table</span>
                 <input class="source-table" list="source_table_options" value="orders" placeholder="Search table" title="Type at least 3 characters to search.">
+              </label>
+            </div>
+            </div>
+            <div class="script-run-fields hidden">
+              <label>
+                <span class="global-control-label">Run Environment</span>
+                <select class="script-run-environment" title="Choose where script runs.">
+                  <option value="source">Source</option>
+                  <option value="target">Target</option>
+                </select>
+              </label>
+              <label>
+                Script SQL / Stored Procedure
+                <textarea
+                  class="script-sql"
+                  rows="6"
+                  placeholder="DELETE FROM ...; or EXEC proc_name ..."
+                ></textarea>
+              </label>
+            </div>
+            <div class="dag-task-fields hidden">
+              <label>
+                <span class="global-control-label">DAG Task</span>
+                <select class="dag-task-dag-id" title="Select DAG to trigger.">
+                  <option value="">Select DAG</option>
+                </select>
               </label>
             </div>
             </div>
@@ -245,7 +287,7 @@
               <button class="tab-btn" data-tab="dependencies" type="button">Dependencies</button>
             </div>
             <div class="tab-panel active" data-tab-panel="filter">
-              <label>
+              <label class="where-clause-wrap">
                 Where Clause
                 <textarea class="where" rows="4" placeholder="example: updated_at >= :last_sync"></textarea>
               </label>
@@ -263,19 +305,22 @@
                 Partitioning Enabled
               </label>
               <div class="row-2 partitioning-mode-wrap">
-                <label class="partitioning-column-wrap">
-                  Column
-                  <input class="partitioning-column" placeholder="id">
-                </label>
                 <label class="partitioning-mode-field-wrap">
                   Mode
                   <select class="partitioning-mode">
-                    <option value="auto">auto</option>
                     <option value="auto_numeric">auto_numeric</option>
+                    <option value="auto_datetime">auto_datetime</option>
                     <option value="percentile">percentile</option>
                     <option value="hash_mod">hash_mod</option>
                     <option value="distinct">distinct</option>
                     <option value="explicit">explicit</option>
+                  </select>
+                  <div class="partitioning-mode-hint muted-note hidden"></div>
+                </label>
+                <label class="partitioning-column-wrap">
+                  Column
+                  <select class="partitioning-column">
+                    <option value="">Select source column</option>
                   </select>
                 </label>
               </div>
@@ -572,7 +617,7 @@
     </div>
   </div>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=50"></script>
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=61"></script>
 </body>
 </html>
 

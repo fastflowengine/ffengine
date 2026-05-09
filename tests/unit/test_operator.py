@@ -12,10 +12,11 @@ from ffengine.airflow.operator import (
     resolve_dialect,
     combine_where,
     aggregate_results,
+    run_partition_for_task,
     FFEngineOperator,
 )
 from ffengine.core.base_engine import FlowResult
-from ffengine.errors.exceptions import ConfigError, EngineError
+from ffengine.errors.exceptions import ConfigError, ConnectionError, EngineError
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +374,71 @@ class TestFFEngineOperatorExecute:
         assert any(c.args == ("tgt_y",) for c in calls)
 
 
+class TestRunPartitionTaskLogging:
+    def test_run_partition_logs_effective_where(self):
+        task_config = {"task_group_id": "tg1", "_resolved_where": "status = 'ACTIVE'"}
+        src_params = {"conn_type": "postgres"}
+        tgt_params = {"conn_type": "postgres"}
+        src_dialect = MagicMock()
+        tgt_dialect = MagicMock()
+        resolver = MagicMock()
+        airflow_ctx = {}
+
+        src_session = MagicMock()
+        tgt_session = MagicMock()
+
+        sessions = [src_session, tgt_session]
+
+        def _dbsession_factory(*_args, **_kwargs):
+            cm = MagicMock()
+            cm.__enter__.return_value = sessions.pop(0)
+            cm.__exit__.return_value = False
+            return cm
+
+        with (
+            patch("ffengine.airflow.operator._resolve_task_runtime", return_value=(
+                task_config,
+                src_params,
+                tgt_params,
+                src_dialect,
+                tgt_dialect,
+                resolver,
+                airflow_ctx,
+            )),
+            patch("ffengine.airflow.operator._resolve_sql_bindings_if_needed", side_effect=lambda **kwargs: kwargs["task_config"]),
+            patch("ffengine.airflow.operator._attach_mapping_if_needed", side_effect=lambda **kwargs: kwargs["task_config"]),
+            patch(_P_DBSESS, side_effect=_dbsession_factory),
+            patch(_P_FLOW) as mock_flow,
+            patch("ffengine.airflow.operator._log_structured") as mock_log_structured,
+        ):
+            mock_flow.return_value.run_flow_task.return_value = FlowResult(
+                rows=10, duration_seconds=1.0, throughput=10.0, partitions_completed=1, errors=[]
+            )
+
+            payload = run_partition_for_task(
+                config_path="/tmp/cfg.yaml",
+                task_group_id="tg1",
+                source_conn_id="src",
+                target_conn_id="tgt",
+                partition_spec={"part_id": 2, "where": "id < 500"},
+            )
+
+            expected_where = "(status = 'ACTIVE') AND (id < 500)"
+            assert payload["partition_id"] == 2
+            log_kwargs = mock_log_structured.call_args.kwargs
+            assert log_kwargs["message"] == "run_partition effective where resolved."
+            assert log_kwargs["partition_id"] == 2
+            assert log_kwargs["base_where"] == "status = 'ACTIVE'"
+            assert log_kwargs["partition_where"] == "id < 500"
+            assert log_kwargs["effective_where"] == expected_where
+            assert log_kwargs["datetime_timezone"] == "UTC"
+            assert log_kwargs["datetime_precision"] == "timestamp(6)"
+            assert log_kwargs["datetime_boundary_policy"] == "half_open_[lo,hi)_last_lte"
+
+            call_kwargs = mock_flow.return_value.run_flow_task.call_args.kwargs
+            assert call_kwargs["task_config"]["_resolved_where"] == expected_where
+
+
 # ---------------------------------------------------------------------------
 # Hata senaryoları
 # ---------------------------------------------------------------------------
@@ -445,3 +511,55 @@ class TestFFEngineOperatorErrors:
             call_kwargs = mock_etl.return_value.run_flow_task.call_args
             effective = call_kwargs.kwargs["task_config"]
             assert effective["_resolved_where"] == "year = 2026"
+
+    def test_operator_failed_log_and_xcom_include_db_details(self):
+        class FakePgError(Exception):
+            __module__ = "psycopg.errors"
+            sqlstate = "23505"
+
+        db_exc = FakePgError("duplicate key value violates unique constraint")
+        wrapped = ConnectionError.wrap(
+            db_exc,
+            "Hedefe batch yazimi basarisiz",
+            details={"sql_preview": "INSERT INTO t (id) VALUES ('?')"},
+        )
+
+        with (
+            patch(_P_ADAPTER) as mock_adapter,
+            patch(_P_LOADER) as mock_loader,
+            patch(_P_BINDER) as mock_binder,
+            patch(_P_DBSESS) as mock_db,
+            patch(_P_MAPPING) as mock_mapping,
+            patch(_P_PART) as mock_part,
+            patch(_P_WRITER),
+            patch(_P_FLOW) as mock_etl,
+            patch("ffengine.airflow.operator._log_structured") as mock_log_structured,
+        ):
+            mock_adapter.get_connection_params.return_value = {
+                "conn_type": "postgres", "host": "h", "database": "d",
+            }
+            mock_loader.return_value.load.return_value = {}
+            mock_binder.return_value.resolve.side_effect = lambda cfg, ctx: dict(cfg)
+            mock_session = MagicMock()
+            mock_session.conn = MagicMock()
+            mock_db.return_value.__enter__ = MagicMock(return_value=mock_session)
+            mock_db.return_value.__exit__ = MagicMock(return_value=False)
+            mock_mapping.return_value.resolve.return_value = _default_mapping_result()
+            mock_part.return_value.plan.return_value = [{"part_id": 0, "where": None}]
+            mock_etl.return_value.run_flow_task.side_effect = wrapped
+
+            ti = MagicMock()
+            op = _make_operator()
+            with pytest.raises(ConnectionError):
+                op.execute({"ti": ti})
+
+            err_log = mock_log_structured.call_args_list[-1].kwargs
+            assert err_log["message"] == "Operator failed."
+            assert err_log["db_exception_type"] == "FakePgError"
+            assert err_log["db_sqlstate"] == "23505"
+            assert err_log["db_driver"] == "psycopg"
+            assert "sql_preview" in err_log["error_details"]
+
+            pushed = {c.kwargs["key"]: c.kwargs["value"] for c in ti.xcom_push.call_args_list}
+            assert "error_summary" in pushed
+            assert pushed["error_summary"]["details"]["db_sqlstate"] == "23505"

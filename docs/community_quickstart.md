@@ -142,7 +142,8 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 
 - DAG detail deep-link supported: `/flow-studio/?dag_id=<dag_id>`.
 - New naming DAG'lerde form preload edilip update mode acilir.
-- Ayni flow klasorunde birden fazla group DAG olabilir; bu desteklenir.
+- Ayni flow klasorunde birden fazla numarali DAG olabilir; bu desteklenir.
+- Yeni create adlandirmasi `..._<n>_dag` standardindadir; legacy `..._group_<n>_dag` adlari backward-compatible olarak desteklenir.
 - `POST /flow-studio/api/update-dag` cagrisi `dag_id` query parami ile hedef DAG'i zorunlu olarak belirtmelidir.
 - `flow_tasks[].depends_on` ile task bagimliliklari acik tanimlanir:
   - bos liste (`[]`) -> parallel (varsayilan),

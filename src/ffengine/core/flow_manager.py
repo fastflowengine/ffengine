@@ -14,7 +14,7 @@ import time
 from datetime import UTC, datetime
 
 from ffengine.core.base_engine import BaseEngine, FlowResult
-from ffengine.errors import FFEngineError, normalize_exception
+from ffengine.errors import FFEngineError, error_payload, normalize_exception
 from ffengine.pipeline.source_reader import SourceReader
 from ffengine.pipeline.streamer import Streamer
 from ffengine.pipeline.target_writer import TargetWriter
@@ -135,6 +135,8 @@ class FlowManager:
                 )
                 if partition_spec:
                     norm.details.setdefault("partition_spec", dict(partition_spec))
+            payload = error_payload(norm)
+            err_details = dict(payload.get("details") or {})
             _log_structured(
                 level=logging.ERROR,
                 stage="load",
@@ -143,8 +145,15 @@ class FlowManager:
                 source_db=source_db,
                 target_db=target_db,
                 rows=0,
-                error_type=type(norm).__name__,
-                error_message=str(norm),
+                error_type=payload.get("error_type"),
+                error_message=payload.get("message"),
+                error_details=err_details,
+                db_exception_type=err_details.get("db_exception_type"),
+                db_error_message=err_details.get("db_error_message"),
+                db_sqlstate=err_details.get("db_sqlstate"),
+                db_driver=err_details.get("db_driver"),
+                db_root_cause=err_details.get("db_root_cause"),
+                sql_preview=err_details.get("sql_preview"),
                 partition_id=(partition_spec or {}).get("part_id"),
             )
             raise norm from exc

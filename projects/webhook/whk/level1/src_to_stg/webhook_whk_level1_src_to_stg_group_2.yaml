@@ -1,0 +1,48 @@
+source_db_var: source_webhook
+target_db_var: dwh_webhook
+flow_tasks:
+- task_type: source_target
+  task_group_id: 1_source_webhook_whk_transmissions_to_dwh_webhook_create_if_not_exists_or_truncate_dwh_stg_transmissions
+  depends_on: []
+  source_schema: WHK
+  source_table: TRANSMISSIONS
+  source_type: table
+  inline_sql: null
+  script_run_environment: null
+  script_sql: null
+  dag_task_dag_id: null
+  column_mapping_mode: source
+  target_schema: dwh_stg
+  target_table: TRANSMISSIONS
+  load_method: create_if_not_exists_or_truncate
+  where: '"SYSTEM_ENTRY_DATE_TIME" > :dwh_whk_max_system_entry_date_time'
+  batch_size: 10000
+  partitioning:
+    enabled: false
+    mode: auto_numeric
+    column: null
+    parts: 2
+    distinct_limit: 16
+    ranges: []
+  tags:
+  - webhook
+  - whk
+  - level1
+  - src_to_stg
+  bindings:
+  - variable_name: dwh_whk_max_system_entry_date_time
+    binding_source: target
+    default_value: null
+    sql: 'SELECT COALESCE(MAX("SYSTEM_ENTRY_DATE_TIME"),TIMESTAMPTZ ''1900-01-01 00:00:00+00:00''
+      )
+
+      FROM  "WHK"."TRANSMISSIONS"'
+    airflow_variable_key: null
+custom_tags: []
+scheduler:
+  cron_expression: null
+  timezone: Europe/Istanbul
+  active: true
+  start_date: '2026-05-01T18:32:16'
+dag_dependencies:
+  upstream_dag_ids: []

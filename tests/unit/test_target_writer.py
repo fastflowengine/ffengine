@@ -1,3 +1,5 @@
+import sys
+import types
 import pytest
 from unittest.mock import MagicMock, call, patch
 from ffengine.pipeline.target_writer import TargetWriter
@@ -164,6 +166,67 @@ def test_write_batch_wraps_db_error_as_connection_error(writer, session):
     with pytest.raises(ConnectionError, match="Hedefe batch yazimi basarisiz"):
         writer.write_batch([(1,)], {"target_schema": "s", "target_table": "t", "target_columns": ["id"]})
     session.conn.rollback.assert_called_once()
+
+
+def test_write_batch_error_details_include_root_cause_and_sql_preview(writer, session, dialect):
+    dialect.generate_bulk_insert_query.return_value = (
+        "INSERT INTO t (a) VALUES ('secret-token-value')"
+    )
+    session.cursor.return_value.executemany.side_effect = RuntimeError("db write failed")
+    with pytest.raises(ConnectionError) as exc_info:
+        writer.write_batch([(1,)], {"target_schema": "s", "target_table": "t", "target_columns": ["id"]})
+    details = exc_info.value.details
+    assert details["root_cause"] == "db write failed"
+    assert details["sql_preview"] is not None
+    assert "secret-token-value" not in details["sql_preview"]
+    assert "'?'" in details["sql_preview"]
+
+
+def test_write_batch_sql_preview_truncates_to_300_chars(writer, session, dialect):
+    long_value = "x" * 500
+    dialect.generate_bulk_insert_query.return_value = (
+        f"INSERT INTO t (a) VALUES ({long_value})"
+    )
+    session.cursor.return_value.executemany.side_effect = RuntimeError("db write failed")
+    with pytest.raises(ConnectionError) as exc_info:
+        writer.write_batch([(1,)], {"target_schema": "s", "target_table": "t", "target_columns": ["id"]})
+    preview = exc_info.value.details["sql_preview"]
+    assert preview.endswith("...")
+    assert len(preview) <= 303
+
+
+def test_write_batch_adapts_postgres_dict_values_for_json(writer, session):
+    class PostgresDialect:
+        def quote_identifier(self, name):
+            return f'"{name}"'
+
+        def generate_bulk_insert_query(self, table, columns):
+            return "INSERT INTO ..."
+
+    class FakeJsonb:
+        def __init__(self, value):
+            self.value = value
+
+    json_mod = types.ModuleType("psycopg.types.json")
+    json_mod.Jsonb = FakeJsonb
+    types_mod = types.ModuleType("psycopg.types")
+    psycopg_mod = types.ModuleType("psycopg")
+    with patch.dict(
+        sys.modules,
+        {
+            "psycopg": psycopg_mod,
+            "psycopg.types": types_mod,
+            "psycopg.types.json": json_mod,
+        },
+    ):
+        pg_writer = TargetWriter(session, PostgresDialect())
+        pg_writer.write_batch(
+            [({"k": "v"},)],
+            {"target_schema": "s", "target_table": "t", "target_columns": ["payload"]},
+        )
+
+    call_rows = session.cursor.return_value.executemany.call_args[0][1]
+    assert isinstance(call_rows[0][0], FakeJsonb)
 
 
 # ------------------------------------------------------------------

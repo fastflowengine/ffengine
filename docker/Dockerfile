@@ -1,4 +1,8 @@
-FROM apache/airflow:3.1.6-python3.12
+﻿FROM apache/airflow:3.2.1-python3.12
+
+ARG AIRFLOW_VERSION=3.2.1
+ARG PYTHON_VERSION=3.12
+ARG CONSTRAINTS_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
 
 USER root
 
@@ -15,20 +19,9 @@ COPY --chown=airflow:0 README.md /opt/airflow/
 COPY --chown=airflow:0 pyproject.toml /opt/airflow/
 COPY --chown=airflow:0 src/ /opt/airflow/src/
 
-RUN pip install --no-cache-dir -e .[dev] \
-    apache-airflow-providers-microsoft-mssql \
-    apache-airflow-providers-oracle
-
-# Patch: Airflow 3.1.6 bug — DagRun.start_date must be Optional (None when queued)
-# All occurrences of non-optional start_date in _generated.py must be patched
-# RUN python3 -c "\
-# f='/home/airflow/.local/lib/python3.12/site-packages/airflow/sdk/api/datamodels/_generated.py'; \
-# t=open(f).read(); \
-# old='    start_date: Annotated[AwareDatetime, Field(title=\"Start Date\")]'; \
-# new='    start_date: Annotated[AwareDatetime | None, Field(title=\"Start Date\")] = None'; \
-# t=t.replace(old, new); \
-# open(f,'w').write(t); \
-# print('Patched ALL DagRun.start_date -> Optional')"
+RUN curl -fsSL "${CONSTRAINTS_URL}" -o /tmp/constraints.txt && \
+    sed -i 's/^apache-airflow-providers-fab==.*/apache-airflow-providers-fab==3.6.2/' /tmp/constraints.txt && \
+    pip install --no-cache-dir -e .[dev] --constraint /tmp/constraints.txt
 
 # C18: FabAuthManager + DB auth (SimpleAuthManager replaced).
 # apache-airflow-providers-fab and flask-appbuilder are pulled in via pyproject.toml.

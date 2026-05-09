@@ -1,0 +1,13 @@
+{
+  "actor": "flow_studio",
+  "created_at": "2026-05-01T16:28:41Z",
+  "dag_id": "webhook_whk_main_main_group_1_dag",
+  "hashes": {
+    "bundle": "7e7c1a9237b26f05d45a001438aad315155e50308e0d9172561ad4c7d42a91ba",
+    "config.yaml": "ae589ec63766bc363c02fbd6f7c7dc7711bb58f662ba550c0eb94edc50697db9",
+    "dag.py": "0b3ac87ee4f967e51690299cda7ca38f4a1e8778fbae1803ce7e9a881cbe9cfd"
+  },
+  "mapping_files": [],
+  "revision_id": "rev_000001",
+  "source": "create_initial"
+}

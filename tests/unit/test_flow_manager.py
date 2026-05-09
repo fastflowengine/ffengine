@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch, call
 from ffengine.core.flow_manager import FlowManager, PythonEngine
 from ffengine.core.base_engine import FlowResult
 from ffengine.errors import EngineError
+from ffengine.errors.exceptions import ConnectionError
 
 
 # ------------------------------------------------------------------
@@ -211,6 +212,44 @@ def test_run_flow_task_rollback_called_once_on_error(src_session, tgt_session, d
             )
 
         assert mock_writer.rollback_batch.call_count == 1
+
+
+def test_run_flow_task_logs_db_details_on_connection_error(src_session, tgt_session, dialect, task_config):
+    class FakePgError(Exception):
+        __module__ = "psycopg.errors"
+        sqlstate = "22001"
+
+    db_exc = FakePgError("value too long for type")
+    wrapped = ConnectionError.wrap(
+        db_exc,
+        "Hedefe batch yazimi basarisiz",
+        details={"sql_preview": "INSERT INTO t (a) VALUES ('?')"},
+    )
+
+    with (
+        patch("ffengine.core.flow_manager.TargetWriter") as MockWriter,
+        patch("ffengine.core.flow_manager._log_structured") as mock_log,
+    ):
+        mock_writer = MagicMock()
+        mock_writer.write_batch.side_effect = wrapped
+        MockWriter.return_value = mock_writer
+
+        manager = FlowManager()
+        with pytest.raises(ConnectionError):
+            manager.run_flow_task(
+                src_session=src_session,
+                tgt_session=tgt_session,
+                src_dialect=dialect,
+                tgt_dialect=dialect,
+                task_config=task_config,
+            )
+
+        fail_log = mock_log.call_args_list[-1].kwargs
+        assert fail_log["message"] == "Flow task failed."
+        assert fail_log["db_exception_type"] == "FakePgError"
+        assert fail_log["db_sqlstate"] == "22001"
+        assert fail_log["db_driver"] == "psycopg"
+        assert "sql_preview" in fail_log["error_details"]
 
 
 # ------------------------------------------------------------------

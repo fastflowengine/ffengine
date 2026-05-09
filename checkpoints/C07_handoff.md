@@ -3,6 +3,14 @@
 ## Status
 ✅ **COMPLETED** — 2026-03-27
 
+## 2026-04-27 Patch Note (Dynamic Partition Mapping)
+
+- `partitioning.enabled=true` ve partition tanımlı görevlerde DAG katmanı dynamic task mapping kullanacak şekilde güncellendi.
+- Yeni çalışma modeli: `plan_partitions -> prepare_target -> run_partition.expand(...) -> aggregate`.
+- `partitioning.enabled=false` görevler legacy tek-task (`FFEngineOperator`) akışını korur.
+- `FFEngineOperator` korunuyor (geriye uyumluluk / doğrudan çağrı), ancak yeni DAG üretimleri partition paralelliğini mapped task’lar ile sağlar.
+- Partition spec planlama artık filtered dataset uzerinden yapilir: `auto_numeric`, `percentile`, `distinct` sampling sorgulari `_resolved_where` (yoksa `where`) ile calisir.
+
 ---
 
 ## Summary

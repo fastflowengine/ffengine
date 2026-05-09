@@ -22,10 +22,10 @@ VALID_EXTRACTION_METHODS: frozenset[str] = frozenset({"auto", "cursor", "copy_bi
 
 VALID_PASSTHROUGH_FORMATS: frozenset[str] = frozenset({"binary", "text", "csv"})
 
-# C06 — Partition mod whitelist ("auto" is a legacy alias for "auto_numeric")
+# C06 — Partition mode whitelist
 VALID_PARTITION_MODES: frozenset[str] = frozenset({
-    "auto",
     "auto_numeric",
+    "auto_datetime",
     "percentile",
     "hash_mod",
     "distinct",
@@ -65,7 +65,7 @@ TASK_DEFAULTS: dict = {
     "mapping_file": None,
     "partitioning": {
         "enabled": False,
-        "mode": "auto",
+        "mode": "auto_numeric",
         "parts": 4,
         "distinct_limit": 16,
         "column": None,

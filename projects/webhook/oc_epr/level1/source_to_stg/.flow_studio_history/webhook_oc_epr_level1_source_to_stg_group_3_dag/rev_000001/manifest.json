@@ -1,0 +1,13 @@
+{
+  "actor": "flow_studio",
+  "created_at": "2026-05-01T15:29:24Z",
+  "dag_id": "webhook_oc_epr_level1_source_to_stg_group_3_dag",
+  "hashes": {
+    "bundle": "041b2f9d9bba42f41feda64090c64c3225e5c8db8a492cca021f32e8ba0d9136",
+    "config.yaml": "d0ab9219709ab0a8cb8b019fe7a64b69390768f96467f0c6e0d764e3e0b69be7",
+    "dag.py": "442251347a0d9d4b101b54fbf964a720dd700dfc81a1a84772d660c1a31d97f8"
+  },
+  "mapping_files": [],
+  "revision_id": "rev_000001",
+  "source": "create_initial"
+}

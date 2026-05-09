@@ -123,10 +123,7 @@ class ConfigValidator:
         if not isinstance(part, dict) or not part.get("enabled"):
             return
 
-        mode = part.get("mode", "auto")
-        if mode == "auto":
-            mode = "auto_numeric"
-            part["mode"] = "auto_numeric"
+        mode = part.get("mode", "auto_numeric")
         if mode not in VALID_PARTITION_MODES:
             raise ValidationError(
                 f"Gecersiz partitioning.mode: '{mode}'. "
@@ -139,7 +136,7 @@ class ConfigValidator:
                 f"partitioning.parts >= 1 olmali, su an: {parts!r}"
             )
 
-        column_modes = {"auto_numeric", "percentile", "hash_mod", "distinct"}
+        column_modes = {"auto_numeric", "auto_datetime", "percentile", "hash_mod", "distinct"}
         if mode in column_modes and not part.get("column"):
             raise ValidationError(
                 f"partitioning.mode='{mode}' icin 'partitioning.column' zorunludur."

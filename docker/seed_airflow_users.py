@@ -56,6 +56,42 @@ USERS = [
     },
 ]
 
+ROLE_PERMISSION_CANDIDATES: dict[str, list[tuple[str, str]]] = {
+    "Viewer": [
+        ("can_read", "DAG"),
+        ("can_read", "DAG Run"),
+        ("can_read", "Task Instance"),
+        ("can_read", "Task Instances"),
+        ("can_read", "HITL Detail"),
+        ("can_read", "Task Logs"),
+    ],
+    "Op": [
+        ("can_read", "DAG"),
+        ("can_read", "DAG Run"),
+        ("can_read", "Task Instance"),
+        ("can_create", "DAG Run"),
+    ],
+}
+
+
+def _sync_role_permissions(sm, role_name: str, candidates: list[tuple[str, str]]) -> None:
+    if not hasattr(sm, "find_permission_view_menu") or not hasattr(sm, "add_permission_role"):
+        log.warning("permission sync API not available on security manager; skipping role=%s", role_name)
+        return
+
+    role = sm.find_role(role_name)
+    if role is None:
+        log.warning("role %s not found for permission sync", role_name)
+        return
+
+    for permission_name, view_menu_name in candidates:
+        pv = sm.find_permission_view_menu(permission_name, view_menu_name)
+        if pv is None:
+            continue
+
+        if sm.add_permission_role(role, pv):
+            log.info("granted: role=%s permission=%s view=%s", role_name, permission_name, view_menu_name)
+
 
 def main() -> int:
     from airflow.providers.fab.www.app import create_app
@@ -64,6 +100,8 @@ def main() -> int:
     with app.app_context():
         sm = app.appbuilder.sm
         sm.sync_roles()
+        for role_name, candidates in ROLE_PERMISSION_CANDIDATES.items():
+            _sync_role_permissions(sm, role_name, candidates)
 
         for spec in USERS:
             role = sm.find_role(spec["role"])

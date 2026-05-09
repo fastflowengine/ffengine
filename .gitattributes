@@ -1,7 +1,33 @@
-# Text normalization
+# Global text normalization
+* text=auto eol=lf
+
+# Explicit LF for common source/config/docs
 *.md text eol=lf
 *.txt text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.sql text eol=lf
+Dockerfile* text eol=lf
 
-# Handbook strict normalization
-handbook/**/*.md text eol=lf
-handbook/**/*.txt text eol=lf
+# Windows-native scripts
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets (never normalize)
+*.png -text
+*.jpg -text
+*.jpeg -text
+*.gif -text
+*.ico -text
+*.pdf -text
+*.zip -text
+*.gz -text
+*.7z -text
+*.tar -text
+*.jar -text
+*.woff -text
+*.woff2 -text

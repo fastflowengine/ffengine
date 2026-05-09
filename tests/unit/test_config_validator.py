@@ -189,6 +189,9 @@ class TestPartitioningValidation:
     def test_valid_auto_numeric_with_column_passes(self):
         ConfigValidator().validate(_part_task())
 
+    def test_valid_auto_datetime_with_column_passes(self):
+        ConfigValidator().validate(_part_task(mode="auto_datetime", column="created_at"))
+
     def test_valid_explicit_with_ranges_passes(self):
         ConfigValidator().validate(
             _part_task(mode="explicit", ranges=["id < 100", "id >= 100"], column=None)
@@ -204,9 +207,9 @@ class TestPartitioningValidation:
         with pytest.raises(ValidationError, match="mode"):
             ConfigValidator().validate(_part_task(mode="full_scan", column=None))
 
-    def test_auto_mode_alias_accepted(self):
-        # "auto" → "auto_numeric" normalize edilir, ValidationError fırlatılmaz
-        ConfigValidator().validate(_part_task(mode="auto"))
+    def test_auto_mode_rejected(self):
+        with pytest.raises(ValidationError, match="mode"):
+            ConfigValidator().validate(_part_task(mode="auto"))
 
     def test_invalid_mode_raises_validation_error(self):
         with pytest.raises(ValidationError, match="mode"):
@@ -279,4 +282,3 @@ class TestPassthroughConfig:
                 source_columns=None,
             )
         )
-

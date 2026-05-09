@@ -1,0 +1,34 @@
+{
+  "flow_dir": "/opt/airflow/projects/webhook/whk/main/main",
+  "config_path": "/opt/airflow/projects/webhook/whk/main/main/webhook_whk_main_main_group_1.yaml",
+  "dag_path": "/opt/airflow/dags/webhook/whk/main/main/webhook_whk_main_main_group_1_dag.py",
+  "dag_id": "webhook_whk_main_main_group_1_dag",
+  "task_group_id": "1_source_webhook_dag_webhook_whk_level1_src_to_stg_group_2_dag_to_dwh_webhook_dag_tgt_table",
+  "task_count": 2,
+  "group_no": 1,
+  "tags": [
+    "webhook",
+    "whk",
+    "main"
+  ],
+  "auto_tags": [
+    "webhook",
+    "whk",
+    "main",
+    "main"
+  ],
+  "user_tags": [
+    "main"
+  ],
+  "active_revision_id": "rev_000002",
+  "revision_count": 2,
+  "scheduler": {
+    "cron_expression": "20 * * * *",
+    "timezone": "Europe/Istanbul",
+    "active": true,
+    "start_date": "2026-05-01T19:28:00"
+  },
+  "dag_dependencies": {
+    "upstream_dag_ids": []
+  }
+}

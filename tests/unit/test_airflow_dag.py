@@ -1,7 +1,7 @@
 """
 C07 - DAG generator unit tests.
 
-Scope: generate_dags, register_dags, and FFEngineOperator-based DAG generation.
+Scope: generate_dags, register_dags, and dynamic partition DAG generation.
 """
 
 from ffengine.airflow.dag_generator import generate_dags, register_dags
@@ -94,13 +94,39 @@ class TestGenerateDags:
         dags = generate_dags(str(tmp_path), dag_prefix="myapp", tags=["prod"])
         assert "myapp_test_x" in dags
 
-    def test_uses_ffengine_operator(self, tmp_path):
+    def test_uses_dynamic_partition_tasks(self, tmp_path):
         cfg = tmp_path / "orders.yaml"
         cfg.write_text(
             "source_db_var: src_pg\n"
             "target_db_var: tgt_pg\n"
             "flow_tasks:\n"
-            "  - task_group_id: load_orders\n",
+            "  - task_group_id: load_orders\n"
+            "    partitioning:\n"
+            "      enabled: true\n"
+            "      mode: auto_numeric\n"
+            "      column: id\n"
+            "      parts: 2\n",
+            encoding="utf-8",
+        )
+
+        dags = generate_dags(str(tmp_path))
+        dag = dags["ffengine_orders_load_orders"]
+
+        task_ids = {t.task_id for t in dag.tasks}
+        assert f"plan_load_orders" in task_ids
+        assert f"prepare_load_orders" in task_ids
+        assert f"run_load_orders" in task_ids
+        assert f"aggregate_load_orders" in task_ids
+
+    def test_partition_disabled_uses_single_operator(self, tmp_path):
+        cfg = tmp_path / "orders.yaml"
+        cfg.write_text(
+            "source_db_var: src_pg\n"
+            "target_db_var: tgt_pg\n"
+            "flow_tasks:\n"
+            "  - task_group_id: load_orders\n"
+            "    partitioning:\n"
+            "      enabled: false\n",
             encoding="utf-8",
         )
 

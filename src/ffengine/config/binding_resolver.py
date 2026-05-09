@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from ffengine.errors.exceptions import ConfigError
@@ -21,6 +21,7 @@ _log = logging.getLogger(__name__)
 # Legacy: {{ source.col }}, {{ literal.val }}, {{ airflow_var.KEY }}
 _LEGACY_BINDING_RE = re.compile(r"\{\{\s*(source|target|literal|airflow_var)\.(\S+?)\s*\}\}")
 _PARAM_RE = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+_DATETIME_TIMESPEC = "microseconds"
 
 
 class BindingResolver:
@@ -44,6 +45,7 @@ class BindingResolver:
         context: dict | None,
         source_session: Any,
         target_session: Any,
+        where_dialect: Any = None,
     ) -> dict:
         """
         Yeni UI binding modelini cozer.
@@ -95,7 +97,10 @@ class BindingResolver:
             param_name = match.group(1)
             if param_name not in resolved_values:
                 raise ConfigError(f"Where Clause parametresi icin binding bulunamadi: :{param_name}")
-            return self._to_sql_literal(resolved_values[param_name])
+            return self._to_sql_literal(
+                resolved_values[param_name],
+                where_dialect=where_dialect,
+            )
 
         result["_resolved_where"] = _PARAM_RE.sub(_replace, where_clause)
         return result
@@ -168,7 +173,7 @@ class BindingResolver:
                 except Exception:
                     pass
 
-    def _to_sql_literal(self, value: Any) -> str:
+    def _to_sql_literal(self, value: Any, *, where_dialect: Any = None) -> str:
         if value is None:
             return "NULL"
         if isinstance(value, bool):
@@ -179,9 +184,40 @@ class BindingResolver:
             if not math.isfinite(value):
                 raise ConfigError("Binding degeri NaN/Inf olamaz.")
             return str(value)
-        if isinstance(value, (datetime, date)):
-            text = value.isoformat(sep=" ") if isinstance(value, datetime) else value.isoformat()
-            return "'" + text.replace("'", "''") + "'"
+        if isinstance(value, datetime):
+            return self._datetime_to_sql_literal(value, where_dialect=where_dialect)
+        if isinstance(value, date):
+            return self._date_to_sql_literal(value)
 
         text = str(value)
         return "'" + text.replace("'", "''") + "'"
+
+    @staticmethod
+    def _date_to_sql_literal(value: date) -> str:
+        text = value.isoformat().replace("'", "''")
+        return f"DATE '{text}'"
+
+    @staticmethod
+    def _dialect_name(dialect: Any) -> str:
+        if dialect is None:
+            return ""
+        if isinstance(dialect, str):
+            return dialect.strip().lower()
+        return type(dialect).__name__.strip().lower()
+
+    @classmethod
+    def _is_postgres_dialect(cls, dialect: Any) -> bool:
+        name = cls._dialect_name(dialect)
+        return name in {"postgresdialect", "postgresqldialect"} or "postgres" in name
+
+    @classmethod
+    def _datetime_to_sql_literal(cls, value: datetime, *, where_dialect: Any = None) -> str:
+        dt = value
+        if dt.tzinfo is not None:
+            dt_utc = dt.astimezone(timezone.utc)
+            if cls._is_postgres_dialect(where_dialect):
+                text_tz = dt_utc.isoformat(sep=" ", timespec=_DATETIME_TIMESPEC).replace("'", "''")
+                return f"TIMESTAMPTZ '{text_tz}'"
+            dt = dt_utc.replace(tzinfo=None)
+        text = dt.isoformat(sep=" ", timespec=_DATETIME_TIMESPEC).replace("'", "''")
+        return f"TIMESTAMP '{text}'"

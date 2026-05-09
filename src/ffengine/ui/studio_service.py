@@ -327,7 +327,7 @@ def _build_dag_filename(
     level_slug = _slugify(level, "level1")
     flow_slug = _slugify(flow, "src_to_stg")
     return (
-        f"{project_slug}_{domain_slug}_{level_slug}_{flow_slug}_group_{int(group_no)}_dag.py"
+        f"{project_slug}_{domain_slug}_{level_slug}_{flow_slug}_{int(group_no)}_dag.py"
     )
 
 
@@ -339,12 +339,12 @@ def _build_yaml_filename(
     group_no: int,
 ) -> str:
     return (
-        f"{project}_{domain}_{level}_{flow}_group_{int(group_no)}.yaml"
+        f"{project}_{domain}_{level}_{flow}_{int(group_no)}.yaml"
     )
 
 
 def _extract_group_no_from_name(name: str) -> int | None:
-    match = re.search(r"_group_(\d+)", name or "")
+    match = re.search(r"(?:_group_)?(\d+)(?:_dag)?(?:\.py|\.ya?ml)?$", name or "")
     if not match:
         return None
     try:
@@ -358,13 +358,13 @@ def _next_group_no(flow_dir: Path, flow_dag_dir: Path) -> int:
     groups: set[int] = set()
 
     if flow_dir.is_dir():
-        for item in flow_dir.glob("*_group_*.yaml"):
+        for item in flow_dir.glob("*.yaml"):
             g = _extract_group_no_from_name(item.name)
             if g is not None:
                 groups.add(g)
 
     if flow_dag_dir.is_dir():
-        for item in flow_dag_dir.glob("*_group_*_dag.py"):
+        for item in flow_dag_dir.glob("*_dag.py"):
             g = _extract_group_no_from_name(item.name)
             if g is not None:
                 groups.add(g)
@@ -1450,10 +1450,10 @@ def _dag_operation_lock(dag_id: str):
 
 
 def _extract_group_no(dag_id: str, config_path: Path) -> int:
-    match = re.search(r"_group_(\d+)_dag$", dag_id)
+    match = re.search(r"(?:_group_)?(\d+)_dag$", dag_id)
     if match:
         return int(match.group(1))
-    cfg_match = re.search(r"_group_(\d+)\.ya?ml$", config_path.name)
+    cfg_match = re.search(r"(?:_group_)?(\d+)\.ya?ml$", config_path.name)
     if cfg_match:
         return int(cfg_match.group(1))
     raise ValueError("group_no could not be resolved from dag_id/config name.")

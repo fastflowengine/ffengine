@@ -126,7 +126,7 @@ class TestConfigLoaderValid:
         p.write_text(_VALID_YAML)
         part = ConfigLoader().load(str(p), "t1")["partitioning"]
         assert part["enabled"] is False
-        assert part["mode"] == "auto"
+        assert part["mode"] == "auto_numeric"
         assert part["parts"] == 4
         assert part["distinct_limit"] == 16
         assert part["column"] is None   # C06 eklendi
