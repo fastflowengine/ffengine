@@ -93,7 +93,9 @@ def _unwrap_exception_chain(exc: Exception) -> list[Exception]:
             current = orig
             continue
 
-        next_exc = getattr(current, "cause", None) or getattr(current, "__cause__", None)
+        next_exc = getattr(current, "cause", None) or getattr(
+            current, "__cause__", None
+        )
         current = next_exc if isinstance(next_exc, Exception) else None
 
     return chain

@@ -10,8 +10,6 @@ from typing import Optional
 class UnsupportedTypeError(Exception):
     """Raised when a source type has no mapping in the target dialect."""
 
-    pass
-
 
 # ------------------------------------------------------------------
 # Canonical type registry
@@ -225,13 +223,9 @@ class TypeMapper:
         src_map = _SOURCE_MAPS.get(source_dialect)
         tgt_map = _TARGET_MAPS.get(target_dialect)
         if src_map is None:
-            raise UnsupportedTypeError(
-                f"Unknown source dialect: {source_dialect}"
-            )
+            raise UnsupportedTypeError(f"Unknown source dialect: {source_dialect}")
         if tgt_map is None:
-            raise UnsupportedTypeError(
-                f"Unknown target dialect: {target_dialect}"
-            )
+            raise UnsupportedTypeError(f"Unknown target dialect: {target_dialect}")
 
         # Parse base type and optional precision/scale
         base_type, params = TypeMapper._parse_type(source_type)

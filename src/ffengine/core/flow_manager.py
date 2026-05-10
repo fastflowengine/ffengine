@@ -210,6 +210,7 @@ class PythonEngine(BaseEngine):
 
         if any(v is None for v in (src_session, tgt_session, src_dialect, tgt_dialect)):
             from ffengine.errors.exceptions import ConfigError
+
             raise ConfigError(
                 "PythonEngine.run() için session/dialect enjeksiyonu gerekli: "
                 "_src_session, _tgt_session, _src_dialect, _tgt_dialect "

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Flow Studio MVP service layer.
 
 Phase 1 (T01-T04, T07, T11) and Phase 2 (T05-T10, T08-T09, T12) endpoints use this module.
@@ -94,7 +94,8 @@ def _normalize_bindings(raw_bindings: Any) -> list[dict[str, Any]]:
             "binding_source": binding_source,
             "default_value": str(item.get("default_value") or "").strip() or None,
             "sql": str(item.get("sql") or "").strip() or None,
-            "airflow_variable_key": str(item.get("airflow_variable_key") or "").strip() or None,
+            "airflow_variable_key": str(item.get("airflow_variable_key") or "").strip()
+            or None,
         }
         normalized.append(normalized_item)
     return normalized
@@ -247,7 +248,9 @@ def _normalize_scheduler_cron(raw: Any) -> str | None:
         return None
     cron = " ".join(text.split())
     if len(cron.split()) != 5:
-        raise ValueError("scheduler.cron_expression must be a valid 5-field cron expression.")
+        raise ValueError(
+            "scheduler.cron_expression must be a valid 5-field cron expression."
+        )
     try:
         from croniter import croniter
 
@@ -256,11 +259,17 @@ def _normalize_scheduler_cron(raw: Any) -> str | None:
         allowed = re.compile(r"^[\d\*/,\-]+$")
         for field in cron.split():
             if field == "?":
-                raise ValueError("scheduler.cron_expression must be a valid 5-field cron expression.")
+                raise ValueError(
+                    "scheduler.cron_expression must be a valid 5-field cron expression."
+                )
             if not allowed.fullmatch(field):
-                raise ValueError("scheduler.cron_expression must be a valid 5-field cron expression.")
+                raise ValueError(
+                    "scheduler.cron_expression must be a valid 5-field cron expression."
+                )
     except Exception as exc:
-        raise ValueError("scheduler.cron_expression must be a valid 5-field cron expression.") from exc
+        raise ValueError(
+            "scheduler.cron_expression must be a valid 5-field cron expression."
+        ) from exc
     return cron
 
 
@@ -287,14 +296,19 @@ def normalize_scheduler(raw_scheduler: Any) -> dict[str, Any]:
     else:
         raise ValueError("scheduler must be an object.")
 
-    timezone_name = str(payload.get("timezone") or "").strip() or get_airflow_default_timezone_name()
+    timezone_name = (
+        str(payload.get("timezone") or "").strip()
+        or get_airflow_default_timezone_name()
+    )
     try:
         ZoneInfo(timezone_name)
     except Exception as exc:
         raise ValueError("scheduler.timezone must be a valid IANA timezone.") from exc
 
     cron_expression = _normalize_scheduler_cron(payload.get("cron_expression"))
-    start_date = _normalize_scheduler_start_date(payload.get("start_date"), timezone_name=timezone_name)
+    start_date = _normalize_scheduler_start_date(
+        payload.get("start_date"), timezone_name=timezone_name
+    )
     active = _coerce_bool(payload.get("active"), default=STUDIO_DEFAULT_ACTIVE)
 
     return {
@@ -338,9 +352,7 @@ def _build_yaml_filename(
     flow: str,
     group_no: int,
 ) -> str:
-    return (
-        f"{project}_{domain}_{level}_{flow}_{int(group_no)}.yaml"
-    )
+    return f"{project}_{domain}_{level}_{flow}_{int(group_no)}.yaml"
 
 
 def _extract_group_no_from_name(name: str) -> int | None:
@@ -434,7 +446,9 @@ def resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str
         if not task_id:
             raise ValueError("task_group_id is required for each flow_task.")
         if task_id in id_set:
-            raise ValueError(f"Ayni task_group_id birden fazla kez kullanildi: {task_id}")
+            raise ValueError(
+                f"Ayni task_group_id birden fazla kez kullanildi: {task_id}"
+            )
         task_ids.append(task_id)
         id_set.add(task_id)
 
@@ -446,9 +460,7 @@ def resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str
         if depends_on is None:
             depends_on = []
         if not isinstance(depends_on, list):
-            raise ValueError(
-                f"depends_on must be a list: task_group_id={task_id}"
-            )
+            raise ValueError(f"depends_on must be a list: task_group_id={task_id}")
         for dep in depends_on:
             dep_id = str(dep or "").strip()
             if not dep_id:
@@ -456,9 +468,7 @@ def resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str
             if dep_id == task_id:
                 raise ValueError(f"depends_on cannot reference itself: {task_id}")
             if dep_id not in id_set:
-                raise ValueError(
-                    f"depends_on contains invalid task_group_id: {dep_id}"
-                )
+                raise ValueError(f"depends_on contains invalid task_group_id: {dep_id}")
             edge = (dep_id, task_id)
             if edge in seen_edges:
                 continue
@@ -561,7 +571,9 @@ def _read_dag_dependencies_from_yaml(config_path: Path) -> list[str]:
     return list(normalized.get("upstream_dag_ids") or [])
 
 
-def _collect_scope_studio_dag_entries(project: str, domain: str) -> dict[str, dict[str, Any]]:
+def _collect_scope_studio_dag_entries(
+    project: str, domain: str
+) -> dict[str, dict[str, Any]]:
     scope_project = _slugify(project, "default_project")
     dag_root = _generated_dag_root()
     scope_root = dag_root / scope_project
@@ -579,7 +591,9 @@ def _collect_scope_studio_dag_entries(project: str, domain: str) -> dict[str, di
         if not config_path.is_file():
             continue
         try:
-            cfg_project, cfg_domain, cfg_level, cfg_flow = _extract_scope_from_config_path(config_path)
+            cfg_project, cfg_domain, cfg_level, cfg_flow = (
+                _extract_scope_from_config_path(config_path)
+            )
         except Exception:
             continue
         if cfg_project != scope_project:
@@ -620,7 +634,9 @@ def _build_scope_dag_graph(
         if override_dag_id and dag_id == override_dag_id:
             upstreams = list(override_upstreams or [])
         else:
-            upstreams = list((scope_entries.get(dag_id) or {}).get("upstream_dag_ids") or [])
+            upstreams = list(
+                (scope_entries.get(dag_id) or {}).get("upstream_dag_ids") or []
+            )
         for upstream in upstreams:
             if upstream not in graph:
                 continue
@@ -703,8 +719,16 @@ def discover_dag_dependency_options(
         current_group_no = int(current_entry.get("group_no") or 1)
         current_upstream_dag_ids = list(current_entry.get("upstream_dag_ids") or [])
     else:
-        flow_dir = _projects_root() / scope_project / scope_domain / scope_level / scope_flow
-        flow_dag_dir = _generated_dag_root() / scope_project / scope_domain / scope_level / scope_flow
+        flow_dir = (
+            _projects_root() / scope_project / scope_domain / scope_level / scope_flow
+        )
+        flow_dag_dir = (
+            _generated_dag_root()
+            / scope_project
+            / scope_domain
+            / scope_level
+            / scope_flow
+        )
         current_group_no = _next_group_no(flow_dir, flow_dag_dir)
         current_upstream_dag_ids = []
 
@@ -734,7 +758,8 @@ def discover_dag_dependency_options(
         [
             str(entry.get("dag_id") or "")
             for entry in scope_entries.values()
-            if current_dag_id and current_dag_id in list(entry.get("upstream_dag_ids") or [])
+            if current_dag_id
+            and current_dag_id in list(entry.get("upstream_dag_ids") or [])
         ]
     )
 
@@ -756,7 +781,11 @@ def _render_single_studio_dag_entry(entry: dict[str, Any]) -> None:
     dag_id = str(entry.get("dag_id") or "").strip()
     dag_path = entry.get("dag_path")
     config_path = entry.get("config_path")
-    if not dag_id or not isinstance(dag_path, Path) or not isinstance(config_path, Path):
+    if (
+        not dag_id
+        or not isinstance(dag_path, Path)
+        or not isinstance(config_path, Path)
+    ):
         raise ValueError("Invalid studio DAG entry.")
     cfg = _load_yaml_root(config_path)
     user_tags = _normalize_custom_tags(cfg.get("custom_tags"))
@@ -795,7 +824,7 @@ def _render_group_dag_source(
     snapshot = dict(raw_config or {})
     snapshot["__config_path"] = config_path.as_posix()
     raw_literal = pprint.pformat(snapshot, width=100, sort_dicts=False)
-    return f'''{STUDIO_DAG_MARKER}
+    return f"""{STUDIO_DAG_MARKER}
 from pathlib import Path
 
 from ffengine.airflow.generated_factory import build_generated_dag
@@ -812,7 +841,7 @@ dag = build_generated_dag(
     upstream_dag_ids=UPSTREAM_DAG_IDS,
     raw_config_snapshot=RAW_CONFIG,
 )
-'''
+"""
 
 
 def _ensure_path_under_root(path: Path, root: Path) -> Path:
@@ -826,7 +855,9 @@ def _ensure_path_under_root(path: Path, root: Path) -> Path:
     return resolved
 
 
-def _best_effort_unlink(path: Path, *, retries: int = 80, wait_seconds: float = 0.1) -> bool:
+def _best_effort_unlink(
+    path: Path, *, retries: int = 80, wait_seconds: float = 0.1
+) -> bool:
     for _ in range(max(1, retries)):
         try:
             path.unlink()
@@ -949,7 +980,9 @@ def _parse_yaml_mapping_text(mapping_content: str, *, label: str) -> dict[str, A
 def _read_mapping_object(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"Mapping file not found: {path.as_posix()}")
-    return _parse_yaml_mapping_text(path.read_text(encoding="utf-8"), label=path.as_posix())
+    return _parse_yaml_mapping_text(
+        path.read_text(encoding="utf-8"), label=path.as_posix()
+    )
 
 
 def _normalize_description_type(type_code: Any) -> str:
@@ -976,7 +1009,9 @@ def _wrap_zero_row_sql_for_dialect(inline_sql: str, dialect_name: str) -> str:
     return f"SELECT * FROM ({base}) AS ffengine_inline_sql LIMIT 0"
 
 
-def extract_sql_select_columns(src_session: DBSession, src_dialect, inline_sql: str) -> list[dict[str, str]]:
+def extract_sql_select_columns(
+    src_session: DBSession, src_dialect, inline_sql: str
+) -> list[dict[str, str]]:
     """Extract column names and normalized type names from SQL query metadata."""
     dialect_name = _dialect_name(src_dialect)
     query = _wrap_zero_row_sql_for_dialect(inline_sql, dialect_name)
@@ -994,20 +1029,26 @@ def extract_sql_select_columns(src_session: DBSession, src_dialect, inline_sql: 
         if not name:
             continue
         type_code = col[1] if len(col) > 1 else None
-        cols.append({"name": name, "source_type": _normalize_description_type(type_code)})
+        cols.append(
+            {"name": name, "source_type": _normalize_description_type(type_code)}
+        )
     if not cols:
         raise ValueError("No columns found during SQL metadata extraction.")
     return cols
 
 
-def extract_sql_select_columns_for_conn(source_conn_id: str, inline_sql: str) -> list[dict[str, str]]:
+def extract_sql_select_columns_for_conn(
+    source_conn_id: str, inline_sql: str
+) -> list[dict[str, str]]:
     src_params = AirflowConnectionAdapter.get_connection_params(source_conn_id)
     src_dialect = resolve_dialect(src_params["conn_type"])
     with DBSession(src_params, src_dialect) as src_session:
         return extract_sql_select_columns(src_session, src_dialect, inline_sql)
 
 
-def _collect_existing_auto_mapping_paths(config_path: Path, flow_dir: Path) -> set[Path]:
+def _collect_existing_auto_mapping_paths(
+    config_path: Path, flow_dir: Path
+) -> set[Path]:
     if not config_path.is_file():
         return set()
     try:
@@ -1092,7 +1133,9 @@ def _generate_mapping_content_for_task(
     task_no: int,
 ) -> str:
     source_type = str(task.get("source_type") or "table").strip() or "table"
-    task_group_id = str(task.get("task_group_id") or "").strip() or f"task_{max(1, int(task_no))}"
+    task_group_id = (
+        str(task.get("task_group_id") or "").strip() or f"task_{max(1, int(task_no))}"
+    )
 
     preview_payload: dict[str, Any] = {
         "source_conn_id": str(source_conn_id or "").strip(),
@@ -1145,7 +1188,9 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _history_keep_limit() -> int:
-    raw = str(os.getenv("FFENGINE_STUDIO_HISTORY_KEEP_LIMIT", str(STUDIO_HISTORY_KEEP_LIMIT))).strip()
+    raw = str(
+        os.getenv("FFENGINE_STUDIO_HISTORY_KEEP_LIMIT", str(STUDIO_HISTORY_KEEP_LIMIT))
+    ).strip()
     try:
         value = int(raw)
     except ValueError:
@@ -1189,8 +1234,9 @@ def _next_revision_id(history_root: Path) -> str:
 
 def _prune_revision_history(history_root: Path, keep_limit: int) -> None:
     dirs = _revision_dirs_sorted(history_root)
-    stale = dirs[:-max(1, keep_limit)]
+    stale = dirs[: -max(1, keep_limit)]
     for item in stale:
+
         def _onerror(func, path, _exc_info):
             try:
                 os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
@@ -1249,7 +1295,9 @@ def _auto_mapping_rel_paths_from_config_obj(config_obj: dict[str, Any]) -> list[
     return sorted(set(out))
 
 
-def _read_active_bundle(dag_path: Path, config_path: Path, flow_dir: Path) -> dict[str, Any]:
+def _read_active_bundle(
+    dag_path: Path, config_path: Path, flow_dir: Path
+) -> dict[str, Any]:
     if not dag_path.is_file():
         raise FileNotFoundError(f"DAG file not found: {dag_path.as_posix()}")
     if not config_path.is_file():
@@ -1290,7 +1338,9 @@ def _read_active_bundle(dag_path: Path, config_path: Path, flow_dir: Path) -> di
     }
 
 
-def _active_bundle_hash_or_empty(dag_path: Path, config_path: Path, flow_dir: Path) -> str:
+def _active_bundle_hash_or_empty(
+    dag_path: Path, config_path: Path, flow_dir: Path
+) -> str:
     try:
         bundle = _read_active_bundle(dag_path, config_path, flow_dir)
     except Exception:
@@ -1341,7 +1391,9 @@ def _save_bundle_as_revision(
 def _load_bundle_from_revision(revision_dir: Path) -> dict[str, Any]:
     manifest_path = revision_dir / "manifest.json"
     if not manifest_path.is_file():
-        raise FileNotFoundError(f"Revision manifest not found: {manifest_path.as_posix()}")
+        raise FileNotFoundError(
+            f"Revision manifest not found: {manifest_path.as_posix()}"
+        )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     dag_file = revision_dir / "dag.py"
     cfg_file = revision_dir / "config.yaml"
@@ -1369,7 +1421,9 @@ def _write_studio_metadata(flow_dir: Path, metadata: dict[str, Any]) -> None:
     )
 
 
-def _list_revision_items(history_root: Path, *, limit: int | None = None) -> list[dict[str, Any]]:
+def _list_revision_items(
+    history_root: Path, *, limit: int | None = None
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for revision_dir in reversed(_revision_dirs_sorted(history_root)):
         manifest_path = revision_dir / "manifest.json"
@@ -1417,7 +1471,10 @@ def _resolve_active_revision_id(
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             continue
-        revision_id = str(manifest.get("revision_id") or revision_dir.name).strip() or revision_dir.name
+        revision_id = (
+            str(manifest.get("revision_id") or revision_dir.name).strip()
+            or revision_dir.name
+        )
         manifest_bundle_hash = str((manifest.get("hashes") or {}).get("bundle") or "")
         if manifest_bundle_hash and manifest_bundle_hash == bundle_hash:
             return revision_id
@@ -1540,29 +1597,44 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                 "task_type": _normalize_task_type(task.get("task_type")),
                 "source_schema": str(task.get("source_schema") or "").strip(),
                 "source_table": str(task.get("source_table") or "").strip(),
-                "source_type": str(task.get("source_type") or "table").strip() or "table",
+                "source_type": str(task.get("source_type") or "table").strip()
+                or "table",
                 "inline_sql": str(task.get("inline_sql") or "").strip() or None,
-                "script_run_environment": str(task.get("script_run_environment") or "").strip() or None,
+                "script_run_environment": str(
+                    task.get("script_run_environment") or ""
+                ).strip()
+                or None,
                 "script_sql": str(task.get("script_sql") or "").strip() or None,
-                "dag_task_dag_id": str(task.get("dag_task_dag_id") or "").strip() or None,
+                "dag_task_dag_id": str(task.get("dag_task_dag_id") or "").strip()
+                or None,
                 "target_schema": str(task.get("target_schema") or "").strip(),
                 "target_table": str(task.get("target_table") or "").strip(),
                 "load_method": (
-                    str(task.get("load_method") or "create_if_not_exists_or_truncate").strip()
+                    str(
+                        task.get("load_method") or "create_if_not_exists_or_truncate"
+                    ).strip()
                     or "create_if_not_exists_or_truncate"
                 ),
                 "column_mapping_mode": (
                     str(task.get("column_mapping_mode") or "source").strip() or "source"
                 ),
                 "mapping_file": str(task.get("mapping_file") or "").strip() or None,
-                "mapping_content": _load_mapping_content_for_task(config_resolved.parent, task),
+                "mapping_content": _load_mapping_content_for_task(
+                    config_resolved.parent, task
+                ),
                 "where": str(task.get("where") or "").strip() or None,
                 "batch_size": int(task.get("batch_size") or 10000),
                 "partitioning_enabled": bool(partitioning.get("enabled", False)),
-                "partitioning_mode": str(partitioning.get("mode") or "auto_numeric").strip() or "auto_numeric",
-                "partitioning_column": str(partitioning.get("column") or "").strip() or None,
+                "partitioning_mode": str(
+                    partitioning.get("mode") or "auto_numeric"
+                ).strip()
+                or "auto_numeric",
+                "partitioning_column": str(partitioning.get("column") or "").strip()
+                or None,
                 "partitioning_parts": int(partitioning.get("parts") or 2),
-                "partitioning_distinct_limit": int(partitioning.get("distinct_limit") or 16),
+                "partitioning_distinct_limit": int(
+                    partitioning.get("distinct_limit") or 16
+                ),
                 "partitioning_ranges": partitioning.get("ranges") or [],
                 "bindings": _normalize_bindings(task.get("bindings")),
             }
@@ -1709,16 +1781,22 @@ def _airflow_parse_state(dag_id: str) -> dict[str, Any] | None:
     }
 
 
-def _parse_state_changed(before: dict[str, Any] | None, after: dict[str, Any] | None) -> bool:
+def _parse_state_changed(
+    before: dict[str, Any] | None, after: dict[str, Any] | None
+) -> bool:
     if before is None:
         return after is not None
     if after is None:
         return False
-    if str(after.get("dag_version_id") or "") != str(before.get("dag_version_id") or ""):
+    if str(after.get("dag_version_id") or "") != str(
+        before.get("dag_version_id") or ""
+    ):
         return True
     if str(after.get("dag_hash") or "") != str(before.get("dag_hash") or ""):
         return True
-    if str(after.get("serialized_last_updated") or "") != str(before.get("serialized_last_updated") or ""):
+    if str(after.get("serialized_last_updated") or "") != str(
+        before.get("serialized_last_updated") or ""
+    ):
         return True
     if int(after.get("version_number") or 0) > int(before.get("version_number") or 0):
         return True
@@ -1728,8 +1806,12 @@ def _parse_state_changed(before: dict[str, Any] | None, after: dict[str, Any] | 
 def _wait_for_parse_refresh(dag_id: str, before_state: dict[str, Any] | None) -> bool:
     if not _env_bool("FFENGINE_STUDIO_PROMOTE_VERIFY_PARSE", True):
         return True
-    timeout_seconds_raw = str(os.getenv("FFENGINE_STUDIO_PROMOTE_VERIFY_TIMEOUT_SECONDS", "60")).strip()
-    interval_seconds_raw = str(os.getenv("FFENGINE_STUDIO_PROMOTE_VERIFY_INTERVAL_SECONDS", "1")).strip()
+    timeout_seconds_raw = str(
+        os.getenv("FFENGINE_STUDIO_PROMOTE_VERIFY_TIMEOUT_SECONDS", "60")
+    ).strip()
+    interval_seconds_raw = str(
+        os.getenv("FFENGINE_STUDIO_PROMOTE_VERIFY_INTERVAL_SECONDS", "1")
+    ).strip()
     try:
         timeout_seconds = max(2.0, float(timeout_seconds_raw))
     except ValueError:
@@ -1762,7 +1844,11 @@ def _import_airflow_model(candidates: list[tuple[str, str]]) -> type | None:
 def _cleanup_airflow_dag_metadata(dag_id: str) -> dict[str, Any]:
     did = str(dag_id or "").strip()
     if not did:
-        return {"ok": False, "details": {}, "warnings": ["Metadata cleanup skipped because dag_id is empty."]}
+        return {
+            "ok": False,
+            "details": {},
+            "warnings": ["Metadata cleanup skipped because dag_id is empty."],
+        }
 
     try:
         from airflow.utils.session import create_session
@@ -1783,10 +1869,25 @@ def _cleanup_airflow_dag_metadata(dag_id: str) -> dict[str, Any]:
         ("dag_runs", [("airflow.models.dagrun", "DagRun")]),
         ("dag_versions", [("airflow.models.dag_version", "DagVersion")]),
         ("serialized_dags", [("airflow.models.serialized_dag", "SerializedDagModel")]),
-        ("dag_tags", [("airflow.models.dag", "DagTag"), ("airflow.models.dagtag", "DagTag")]),
+        (
+            "dag_tags",
+            [("airflow.models.dag", "DagTag"), ("airflow.models.dagtag", "DagTag")],
+        ),
         ("dag_code", [("airflow.models.dagcode", "DagCode")]),
-        ("dag_models", [("airflow.models.dag", "DagModel"), ("airflow.models.dagmodel", "DagModel")]),
-        ("parse_import_errors", [("airflow.models.errors", "ParseImportError"), ("airflow.models.errors", "ImportError")]),
+        (
+            "dag_models",
+            [
+                ("airflow.models.dag", "DagModel"),
+                ("airflow.models.dagmodel", "DagModel"),
+            ],
+        ),
+        (
+            "parse_import_errors",
+            [
+                ("airflow.models.errors", "ParseImportError"),
+                ("airflow.models.errors", "ImportError"),
+            ],
+        ),
     ]
 
     details: dict[str, int] = {}
@@ -1806,7 +1907,9 @@ def _cleanup_airflow_dag_metadata(dag_id: str) -> dict[str, Any]:
                     if hasattr(model, "dag_id"):
                         query = query.filter(getattr(model, "dag_id") == did)
                     elif hasattr(model, "filename"):
-                        query = query.filter(getattr(model, "filename").like(f"%{did}%"))
+                        query = query.filter(
+                            getattr(model, "filename").like(f"%{did}%")
+                        )
                     else:
                         continue
                     details[label] = int(query.delete(synchronize_session=False) or 0)
@@ -1834,7 +1937,9 @@ def _apply_bundle_to_active(
     config_path: Path,
     bundle: dict[str, Any],
 ) -> None:
-    existing_auto_mapping_paths = _collect_existing_auto_mapping_paths(config_path, flow_dir)
+    existing_auto_mapping_paths = _collect_existing_auto_mapping_paths(
+        config_path, flow_dir
+    )
 
     dag_path.write_text(str(bundle.get("dag_text") or ""), encoding="utf-8")
     config_text = str(bundle.get("config_text") or "")
@@ -1973,11 +2078,15 @@ def promote_dag_revision(
             try:
                 rel = config_path.resolve().relative_to(_projects_root().resolve())
                 if len(rel.parts) >= 4:
-                    auto_tags = _derive_tags(rel.parts[0], rel.parts[1], rel.parts[2], rel.parts[3])
+                    auto_tags = _derive_tags(
+                        rel.parts[0], rel.parts[1], rel.parts[2], rel.parts[3]
+                    )
             except ValueError:
                 auto_tags = []
             raw_cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            user_tags = _normalize_custom_tags(raw_cfg.get("custom_tags") if isinstance(raw_cfg, dict) else [])
+            user_tags = _normalize_custom_tags(
+                raw_cfg.get("custom_tags") if isinstance(raw_cfg, dict) else []
+            )
             dag_dependencies = _normalize_dag_dependencies(
                 raw_cfg.get("dag_dependencies") if isinstance(raw_cfg, dict) else None
             )
@@ -2008,14 +2117,23 @@ def promote_dag_revision(
                 "dag_dependencies": dag_dependencies,
                 "no_op": no_op,
             }
-            warning_items = [str(item).strip() for item in list(warnings or []) if str(item).strip()]
+            warning_items = [
+                str(item).strip() for item in list(warnings or []) if str(item).strip()
+            ]
             if warning_items:
                 response["warnings"] = warning_items
             return response
 
-        current_bundle_hash = str((rollback_bundle.get("hashes") or {}).get("bundle") or "")
+        current_bundle_hash = str(
+            (rollback_bundle.get("hashes") or {}).get("bundle") or ""
+        )
         target_manifest_bundle_hash = str(
-            (((target_bundle.get("manifest") or {}).get("hashes") or {}).get("bundle") or "")
+            (
+                ((target_bundle.get("manifest") or {}).get("hashes") or {}).get(
+                    "bundle"
+                )
+                or ""
+            )
         )
         target_bundle_hash = _bundle_hash_from_loaded_bundle(target_bundle)
         if not target_bundle_hash:
@@ -2029,7 +2147,11 @@ def promote_dag_revision(
             promote_warnings.append(
                 "Revision manifest hash mismatch detected; promote used recalculated revision content hash."
             )
-        if current_bundle_hash and target_bundle_hash and current_bundle_hash == target_bundle_hash:
+        if (
+            current_bundle_hash
+            and target_bundle_hash
+            and current_bundle_hash == target_bundle_hash
+        ):
             return _finalize_promote_response(no_op=True, warnings=promote_warnings)
 
         before_state = _airflow_parse_state(did)
@@ -2041,13 +2163,17 @@ def promote_dag_revision(
                 bundle=target_bundle,
             )
             if not _wait_for_parse_refresh(did, before_state):
-                active_bundle_hash = _active_bundle_hash_or_empty(dag_path, config_path, flow_dir)
+                active_bundle_hash = _active_bundle_hash_or_empty(
+                    dag_path, config_path, flow_dir
+                )
                 if target_bundle_hash and active_bundle_hash == target_bundle_hash:
                     promote_warnings.append(
                         "Airflow parse refresh timeout; revision files are active and promote completed."
                     )
                 else:
-                    raise TimeoutError("Airflow parse dogrulamasi zaman asimina ugradi.")
+                    raise TimeoutError(
+                        "Airflow parse dogrulamasi zaman asimina ugradi."
+                    )
         except Exception as exc:
             _apply_bundle_to_active(
                 flow_dir=flow_dir,
@@ -2111,14 +2237,19 @@ def delete_dag_bundle(
             for ref_dag_id in referenced_by:
                 ref_entry = scope_entries.get(ref_dag_id) or {}
                 ref_config_path = ref_entry.get("config_path")
-                if not isinstance(ref_config_path, Path) or not ref_config_path.is_file():
+                if (
+                    not isinstance(ref_config_path, Path)
+                    or not ref_config_path.is_file()
+                ):
                     warnings.append(
                         f"Reference cleanup skipped (YAML missing): {ref_dag_id}"
                     )
                     continue
                 try:
                     ref_cfg = _load_yaml_root(ref_config_path)
-                    ref_deps = _normalize_dag_dependencies(ref_cfg.get("dag_dependencies"))
+                    ref_deps = _normalize_dag_dependencies(
+                        ref_cfg.get("dag_dependencies")
+                    )
                     filtered = [
                         dep
                         for dep in list(ref_deps.get("upstream_dag_ids") or [])
@@ -2134,9 +2265,7 @@ def delete_dag_bundle(
                     ref_entry["upstream_dag_ids"] = filtered
                     cleaned_reference_dags.append(ref_dag_id)
                 except Exception as exc:
-                    warnings.append(
-                        f"Reference cleanup failed for {ref_dag_id}: {exc}"
-                    )
+                    warnings.append(f"Reference cleanup failed for {ref_dag_id}: {exc}")
 
         try:
             airflow_cleanup = _cleanup_airflow_dag_metadata(did)
@@ -2154,13 +2283,17 @@ def delete_dag_bundle(
             if _best_effort_unlink(mapping_path, retries=6, wait_seconds=0.05):
                 deleted_paths.append(mapping_path.as_posix())
             else:
-                warnings.append(f"Mapping file could not be deleted: {mapping_path.as_posix()}")
+                warnings.append(
+                    f"Mapping file could not be deleted: {mapping_path.as_posix()}"
+                )
 
         if config_path.is_file():
             if _best_effort_unlink(config_path, retries=6, wait_seconds=0.05):
                 deleted_paths.append(config_path.as_posix())
             else:
-                warnings.append(f"YAML file could not be deleted: {config_path.as_posix()}")
+                warnings.append(
+                    f"YAML file could not be deleted: {config_path.as_posix()}"
+                )
 
         if dag_path.is_file():
             if _best_effort_unlink(dag_path, retries=6, wait_seconds=0.05):
@@ -2172,7 +2305,9 @@ def delete_dag_bundle(
             if _best_effort_rmtree(history_root):
                 deleted_paths.append(history_root.as_posix())
             else:
-                warnings.append(f"History directory could not be deleted: {history_root.as_posix()}")
+                warnings.append(
+                    f"History directory could not be deleted: {history_root.as_posix()}"
+                )
 
         history_parent = flow_dir / STUDIO_HISTORY_DIR_NAME
         if history_parent.is_dir() and not any(history_parent.iterdir()):
@@ -2191,7 +2326,9 @@ def delete_dag_bundle(
                 if _best_effort_unlink(metadata_path, retries=6, wait_seconds=0.05):
                     deleted_paths.append(metadata_path.as_posix())
                 else:
-                    warnings.append(f"Metadata file could not be deleted: {metadata_path.as_posix()}")
+                    warnings.append(
+                        f"Metadata file could not be deleted: {metadata_path.as_posix()}"
+                    )
 
         if cleaned_reference_dags:
             for ref_dag_id in cleaned_reference_dags:
@@ -2199,7 +2336,9 @@ def delete_dag_bundle(
                 try:
                     _render_single_studio_dag_entry(ref_entry)
                 except Exception as exc:
-                    warnings.append(f"DAG render refresh failed for {ref_dag_id}: {exc}")
+                    warnings.append(
+                        f"DAG render refresh failed for {ref_dag_id}: {exc}"
+                    )
 
         return {
             "dag_id": did,
@@ -2225,8 +2364,12 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
     target_schema = str(payload.get("target_schema") or "").strip()
     target_table = str(payload.get("target_table") or "").strip()
     load_method = payload.get("load_method", "create_if_not_exists_or_truncate")
-    normalized_source_schema = str(source_schema or "").strip() or ("sql" if source_type == "sql" else "")
-    normalized_source_table = str(source_table or "").strip() or ("query" if source_type == "sql" else "")
+    normalized_source_schema = str(source_schema or "").strip() or (
+        "sql" if source_type == "sql" else ""
+    )
+    normalized_source_table = str(source_table or "").strip() or (
+        "query" if source_type == "sql" else ""
+    )
 
     task_group_id = payload.get("task_group_id") or _auto_task_group_id(
         source_db=source_conn_id,
@@ -2246,7 +2389,10 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
         "source_table": normalized_source_table,
         "source_type": source_type,
         "inline_sql": payload.get("inline_sql"),
-        "script_run_environment": str(payload.get("script_run_environment") or "").strip() or None,
+        "script_run_environment": str(
+            payload.get("script_run_environment") or ""
+        ).strip()
+        or None,
         "script_sql": str(payload.get("script_sql") or "").strip() or None,
         "dag_task_dag_id": str(payload.get("dag_task_dag_id") or "").strip() or None,
         "column_mapping_mode": payload.get("column_mapping_mode", "source"),
@@ -2267,9 +2413,18 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
     bindings = _normalize_bindings(payload.get("bindings"))
     if bindings:
         task["bindings"] = bindings
-    if task_type == STUDIO_TASK_TYPE_SOURCE_TARGET and source_type == "sql" and task["column_mapping_mode"] != "mapping_file":
-        raise ValueError("column_mapping_mode='mapping_file' is required when source_type='sql'.")
-    if task_type == STUDIO_TASK_TYPE_SOURCE_TARGET and payload.get("column_mapping_mode") == "mapping_file":
+    if (
+        task_type == STUDIO_TASK_TYPE_SOURCE_TARGET
+        and source_type == "sql"
+        and task["column_mapping_mode"] != "mapping_file"
+    ):
+        raise ValueError(
+            "column_mapping_mode='mapping_file' is required when source_type='sql'."
+        )
+    if (
+        task_type == STUDIO_TASK_TYPE_SOURCE_TARGET
+        and payload.get("column_mapping_mode") == "mapping_file"
+    ):
         task["mapping_file"] = _auto_mapping_relative_file(1, str(task_group_id))
     return task
 
@@ -2290,10 +2445,14 @@ def build_task_dict_for_validation_from_task(
     normalized_source_schema = source_schema or ("sql" if source_type == "sql" else "")
     normalized_source_table = source_table or ("query" if source_type == "sql" else "")
     load_method = (
-        str(task_payload.get("load_method") or "create_if_not_exists_or_truncate").strip()
+        str(
+            task_payload.get("load_method") or "create_if_not_exists_or_truncate"
+        ).strip()
         or "create_if_not_exists_or_truncate"
     )
-    task_group_id = str(task_payload.get("task_group_id") or "").strip() or _auto_task_group_id(
+    task_group_id = str(
+        task_payload.get("task_group_id") or ""
+    ).strip() or _auto_task_group_id(
         source_db=source_conn_id,
         src_schema=normalized_source_schema,
         src_table=normalized_source_table,
@@ -2311,10 +2470,17 @@ def build_task_dict_for_validation_from_task(
         "source_table": normalized_source_table,
         "source_type": source_type,
         "inline_sql": task_payload.get("inline_sql"),
-        "script_run_environment": str(task_payload.get("script_run_environment") or "").strip() or None,
+        "script_run_environment": str(
+            task_payload.get("script_run_environment") or ""
+        ).strip()
+        or None,
         "script_sql": str(task_payload.get("script_sql") or "").strip() or None,
-        "dag_task_dag_id": str(task_payload.get("dag_task_dag_id") or "").strip() or None,
-        "column_mapping_mode": str(task_payload.get("column_mapping_mode") or "source").strip() or "source",
+        "dag_task_dag_id": str(task_payload.get("dag_task_dag_id") or "").strip()
+        or None,
+        "column_mapping_mode": str(
+            task_payload.get("column_mapping_mode") or "source"
+        ).strip()
+        or "source",
         "target_schema": target_schema,
         "target_table": target_table,
         "load_method": load_method,
@@ -2325,16 +2491,27 @@ def build_task_dict_for_validation_from_task(
             "mode": task_payload.get("partitioning_mode", "auto_numeric"),
             "column": task_payload.get("partitioning_column"),
             "parts": int(task_payload.get("partitioning_parts", 2)),
-            "distinct_limit": int(task_payload.get("partitioning_distinct_limit") or 16),
+            "distinct_limit": int(
+                task_payload.get("partitioning_distinct_limit") or 16
+            ),
             "ranges": task_payload.get("partitioning_ranges") or [],
         },
     }
     bindings = _normalize_bindings(task_payload.get("bindings"))
     if bindings:
         task["bindings"] = bindings
-    if task_type == STUDIO_TASK_TYPE_SOURCE_TARGET and source_type == "sql" and task["column_mapping_mode"] != "mapping_file":
-        raise ValueError("column_mapping_mode='mapping_file' is required when source_type='sql'.")
-    if task_type == STUDIO_TASK_TYPE_SOURCE_TARGET and task["column_mapping_mode"] == "mapping_file":
+    if (
+        task_type == STUDIO_TASK_TYPE_SOURCE_TARGET
+        and source_type == "sql"
+        and task["column_mapping_mode"] != "mapping_file"
+    ):
+        raise ValueError(
+            "column_mapping_mode='mapping_file' is required when source_type='sql'."
+        )
+    if (
+        task_type == STUDIO_TASK_TYPE_SOURCE_TARGET
+        and task["column_mapping_mode"] == "mapping_file"
+    ):
         task["mapping_file"] = _auto_mapping_relative_file(task_index, task_group_id)
     return task
 
@@ -2344,7 +2521,9 @@ def _validate_non_source_target_task(task: dict[str, Any]) -> None:
     if task_type == STUDIO_TASK_TYPE_SCRIPT_RUN:
         environment = str(task.get("script_run_environment") or "").strip()
         if environment not in STUDIO_VALID_SCRIPT_RUN_ENVIRONMENTS:
-            raise ValueError("script_run_environment must be one of: 'source' or 'target'.")
+            raise ValueError(
+                "script_run_environment must be one of: 'source' or 'target'."
+            )
         script_sql = str(task.get("script_sql") or "").strip()
         if not script_sql:
             raise ValueError("script_sql is required when task_type='script_run'.")
@@ -2377,7 +2556,10 @@ def validate_pipeline_payload(payload: dict[str, Any]) -> None:
                 target_conn_id=target_conn_id,
                 task_index=idx,
             )
-            if str(task.get("task_type") or STUDIO_TASK_TYPE_SOURCE_TARGET) == STUDIO_TASK_TYPE_SOURCE_TARGET:
+            if (
+                str(task.get("task_type") or STUDIO_TASK_TYPE_SOURCE_TARGET)
+                == STUDIO_TASK_TYPE_SOURCE_TARGET
+            ):
                 validator.validate(task)
             else:
                 _validate_non_source_target_task(task)
@@ -2386,7 +2568,10 @@ def validate_pipeline_payload(payload: dict[str, Any]) -> None:
         return
 
     task = build_task_dict_for_validation(payload)
-    if str(task.get("task_type") or STUDIO_TASK_TYPE_SOURCE_TARGET) == STUDIO_TASK_TYPE_SOURCE_TARGET:
+    if (
+        str(task.get("task_type") or STUDIO_TASK_TYPE_SOURCE_TARGET)
+        == STUDIO_TASK_TYPE_SOURCE_TARGET
+    ):
         validator.validate(task)
     else:
         _validate_non_source_target_task(task)
@@ -2416,7 +2601,9 @@ def fetch_timeline_runs(
                     "dag_id": run.dag_id,
                     "run_id": run.run_id,
                     "state": run.state,
-                    "start_date": run.start_date.isoformat() if run.start_date else None,
+                    "start_date": (
+                        run.start_date.isoformat() if run.start_date else None
+                    ),
                     "end_date": run.end_date.isoformat() if run.end_date else None,
                 }
             )
@@ -2503,7 +2690,9 @@ def _build_dag_explorer_items(
 
         fileloc_text = str(fileloc or "").strip()
         fileloc_norm = _normalize_explorer_path(fileloc_text)
-        create_date_iso = _iso_or_none(create_date) or _dag_file_creation_fallback(fileloc_text)
+        create_date_iso = _iso_or_none(create_date) or _dag_file_creation_fallback(
+            fileloc_text
+        )
         bucket = "external"
         relative_path: str | None = None
         folder_parts: list[str] = []
@@ -2513,7 +2702,7 @@ def _build_dag_explorer_items(
         if is_root_file or is_under_root:
             bucket = "dags_root"
             if is_under_root:
-                rel = fileloc_norm[len(root_prefix) :]
+                rel = fileloc_norm[len(root_prefix):]
             else:
                 rel = ""
             relative_path = rel or None
@@ -2811,11 +3000,15 @@ def _resolve_schema_name(available_schemas: list[str], requested_schema: str) ->
         return requested
 
     requested_lower = requested.lower()
-    case_insensitive_exact = [s for s in available_schemas if str(s or "").lower() == requested_lower]
+    case_insensitive_exact = [
+        s for s in available_schemas if str(s or "").lower() == requested_lower
+    ]
     if len(case_insensitive_exact) == 1:
         return case_insensitive_exact[0]
 
-    prefix_matches = [s for s in available_schemas if str(s or "").lower().startswith(requested_lower)]
+    prefix_matches = [
+        s for s in available_schemas if str(s or "").lower().startswith(requested_lower)
+    ]
     if len(prefix_matches) == 1:
         return prefix_matches[0]
     if len(prefix_matches) > 1:
@@ -2837,7 +3030,9 @@ def _resolve_table_name(available_tables: list[str], requested_table: str) -> st
         return requested
 
     requested_lower = requested.lower()
-    case_insensitive_exact = [t for t in available_tables if str(t or "").lower() == requested_lower]
+    case_insensitive_exact = [
+        t for t in available_tables if str(t or "").lower() == requested_lower
+    ]
     if len(case_insensitive_exact) == 1:
         return case_insensitive_exact[0]
 
@@ -2847,7 +3042,9 @@ def _resolve_table_name(available_tables: list[str], requested_table: str) -> st
 
     requested_canon = _canon(requested)
     if requested_canon:
-        canon_matches = [t for t in available_tables if _canon(str(t or "")) == requested_canon]
+        canon_matches = [
+            t for t in available_tables if _canon(str(t or "")) == requested_canon
+        ]
         if len(canon_matches) == 1:
             return canon_matches[0]
         if len(canon_matches) > 1:
@@ -2855,7 +3052,9 @@ def _resolve_table_name(available_tables: list[str], requested_table: str) -> st
                 f"Table '{requested}' birden fazla kanonik eslesme verdi: {', '.join(canon_matches[:5])}"
             )
 
-    prefix_matches = [t for t in available_tables if str(t or "").lower().startswith(requested_lower)]
+    prefix_matches = [
+        t for t in available_tables if str(t or "").lower().startswith(requested_lower)
+    ]
     if len(prefix_matches) == 1:
         return prefix_matches[0]
     if len(prefix_matches) > 1:
@@ -2887,7 +3086,7 @@ def discover_tables(
     safe_limit = max(1, min(int(limit or 50), 50))
     safe_offset = max(0, int(offset or 0))
     total = len(tables)
-    items = tables[safe_offset : safe_offset + safe_limit]
+    items = tables[safe_offset:safe_offset + safe_limit]
 
     return {
         "schema": resolved_schema,
@@ -2907,7 +3106,9 @@ def discover_columns(conn_id: str, schema: str, table: str) -> list[dict[str, An
         resolved_schema = _resolve_schema_name(available_schemas, schema)
         available_tables = dialect.list_tables(session.conn, resolved_schema)
         resolved_table = _resolve_table_name(available_tables, table)
-        columns = dialect.get_table_schema(session.conn, resolved_schema, resolved_table)
+        columns = dialect.get_table_schema(
+            session.conn, resolved_schema, resolved_table
+        )
 
     return [
         {
@@ -2947,7 +3148,9 @@ def generate_mapping_preview(payload: dict[str, Any]) -> dict[str, Any]:
         source_schema = str(payload.get("source_schema") or "").strip()
         source_table = str(payload.get("source_table") or "").strip()
         if not source_schema or not source_table:
-            raise ValueError("source_schema and source_table are required when source_type=table|view.")
+            raise ValueError(
+                "source_schema and source_table are required when source_type=table|view."
+            )
         with DBSession(src_params, src_dialect) as src_session:
             mapping_obj = MappingGenerator().generate(
                 src_session.conn,
@@ -3000,7 +3203,9 @@ def create_or_update_dag(
     else:
         tasks_input = [dict(payload)]
 
-    lock_ctx = _dag_operation_lock(str(dag_id or "").strip()) if update else nullcontext()
+    lock_ctx = (
+        _dag_operation_lock(str(dag_id or "").strip()) if update else nullcontext()
+    )
     with lock_ctx:
         root = _projects_root()
         flow_dir = root / project / domain / level / flow
@@ -3021,9 +3226,7 @@ def create_or_update_dag(
                 raise ValueError("dag_id query param is required for update-dag.")
             existing_studio_dag = _find_studio_dag_file_by_id(update_dag_id)
             if existing_studio_dag is None:
-                raise ValueError(
-                    f"DAG to update not found: dag_id={update_dag_id}"
-                )
+                raise ValueError(f"DAG to update not found: dag_id={update_dag_id}")
             dag_path = existing_studio_dag
             _ensure_path_under_root(dag_path, gen_root)
             config_path = _extract_config_path_from_dag_source(dag_path)
@@ -3036,7 +3239,12 @@ def create_or_update_dag(
             if len(rel.parts) < 5:
                 raise ValueError("Linked YAML path hierarchy in DAG is invalid.")
             cfg_project, cfg_domain, cfg_level, cfg_flow = rel.parts[:4]
-            if (cfg_project, cfg_domain, cfg_level, cfg_flow) != (project, domain, level, flow):
+            if (cfg_project, cfg_domain, cfg_level, cfg_flow) != (
+                project,
+                domain,
+                level,
+                flow,
+            ):
                 raise ValueError(
                     "dag_id and payload hierarchy do not match: "
                     f"dag=({cfg_project}/{cfg_domain}/{cfg_level}/{cfg_flow}) "
@@ -3054,18 +3262,26 @@ def create_or_update_dag(
                 group_no,
             )
             _ensure_path_under_root(dag_path, gen_root)
-            config_path = flow_dir / _build_yaml_filename(project, domain, level, flow, group_no)
+            config_path = flow_dir / _build_yaml_filename(
+                project, domain, level, flow, group_no
+            )
 
-        existing_auto_mapping_paths = _collect_existing_auto_mapping_paths(config_path, flow_dir)
+        existing_auto_mapping_paths = _collect_existing_auto_mapping_paths(
+            config_path, flow_dir
+        )
         auto_tags = _derive_tags(project, domain, level, flow)
         user_tags = _normalize_custom_tags(payload.get("custom_tags"))
         tags = _merge_tags(auto_tags, user_tags)
         scheduler = normalize_scheduler(payload.get("scheduler"))
         if update and "dag_dependencies" not in payload:
             existing_cfg = _load_yaml_root(config_path)
-            dag_dependencies = _normalize_dag_dependencies(existing_cfg.get("dag_dependencies"))
+            dag_dependencies = _normalize_dag_dependencies(
+                existing_cfg.get("dag_dependencies")
+            )
         else:
-            dag_dependencies = _normalize_dag_dependencies(payload.get("dag_dependencies"))
+            dag_dependencies = _normalize_dag_dependencies(
+                payload.get("dag_dependencies")
+            )
         scope_entries = _collect_scope_studio_dag_entries(project, domain)
         dag_upstream_dag_ids = _validate_dag_dependencies_for_scope(
             project=project,
@@ -3075,7 +3291,10 @@ def create_or_update_dag(
             scope_entries=scope_entries,
         )
         dag_dependencies = {"upstream_dag_ids": dag_upstream_dag_ids}
-        actor = str(os.getenv("FFENGINE_STUDIO_ACTOR", "flow_studio")).strip() or "flow_studio"
+        actor = (
+            str(os.getenv("FFENGINE_STUDIO_ACTOR", "flow_studio")).strip()
+            or "flow_studio"
+        )
         operation_warnings: list[str] = []
 
         task_cfgs: list[dict[str, Any]] = []
@@ -3089,24 +3308,36 @@ def create_or_update_dag(
             target_table = str(item.get("target_table") or "").strip()
             source_type = str(item.get("source_type") or "table").strip() or "table"
             load_method = (
-                str(item.get("load_method") or "create_if_not_exists_or_truncate").strip()
+                str(
+                    item.get("load_method") or "create_if_not_exists_or_truncate"
+                ).strip()
                 or "create_if_not_exists_or_truncate"
             )
-            script_run_environment = str(item.get("script_run_environment") or "").strip().lower()
+            script_run_environment = (
+                str(item.get("script_run_environment") or "").strip().lower()
+            )
             script_sql = str(item.get("script_sql") or "").strip() or None
             dag_task_dag_id = str(item.get("dag_task_dag_id") or "").strip() or None
 
             if task_type == STUDIO_TASK_TYPE_SOURCE_TARGET:
-                normalized_source_schema = source_schema or ("sql" if source_type == "sql" else "")
-                normalized_source_table = source_table or ("query" if source_type == "sql" else "")
+                normalized_source_schema = source_schema or (
+                    "sql" if source_type == "sql" else ""
+                )
+                normalized_source_table = source_table or (
+                    "query" if source_type == "sql" else ""
+                )
                 auto_source_schema = normalized_source_schema
                 auto_source_table = normalized_source_table
                 auto_load_method = load_method
             elif task_type == STUDIO_TASK_TYPE_SCRIPT_RUN:
                 if script_run_environment not in STUDIO_VALID_SCRIPT_RUN_ENVIRONMENTS:
-                    raise ValueError("script_run_environment must be one of: 'source' or 'target'.")
+                    raise ValueError(
+                        "script_run_environment must be one of: 'source' or 'target'."
+                    )
                 if not script_sql:
-                    raise ValueError("script_sql is required when task_type='script_run'.")
+                    raise ValueError(
+                        "script_sql is required when task_type='script_run'."
+                    )
                 normalized_source_schema = source_schema
                 normalized_source_table = source_table
                 auto_source_schema = "script"
@@ -3114,18 +3345,24 @@ def create_or_update_dag(
                 auto_load_method = "script"
             else:
                 if not dag_task_dag_id:
-                    raise ValueError("dag_task_dag_id is required when task_type='dag'.")
+                    raise ValueError(
+                        "dag_task_dag_id is required when task_type='dag'."
+                    )
                 if dag_task_dag_id == dag_path.stem:
                     raise ValueError("dag_task_dag_id cannot reference itself.")
                 if scope_entries.get(dag_task_dag_id) is None:
-                    raise ValueError(f"dag_task_dag_id contains invalid dag_id: {dag_task_dag_id}")
+                    raise ValueError(
+                        f"dag_task_dag_id contains invalid dag_id: {dag_task_dag_id}"
+                    )
                 normalized_source_schema = source_schema
                 normalized_source_table = source_table
                 auto_source_schema = "dag"
                 auto_source_table = _slugify(dag_task_dag_id, "dag")
                 auto_load_method = "dag"
 
-            task_group_id = str(item.get("task_group_id") or "").strip() or _auto_task_group_id(
+            task_group_id = str(
+                item.get("task_group_id") or ""
+            ).strip() or _auto_task_group_id(
                 source_db=str(payload.get("source_conn_id") or ""),
                 src_schema=auto_source_schema,
                 src_table=auto_source_table,
@@ -3139,7 +3376,9 @@ def create_or_update_dag(
             if raw_depends_on is None:
                 raw_depends_on = []
             if not isinstance(raw_depends_on, list):
-                raise ValueError(f"depends_on must be a list: task_group_id={task_group_id}")
+                raise ValueError(
+                    f"depends_on must be a list: task_group_id={task_group_id}"
+                )
             task_cfg: dict[str, Any] = {
                 "task_type": task_type,
                 "task_group_id": task_group_id,
@@ -3157,7 +3396,10 @@ def create_or_update_dag(
                 "script_run_environment": script_run_environment or None,
                 "script_sql": script_sql,
                 "dag_task_dag_id": dag_task_dag_id,
-                "column_mapping_mode": str(item.get("column_mapping_mode") or "source").strip() or "source",
+                "column_mapping_mode": str(
+                    item.get("column_mapping_mode") or "source"
+                ).strip()
+                or "source",
                 "target_schema": target_schema,
                 "target_table": target_table,
                 "load_method": load_method,
@@ -3168,7 +3410,9 @@ def create_or_update_dag(
                     "mode": item.get("partitioning_mode", "auto_numeric"),
                     "column": item.get("partitioning_column") or None,
                     "parts": int(item.get("partitioning_parts", 2)),
-                    "distinct_limit": int(item.get("partitioning_distinct_limit") or 16),
+                    "distinct_limit": int(
+                        item.get("partitioning_distinct_limit") or 16
+                    ),
                     "ranges": item.get("partitioning_ranges") or [],
                 },
                 "tags": tags,
@@ -3178,8 +3422,14 @@ def create_or_update_dag(
                 task_cfg["bindings"] = bindings
             mode = task_cfg["column_mapping_mode"]
             mapping_content = str(item.get("mapping_content") or "")
-            if task_type == STUDIO_TASK_TYPE_SOURCE_TARGET and source_type == "sql" and mode != "mapping_file":
-                raise ValueError("column_mapping_mode='mapping_file' is required when source_type='sql'.")
+            if (
+                task_type == STUDIO_TASK_TYPE_SOURCE_TARGET
+                and source_type == "sql"
+                and mode != "mapping_file"
+            ):
+                raise ValueError(
+                    "column_mapping_mode='mapping_file' is required when source_type='sql'."
+                )
             if task_type == STUDIO_TASK_TYPE_SOURCE_TARGET and mode == "mapping_file":
                 mapping_rel = _auto_mapping_relative_file(idx, task_group_id)
                 mapping_path = _resolve_mapping_file_path(flow_dir, mapping_rel)
@@ -3226,7 +3476,10 @@ def create_or_update_dag(
                         f"inline_sql is required when source_type='sql'. task_group_id={check['task_group_id']}"
                     )
                 sql_columns = [
-                    col["name"] for col in extract_sql_select_columns_for_conn(payload["source_conn_id"], inline_sql)
+                    col["name"]
+                    for col in extract_sql_select_columns_for_conn(
+                        payload["source_conn_id"], inline_sql
+                    )
                 ]
                 mapping_content = str(check.get("mapping_content") or "")
                 if mapping_content.strip():
@@ -3254,8 +3507,14 @@ def create_or_update_dag(
                 mapping_content = str(pending.get("mapping_content") or "")
                 if not mapping_content.strip():
                     continue
-                _parse_yaml_mapping_text(mapping_content, label=pending["mapping_path"].as_posix())
-                normalized_text = mapping_content if mapping_content.endswith("\n") else f"{mapping_content}\n"
+                _parse_yaml_mapping_text(
+                    mapping_content, label=pending["mapping_path"].as_posix()
+                )
+                normalized_text = (
+                    mapping_content
+                    if mapping_content.endswith("\n")
+                    else f"{mapping_content}\n"
+                )
                 mapping_path: Path = pending["mapping_path"]
                 mapping_path.parent.mkdir(parents=True, exist_ok=True)
                 if mapping_path.is_file():
@@ -3296,7 +3555,9 @@ def create_or_update_dag(
             )
             dag_path.write_text(dag_source, encoding="utf-8")
             if update:
-                pause_sync_warning = _sync_dag_paused_state(dag_path.stem, active=bool(scheduler.get("active", True)))
+                pause_sync_warning = _sync_dag_paused_state(
+                    dag_path.stem, active=bool(scheduler.get("active", True))
+                )
                 if pause_sync_warning:
                     operation_warnings.append(pause_sync_warning)
         except Exception:
@@ -3311,7 +3572,9 @@ def create_or_update_dag(
 
         if update and pre_update_bundle is not None:
             current_bundle = _read_active_bundle(dag_path, config_path, flow_dir)
-            previous_hash = str((pre_update_bundle.get("hashes") or {}).get("bundle") or "")
+            previous_hash = str(
+                (pre_update_bundle.get("hashes") or {}).get("bundle") or ""
+            )
             current_hash = str((current_bundle.get("hashes") or {}).get("bundle") or "")
             if previous_hash and current_hash and previous_hash != current_hash:
                 _save_bundle_as_revision(

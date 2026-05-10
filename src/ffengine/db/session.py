@@ -1,6 +1,6 @@
 class DBSession:
     """Driver-agnostic DB connection context manager."""
-    
+
     def __init__(self, connection_params: dict, dialect):
         self.params = connection_params
         self.dialect = dialect

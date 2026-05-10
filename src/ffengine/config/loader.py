@@ -59,13 +59,9 @@ class ConfigLoader:
             with open(config_path, "r", encoding="utf-8") as fh:
                 data = yaml.safe_load(fh)
         except FileNotFoundError as exc:
-            raise ConfigError(
-                f"Config dosyası bulunamadı: '{config_path}'"
-            ) from exc
+            raise ConfigError(f"Config dosyası bulunamadı: '{config_path}'") from exc
         except yaml.YAMLError as exc:
-            raise ConfigError(
-                f"YAML parse hatası '{config_path}': {exc}"
-            ) from exc
+            raise ConfigError(f"YAML parse hatası '{config_path}': {exc}") from exc
         if not isinstance(data, dict):
             raise ConfigError(
                 f"Config dosyası geçerli bir YAML mapping değil: '{config_path}'"
@@ -83,9 +79,7 @@ class ConfigLoader:
         for task in flow_tasks:
             if isinstance(task, dict) and task.get("task_group_id") == task_group_id:
                 return task
-        raise ConfigError(
-            f"task_group_id '{task_group_id}' config'te bulunamadı."
-        )
+        raise ConfigError(f"task_group_id '{task_group_id}' config'te bulunamadı.")
 
     def _apply_defaults(self, task: dict) -> dict:
         result = copy.deepcopy(TASK_DEFAULTS)

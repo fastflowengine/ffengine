@@ -14,7 +14,6 @@ from ffengine.mapping.resolver import MappingResolver
 from ffengine.dialects.base import ColumnInfo
 from ffengine.errors.exceptions import MappingError
 
-
 # ---------------------------------------------------------------------------
 # Yardımcılar
 # ---------------------------------------------------------------------------
@@ -23,6 +22,7 @@ from ffengine.errors.exceptions import MappingError
 def _make_dialect(class_name: str, cols=None):
     class _D:
         pass
+
     _D.__name__ = class_name
     _D.get_table_schema = lambda self, *a, **kw: (cols or [])
     return _D()

@@ -24,8 +24,9 @@ from ffengine.db.session import DBSession
 from ffengine.dialects import PostgresDialect
 from ffengine.mapping.generator import MappingGenerator
 
-
-_REQUIRED_ENV: list[str] = []  # Tüm bağlantı değerlerinin container-uyumlu default'u var; enable flag yeterli.
+_REQUIRED_ENV: list[str] = (
+    []
+)  # Tüm bağlantı değerlerinin container-uyumlu default'u var; enable flag yeterli.
 
 
 def _integration_enable_state() -> tuple[bool, str]:
@@ -68,7 +69,7 @@ def pg_session():
 def test_mapping_to_dag_to_run_chain(pg_session, tmp_path):
     """ff_test_data → MappingGenerator → FFEngineOperator → ff_test_target: 100 satır."""
     session, dialect = pg_session
-    src_table = "ff_test_data"   # kalıcı kaynak tablo
+    src_table = "ff_test_data"  # kalıcı kaynak tablo
     tgt_table = "ff_test_target"
     schema = "public"
     q_schema = dialect.quote_identifier(schema)
@@ -152,9 +153,7 @@ def test_mapping_to_dag_to_run_chain(pg_session, tmp_path):
         )
         expected_first = cur.fetchone()
 
-        cur.execute(
-            f"SELECT id, name FROM {q_schema}.{q_tgt} ORDER BY id LIMIT 1"
-        )
+        cur.execute(f"SELECT id, name FROM {q_schema}.{q_tgt} ORDER BY id LIMIT 1")
         first = cur.fetchone()
         assert first == expected_first
     finally:

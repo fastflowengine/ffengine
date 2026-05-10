@@ -4,17 +4,21 @@ C05 — Config sabitleri, whitelist'ler ve varsayılan değerler.
 CONFIG_SCHEMA.md ile senkronize edilmiştir.
 """
 
-VALID_SOURCE_TYPES: frozenset[str] = frozenset({"table", "view", "sql", "csv", "script"})
+VALID_SOURCE_TYPES: frozenset[str] = frozenset(
+    {"table", "view", "sql", "csv", "script"}
+)
 
-VALID_LOAD_METHODS: frozenset[str] = frozenset({
-    "create_if_not_exists_or_truncate",
-    "append",
-    "replace",
-    "upsert",
-    "delete_from_table",
-    "drop_if_exists_and_create",
-    "script",
-})
+VALID_LOAD_METHODS: frozenset[str] = frozenset(
+    {
+        "create_if_not_exists_or_truncate",
+        "append",
+        "replace",
+        "upsert",
+        "delete_from_table",
+        "drop_if_exists_and_create",
+        "script",
+    }
+)
 
 VALID_COLUMN_MAPPING_MODES: frozenset[str] = frozenset({"source", "mapping_file"})
 
@@ -23,14 +27,16 @@ VALID_EXTRACTION_METHODS: frozenset[str] = frozenset({"auto", "cursor", "copy_bi
 VALID_PASSTHROUGH_FORMATS: frozenset[str] = frozenset({"binary", "text", "csv"})
 
 # C06 — Partition mode whitelist
-VALID_PARTITION_MODES: frozenset[str] = frozenset({
-    "auto_numeric",
-    "auto_datetime",
-    "percentile",
-    "hash_mod",
-    "distinct",
-    "explicit",
-})
+VALID_PARTITION_MODES: frozenset[str] = frozenset(
+    {
+        "auto_numeric",
+        "auto_datetime",
+        "percentile",
+        "hash_mod",
+        "distinct",
+        "explicit",
+    }
+)
 
 # Root seviyesinde zorunlu alanlar
 REQUIRED_ROOT_FIELDS: tuple[str, ...] = ("source_db_var", "target_db_var", "flow_tasks")

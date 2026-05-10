@@ -37,7 +37,9 @@ def _bounded_task_id(value: str, max_len: int = 250) -> str:
     return f"{head}{suffix}"
 
 
-def _resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str, str]]:
+def _resolve_task_dependencies(
+    task_defs: list[dict[str, Any]],
+) -> list[tuple[str, str]]:
     task_ids: list[str] = []
     id_set: set[str] = set()
     for task_def in task_defs:
@@ -47,7 +49,9 @@ def _resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[st
         if not task_id:
             raise ValueError("task_group_id is required for each flow_task.")
         if task_id in id_set:
-            raise ValueError(f"Ayni task_group_id birden fazla kez kullanildi: {task_id}")
+            raise ValueError(
+                f"Ayni task_group_id birden fazla kez kullanildi: {task_id}"
+            )
         task_ids.append(task_id)
         id_set.add(task_id)
 
@@ -96,8 +100,13 @@ def _resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[st
     return edges
 
 
-def _run_script_task(task_def: dict[str, Any], source_conn_id: str, target_conn_id: str) -> dict[str, Any]:
-    from ffengine.airflow.operator import build_airflow_variable_context, resolve_dialect
+def _run_script_task(
+    task_def: dict[str, Any], source_conn_id: str, target_conn_id: str
+) -> dict[str, Any]:
+    from ffengine.airflow.operator import (
+        build_airflow_variable_context,
+        resolve_dialect,
+    )
     from ffengine.config.binding_resolver import BindingResolver
     from ffengine.db.airflow_adapter import AirflowConnectionAdapter
     from ffengine.db.session import DBSession
@@ -156,7 +165,9 @@ def _resolve_config_path(raw_config_snapshot: dict[str, Any]) -> str:
         or ""
     ).strip()
     if not config_path:
-        raise ValueError("raw_config_snapshot must include '__config_path' for runtime operators.")
+        raise ValueError(
+            "raw_config_snapshot must include '__config_path' for runtime operators."
+        )
     return config_path
 
 
@@ -185,7 +196,11 @@ def build_generated_dag(
 
     config_path = _resolve_config_path(raw)
 
-    upstream_ids = list(dict.fromkeys([str(x).strip() for x in (upstream_dag_ids or []) if str(x).strip()]))
+    upstream_ids = list(
+        dict.fromkeys(
+            [str(x).strip() for x in (upstream_dag_ids or []) if str(x).strip()]
+        )
+    )
     cron_expression = scheduler.get("cron_expression")
     if isinstance(cron_expression, str):
         cron_expression = cron_expression.strip() or None
@@ -198,7 +213,10 @@ def build_generated_dag(
     except Exception:
         scheduler_tz = ZoneInfo("UTC")
 
-    start_date_raw = str(scheduler.get("start_date") or DEFAULT_START_DATE).strip() or DEFAULT_START_DATE
+    start_date_raw = (
+        str(scheduler.get("start_date") or DEFAULT_START_DATE).strip()
+        or DEFAULT_START_DATE
+    )
     try:
         dag_start_date = datetime.fromisoformat(start_date_raw.replace("Z", "+00:00"))
     except ValueError:
@@ -214,7 +232,9 @@ def build_generated_dag(
     task_ids_with_upstream = {downstream for _upstream, downstream in edges}
     root_task_ids = [
         task_id
-        for task_id in [str(task_def.get("task_group_id") or "").strip() for task_def in task_defs]
+        for task_id in [
+            str(task_def.get("task_group_id") or "").strip() for task_def in task_defs
+        ]
         if task_id not in task_ids_with_upstream
     ]
     root_task_order = {task_id: idx + 1 for idx, task_id in enumerate(root_task_ids)}
@@ -231,8 +251,14 @@ def build_generated_dag(
         task_groups: dict[str, Any] = {}
         for task_def in task_defs:
             task_group_id = str(task_def.get("task_group_id") or "").strip()
-            task_type = str(task_def.get("task_type") or "source_target").strip() or "source_target"
-            task_slug = _slug_task_token(task_group_id) or f"task_{max(1, len(task_groups) + 1)}"
+            task_type = (
+                str(task_def.get("task_type") or "source_target").strip()
+                or "source_target"
+            )
+            task_slug = (
+                _slug_task_token(task_group_id)
+                or f"task_{max(1, len(task_groups) + 1)}"
+            )
             if task_type == "script_run":
                 script_task_id = _bounded_task_id(f"script__{task_slug}")
 
@@ -249,7 +275,9 @@ def build_generated_dag(
             if task_type == "dag":
                 triggered_dag_id = str(task_def.get("dag_task_dag_id") or "").strip()
                 if not triggered_dag_id:
-                    raise ValueError("dag_task_dag_id is required when task_type='dag'.")
+                    raise ValueError(
+                        "dag_task_dag_id is required when task_type='dag'."
+                    )
                 if triggered_dag_id == dag_id:
                     raise ValueError("dag_task_dag_id cannot reference itself.")
                 trigger_task_id = _bounded_task_id(f"trigger_dag__{task_slug}")
@@ -267,10 +295,14 @@ def build_generated_dag(
                 )
                 continue
             partition_cfg = task_def.get("partitioning")
-            partition_enabled = isinstance(partition_cfg, dict) and bool(partition_cfg.get("enabled", False))
+            partition_enabled = isinstance(partition_cfg, dict) and bool(
+                partition_cfg.get("enabled", False)
+            )
             if not partition_enabled:
                 if upstream_ids and task_group_id in root_task_ids:
-                    upstream_slug_parts = [_slug_task_token(uid) for uid in upstream_ids]
+                    upstream_slug_parts = [
+                        _slug_task_token(uid) for uid in upstream_ids
+                    ]
                     upstream_slug_parts = [item for item in upstream_slug_parts if item]
                     joined_upstream_slug = "__".join(upstream_slug_parts)
                     root_order = int(root_task_order.get(task_group_id) or 1)
@@ -279,7 +311,9 @@ def build_generated_dag(
                             f"run_after__{joined_upstream_slug}__{dag_slug}__r{root_order}"
                         )
                     else:
-                        task_id_value = _bounded_task_id(f"run__{dag_slug}__r{root_order}")
+                        task_id_value = _bounded_task_id(
+                            f"run__{dag_slug}__r{root_order}"
+                        )
                 else:
                     task_id_value = f"run_{task_group_id}"
                 task_groups[task_group_id] = FFEngineOperator(
@@ -290,8 +324,12 @@ def build_generated_dag(
                     task_id=task_id_value,
                 )
                 continue
-            group_id = "flow__" + re.sub(r"[^A-Za-z0-9_]+", "_", task_group_id).strip("_").lower()
+            group_id = (
+                "flow__"
+                + re.sub(r"[^A-Za-z0-9_]+", "_", task_group_id).strip("_").lower()
+            )
             with TaskGroup(group_id=group_id) as flow_group:
+
                 @task(task_id="plan_partitions")
                 def _plan_partitions(
                     _config_path=config_path,
@@ -356,11 +394,16 @@ def build_generated_dag(
             upstream_triggers = {}
             upstream_waiters = {}
             for upstream_dag_id in upstream_ids:
-                trigger_task_id = "trigger_upstream__" + re.sub(
-                    r"[^A-Za-z0-9_]+",
-                    "_",
-                    str(upstream_dag_id),
-                ).strip("_").lower()
+                trigger_task_id = (
+                    "trigger_upstream__"
+                    + re.sub(
+                        r"[^A-Za-z0-9_]+",
+                        "_",
+                        str(upstream_dag_id),
+                    )
+                    .strip("_")
+                    .lower()
+                )
                 upstream_triggers[upstream_dag_id] = TriggerDagRunOperator(
                     task_id=trigger_task_id,
                     trigger_dag_id=upstream_dag_id,
@@ -369,11 +412,16 @@ def build_generated_dag(
                     reset_dag_run=False,
                     skip_when_already_exists=False,
                 )
-                waiter_task_id = "wait_upstream__" + re.sub(
-                    r"[^A-Za-z0-9_]+",
-                    "_",
-                    str(upstream_dag_id),
-                ).strip("_").lower()
+                waiter_task_id = (
+                    "wait_upstream__"
+                    + re.sub(
+                        r"[^A-Za-z0-9_]+",
+                        "_",
+                        str(upstream_dag_id),
+                    )
+                    .strip("_")
+                    .lower()
+                )
                 upstream_waiters[upstream_dag_id] = ExternalTaskSensor(
                     task_id=waiter_task_id,
                     external_dag_id=upstream_dag_id,

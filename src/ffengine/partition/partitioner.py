@@ -22,7 +22,9 @@ from ffengine.errors.exceptions import PartitionError
 _log = logging.getLogger(__name__)
 
 # Modes that require partitioning.column
-_COLUMN_MODES = frozenset({"auto_numeric", "auto_datetime", "percentile", "hash_mod", "distinct"})
+_COLUMN_MODES = frozenset(
+    {"auto_numeric", "auto_datetime", "percentile", "hash_mod", "distinct"}
+)
 
 
 class Partitioner:
@@ -69,9 +71,7 @@ class Partitioner:
     def _parts(self, part: dict) -> int:
         n = part.get("parts", 4)
         if not isinstance(n, int) or n < 1:
-            raise PartitionError(
-                f"partitioning.parts >= 1 olmali, su an: {n!r}"
-            )
+            raise PartitionError(f"partitioning.parts >= 1 olmali, su an: {n!r}")
         return n
 
     def _distinct_limit(self, part: dict) -> int:
@@ -139,7 +139,9 @@ class Partitioner:
             ranges.append(clause.strip())
         return [{"part_id": i, "where": clause} for i, clause in enumerate(ranges)]
 
-    def _plan_auto_numeric(self, task_config: dict, src_conn, src_dialect) -> list[dict]:
+    def _plan_auto_numeric(
+        self, task_config: dict, src_conn, src_dialect
+    ) -> list[dict]:
         return self._plan_auto_equal_width(
             task_config=task_config,
             src_conn=src_conn,
@@ -148,7 +150,9 @@ class Partitioner:
             value_kind="numeric",
         )
 
-    def _plan_auto_datetime(self, task_config: dict, src_conn, src_dialect) -> list[dict]:
+    def _plan_auto_datetime(
+        self, task_config: dict, src_conn, src_dialect
+    ) -> list[dict]:
         return self._plan_auto_equal_width(
             task_config=task_config,
             src_conn=src_conn,
@@ -207,12 +211,18 @@ class Partitioner:
             lo = boundaries[i]
             hi = boundaries[i + 1]
             op_hi = "<=" if i == n - 1 else "<"
-            lo_lit = self._partition_value_literal(lo, src_dialect, value_kind=value_kind)
-            hi_lit = self._partition_value_literal(hi, src_dialect, value_kind=value_kind)
-            specs.append({
-                "part_id": i,
-                "where": f"{q_col} >= {lo_lit} AND {q_col} {op_hi} {hi_lit}",
-            })
+            lo_lit = self._partition_value_literal(
+                lo, src_dialect, value_kind=value_kind
+            )
+            hi_lit = self._partition_value_literal(
+                hi, src_dialect, value_kind=value_kind
+            )
+            specs.append(
+                {
+                    "part_id": i,
+                    "where": f"{q_col} >= {lo_lit} AND {q_col} {op_hi} {hi_lit}",
+                }
+            )
         return specs
 
     @staticmethod
@@ -255,12 +265,7 @@ class Partitioner:
             if dialect_name == "mssqldialect":
                 return f"CAST({quoted} AS DATETIME2)"
             if dialect_name == "oracledialect":
-                return (
-                    "TO_TIMESTAMP("
-                    f"{quoted}, "
-                    "'YYYY-MM-DD HH24:MI:SS.FF6'"
-                    ")"
-                )
+                return "TO_TIMESTAMP(" f"{quoted}, " "'YYYY-MM-DD HH24:MI:SS.FF6'" ")"
             return f"TIMESTAMP {quoted}"
 
         if isinstance(value, date):
@@ -326,10 +331,12 @@ class Partitioner:
             lo = all_bounds[i]
             hi = all_bounds[i + 1]
             op_hi = "<=" if i == len(all_bounds) - 2 else "<"
-            specs.append({
-                "part_id": i,
-                "where": f"{q_col} >= {lo} AND {q_col} {op_hi} {hi}",
-            })
+            specs.append(
+                {
+                    "part_id": i,
+                    "where": f"{q_col} >= {lo} AND {q_col} {op_hi} {hi}",
+                }
+            )
         return specs
 
     def _query_percentiles(
@@ -363,9 +370,7 @@ class Partitioner:
                     f"(ORDER BY {q_col}) FROM {relation}"
                 )
             else:
-                raise NotImplementedError(
-                    f"percentile desteklenmiyor: {dialect_name}"
-                )
+                raise NotImplementedError(f"percentile desteklenmiyor: {dialect_name}")
             sql = self._append_where(sql, planned_where)
             cursor = src_conn.cursor()
             try:
@@ -389,10 +394,7 @@ class Partitioner:
         else:
             clause_tmpl = f"MOD({q_col}, {n}) = {{i}}"
 
-        return [
-            {"part_id": i, "where": clause_tmpl.format(i=i)}
-            for i in range(n)
-        ]
+        return [{"part_id": i, "where": clause_tmpl.format(i=i)} for i in range(n)]
 
     def _plan_distinct(self, task_config: dict, src_conn, src_dialect) -> list[dict]:
         part = task_config["partitioning"]
@@ -423,13 +425,15 @@ class Partitioner:
         chunk_size = math.ceil(len(values) / n)
         specs = []
         for i in range(0, len(values), chunk_size):
-            group = values[i: i + chunk_size]
+            group = values[i:i + chunk_size]
             if isinstance(group[0], str):
                 in_list = ", ".join(f"'{v}'" for v in group)
             else:
                 in_list = ", ".join(str(v) for v in group)
-            specs.append({
-                "part_id": len(specs),
-                "where": f"{q_col} IN ({in_list})",
-            })
+            specs.append(
+                {
+                    "part_id": len(specs),
+                    "where": f"{q_col} IN ({in_list})",
+                }
+            )
         return specs

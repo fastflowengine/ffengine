@@ -6,7 +6,7 @@ Kapsam: resolve_dialect, combine_where, aggregate_results,
 """
 
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 from ffengine.airflow.operator import (
     resolve_dialect,
@@ -17,7 +17,6 @@ from ffengine.airflow.operator import (
 )
 from ffengine.core.base_engine import FlowResult
 from ffengine.errors.exceptions import ConfigError, ConnectionError, EngineError
-
 
 # ---------------------------------------------------------------------------
 # Patch hedefleri — execute() lazy import yaptığı için kaynak modül yolu
@@ -145,8 +144,10 @@ class TestFFEngineOperatorInit:
 
     def test_defaults(self):
         op = FFEngineOperator(
-            config_path="a", task_group_id="b",
-            source_conn_id="s", target_conn_id="t",
+            config_path="a",
+            task_group_id="b",
+            source_conn_id="s",
+            target_conn_id="t",
         )
         assert op.engine == "auto"
         assert op.task_id == "ffengine_etl"
@@ -207,9 +208,12 @@ class TestFFEngineOperatorExecute:
             patch(_P_FLOW) as mock_etl,
         ):
             mock_adapter.get_connection_params.return_value = {
-                "host": "localhost", "port": 5432,
-                "user": "u", "password": "p",
-                "database": "db", "conn_type": "postgres",
+                "host": "localhost",
+                "port": 5432,
+                "user": "u",
+                "password": "p",
+                "database": "db",
+                "conn_type": "postgres",
             }
 
             self.task_config = {
@@ -230,15 +234,16 @@ class TestFFEngineOperatorExecute:
 
             mock_mapping.return_value.resolve.return_value = _default_mapping_result()
 
-            mock_part.return_value.plan.return_value = [
-                {"part_id": 0, "where": None}
-            ]
+            mock_part.return_value.plan.return_value = [{"part_id": 0, "where": None}]
 
             mock_writer.return_value.prepare.return_value = None
 
             mock_etl.return_value.run_flow_task.return_value = FlowResult(
-                rows=100, duration_seconds=1.5, throughput=66.67,
-                partitions_completed=1, errors=[],
+                rows=100,
+                duration_seconds=1.5,
+                throughput=66.67,
+                partitions_completed=1,
+                errors=[],
             )
 
             self.mock_adapter = mock_adapter
@@ -281,7 +286,10 @@ class TestFFEngineOperatorExecute:
             {"part_id": 1, "where": None},
         ]
         self.mock_etl.return_value.run_flow_task.return_value = FlowResult(
-            50, 1.0, 50.0, 1,
+            50,
+            1.0,
+            50.0,
+            1,
         )
         op = _make_operator()
         op.execute()
@@ -296,7 +304,8 @@ class TestFFEngineOperatorExecute:
     def test_where_combination(self):
         """Base WHERE + partition WHERE AND ile birleştirilir."""
         self.mock_binder.return_value.resolve.side_effect = lambda cfg, ctx: {
-            **cfg, "_resolved_where": "status = 'ACTIVE'"
+            **cfg,
+            "_resolved_where": "status = 'ACTIVE'",
         }
         self.mock_part.return_value.plan.return_value = [
             {"part_id": 0, "where": "id < 500"},
@@ -333,10 +342,12 @@ class TestFFEngineOperatorExecute:
         )
         self.mock_loader.return_value.load.return_value = dict(self.task_config)
         self.mock_binder.return_value.resolve.side_effect = lambda cfg, ctx: dict(cfg)
-        self.mock_binder.return_value.resolve_sql_bindings.side_effect = lambda cfg, **_: {
-            **cfg,
-            "_resolved_where": "id > 100",
-        }
+        self.mock_binder.return_value.resolve_sql_bindings.side_effect = (
+            lambda cfg, **_: {
+                **cfg,
+                "_resolved_where": "id > 100",
+            }
+        )
 
         op = _make_operator()
         op.execute()
@@ -353,7 +364,9 @@ class TestFFEngineOperatorExecute:
         op = _make_operator()
         op.execute(context)
 
-        push_calls = {c.kwargs["key"]: c.kwargs["value"] for c in ti.xcom_push.call_args_list}
+        push_calls = {
+            c.kwargs["key"]: c.kwargs["value"] for c in ti.xcom_push.call_args_list
+        }
         assert "rows_transferred" in push_calls
         assert "duration_seconds" in push_calls
         assert "rows_per_second" in push_calls
@@ -396,23 +409,36 @@ class TestRunPartitionTaskLogging:
             return cm
 
         with (
-            patch("ffengine.airflow.operator._resolve_task_runtime", return_value=(
-                task_config,
-                src_params,
-                tgt_params,
-                src_dialect,
-                tgt_dialect,
-                resolver,
-                airflow_ctx,
-            )),
-            patch("ffengine.airflow.operator._resolve_sql_bindings_if_needed", side_effect=lambda **kwargs: kwargs["task_config"]),
-            patch("ffengine.airflow.operator._attach_mapping_if_needed", side_effect=lambda **kwargs: kwargs["task_config"]),
+            patch(
+                "ffengine.airflow.operator._resolve_task_runtime",
+                return_value=(
+                    task_config,
+                    src_params,
+                    tgt_params,
+                    src_dialect,
+                    tgt_dialect,
+                    resolver,
+                    airflow_ctx,
+                ),
+            ),
+            patch(
+                "ffengine.airflow.operator._resolve_sql_bindings_if_needed",
+                side_effect=lambda **kwargs: kwargs["task_config"],
+            ),
+            patch(
+                "ffengine.airflow.operator._attach_mapping_if_needed",
+                side_effect=lambda **kwargs: kwargs["task_config"],
+            ),
             patch(_P_DBSESS, side_effect=_dbsession_factory),
             patch(_P_FLOW) as mock_flow,
             patch("ffengine.airflow.operator._log_structured") as mock_log_structured,
         ):
             mock_flow.return_value.run_flow_task.return_value = FlowResult(
-                rows=10, duration_seconds=1.0, throughput=10.0, partitions_completed=1, errors=[]
+                rows=10,
+                duration_seconds=1.0,
+                throughput=10.0,
+                partitions_completed=1,
+                errors=[],
             )
 
             payload = run_partition_for_task(
@@ -433,7 +459,9 @@ class TestRunPartitionTaskLogging:
             assert log_kwargs["effective_where"] == expected_where
             assert log_kwargs["datetime_timezone"] == "UTC"
             assert log_kwargs["datetime_precision"] == "timestamp(6)"
-            assert log_kwargs["datetime_boundary_policy"] == "half_open_[lo,hi)_last_lte"
+            assert (
+                log_kwargs["datetime_boundary_policy"] == "half_open_[lo,hi)_last_lte"
+            )
 
             call_kwargs = mock_flow.return_value.run_flow_task.call_args.kwargs
             assert call_kwargs["task_config"]["_resolved_where"] == expected_where
@@ -486,11 +514,14 @@ class TestFFEngineOperatorErrors:
             patch(_P_FLOW) as mock_etl,
         ):
             mock_adapter.get_connection_params.return_value = {
-                "conn_type": "postgres", "host": "h", "database": "d",
+                "conn_type": "postgres",
+                "host": "h",
+                "database": "d",
             }
             mock_loader.return_value.load.return_value = {}
             mock_binder.return_value.resolve.side_effect = lambda cfg, ctx: {
-                **cfg, "_resolved_where": "year = 2026"
+                **cfg,
+                "_resolved_where": "year = 2026",
             }
             mock_session = MagicMock()
             mock_session.conn = MagicMock()
@@ -502,7 +533,10 @@ class TestFFEngineOperatorErrors:
                 {"part_id": 0, "where": None},
             ]
             mock_etl.return_value.run_flow_task.return_value = FlowResult(
-                10, 0.1, 100.0, 1,
+                10,
+                0.1,
+                100.0,
+                1,
             )
 
             op = _make_operator()
@@ -536,7 +570,9 @@ class TestFFEngineOperatorErrors:
             patch("ffengine.airflow.operator._log_structured") as mock_log_structured,
         ):
             mock_adapter.get_connection_params.return_value = {
-                "conn_type": "postgres", "host": "h", "database": "d",
+                "conn_type": "postgres",
+                "host": "h",
+                "database": "d",
             }
             mock_loader.return_value.load.return_value = {}
             mock_binder.return_value.resolve.side_effect = lambda cfg, ctx: dict(cfg)
@@ -560,6 +596,8 @@ class TestFFEngineOperatorErrors:
             assert err_log["db_driver"] == "psycopg"
             assert "sql_preview" in err_log["error_details"]
 
-            pushed = {c.kwargs["key"]: c.kwargs["value"] for c in ti.xcom_push.call_args_list}
+            pushed = {
+                c.kwargs["key"]: c.kwargs["value"] for c in ti.xcom_push.call_args_list
+            }
             assert "error_summary" in pushed
             assert pushed["error_summary"]["details"]["db_sqlstate"] == "23505"

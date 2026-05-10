@@ -49,12 +49,14 @@ def pg_conn_params():
 @pytest.fixture(scope="module")
 def pg_dialect():
     from ffengine.dialects import PostgresDialect
+
     return PostgresDialect()
 
 
 @pytest.fixture(scope="module")
 def src_session(pg_conn_params, pg_dialect):
     from ffengine.db.session import DBSession
+
     with DBSession(pg_conn_params, pg_dialect) as session:
         yield session
 
@@ -62,6 +64,7 @@ def src_session(pg_conn_params, pg_dialect):
 @pytest.fixture(scope="module")
 def tgt_session(pg_conn_params, pg_dialect):
     from ffengine.db.session import DBSession
+
     with DBSession(pg_conn_params, pg_dialect) as session:
         yield session
 
@@ -151,16 +154,12 @@ def test_pg_to_pg_data_integrity(src_session, tgt_session, pg_dialect):
     )
 
     src_cursor = src_session.cursor()
-    src_cursor.execute(
-        "SELECT id, name FROM public.ff_test_data ORDER BY id LIMIT 5"
-    )
+    src_cursor.execute("SELECT id, name FROM public.ff_test_data ORDER BY id LIMIT 5")
     expected_rows = src_cursor.fetchall()
     src_cursor.close()
 
     tgt_cursor = tgt_session.cursor()
-    tgt_cursor.execute(
-        "SELECT id, name FROM public.ff_test_target ORDER BY id LIMIT 5"
-    )
+    tgt_cursor.execute("SELECT id, name FROM public.ff_test_target ORDER BY id LIMIT 5")
     actual_rows = tgt_cursor.fetchall()
     tgt_cursor.close()
 
@@ -201,16 +200,16 @@ def test_pg_to_pg_date_column_transferred(src_session, tgt_session, pg_dialect):
     )
 
     cursor = tgt_session.cursor()
-    cursor.execute(
-        "SELECT created_date FROM public.ff_test_target ORDER BY id LIMIT 1"
-    )
+    cursor.execute("SELECT created_date FROM public.ff_test_target ORDER BY id LIMIT 1")
     row = cursor.fetchone()
     cursor.close()
 
     assert isinstance(row[0], datetime.date)
 
 
-def test_pg_incremental_datetime_precision_safe_no_loss(src_session, tgt_session, pg_dialect):
+def test_pg_incremental_datetime_precision_safe_no_loss(
+    src_session, tgt_session, pg_dialect
+):
     """Fractional-second precision farklarinda filtrelenen kaynak sayisi ile transfer edilen satir sayisi ayni olmali."""
     from ffengine.config.binding_resolver import BindingResolver
     from ffengine.core.flow_manager import FlowManager

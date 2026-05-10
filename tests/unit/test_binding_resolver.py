@@ -141,7 +141,9 @@ def test_resolve_sql_bindings_without_bindings_keeps_where_untouched():
 
 def test_resolve_sql_bindings_datetime_value_normalized_to_utc_timestamp6():
     resolver = BindingResolver()
-    target_dt = datetime(2026, 1, 1, 3, 0, 0, 120000, tzinfo=timezone(timedelta(hours=3)))
+    target_dt = datetime(
+        2026, 1, 1, 3, 0, 0, 120000, tzinfo=timezone(timedelta(hours=3))
+    )
     cfg = {
         "where": '"SystemEntryDateTime" >= :last_sync',
         "bindings": [
@@ -158,12 +160,17 @@ def test_resolve_sql_bindings_datetime_value_normalized_to_utc_timestamp6():
         source_session=_FakeSession([]),
         target_session=_FakeSession([(target_dt,), None]),
     )
-    assert out["_resolved_where"] == '"SystemEntryDateTime" >= TIMESTAMP \'2026-01-01 00:00:00.120000\''
+    assert (
+        out["_resolved_where"]
+        == "\"SystemEntryDateTime\" >= TIMESTAMP '2026-01-01 00:00:00.120000'"
+    )
 
 
 def test_resolve_sql_bindings_datetime_value_for_postgres_uses_timestamptz():
     resolver = BindingResolver()
-    target_dt = datetime(2026, 1, 1, 3, 0, 0, 120000, tzinfo=timezone(timedelta(hours=3)))
+    target_dt = datetime(
+        2026, 1, 1, 3, 0, 0, 120000, tzinfo=timezone(timedelta(hours=3))
+    )
 
     class PostgresDialect:
         pass
@@ -187,7 +194,7 @@ def test_resolve_sql_bindings_datetime_value_for_postgres_uses_timestamptz():
     )
     assert (
         out["_resolved_where"]
-        == '"SystemEntryDateTime" > TIMESTAMPTZ \'2026-01-01 00:00:00.120000+00:00\''
+        == "\"SystemEntryDateTime\" > TIMESTAMPTZ '2026-01-01 00:00:00.120000+00:00'"
     )
 
 

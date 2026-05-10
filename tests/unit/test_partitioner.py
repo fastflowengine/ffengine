@@ -98,32 +98,44 @@ class TestPartitionerExplicit:
         conn.cursor.assert_not_called()
 
     def test_explicit_non_string_clause_raises_partition_error(self):
-        task = _task({"mode": "explicit", "ranges": [{"min": 1, "max": 10}], "column": None})
+        task = _task(
+            {"mode": "explicit", "ranges": [{"min": 1, "max": 10}], "column": None}
+        )
         with pytest.raises(PartitionError, match="string"):
             Partitioner().plan(task, MagicMock(), _dialect())
 
 
 class TestPartitionerAutoNumeric:
     def test_auto_numeric_returns_n_parts(self):
-        result = Partitioner().plan(_task({"parts": 4}), _conn(fetchone=(1, 1000)), _dialect())
+        result = Partitioner().plan(
+            _task({"parts": 4}), _conn(fetchone=(1, 1000)), _dialect()
+        )
         assert len(result) == 4
 
     def test_auto_numeric_part_ids_sequential(self):
-        result = Partitioner().plan(_task({"parts": 4}), _conn(fetchone=(1, 1000)), _dialect())
+        result = Partitioner().plan(
+            _task({"parts": 4}), _conn(fetchone=(1, 1000)), _dialect()
+        )
         assert [s["part_id"] for s in result] == [0, 1, 2, 3]
 
     def test_auto_numeric_last_partition_uses_lte(self):
-        result = Partitioner().plan(_task({"parts": 2}), _conn(fetchone=(0, 100)), _dialect())
+        result = Partitioner().plan(
+            _task({"parts": 2}), _conn(fetchone=(0, 100)), _dialect()
+        )
         assert "<=" in result[-1]["where"]
 
     def test_auto_numeric_first_partitions_use_lt(self):
-        result = Partitioner().plan(_task({"parts": 3}), _conn(fetchone=(0, 100)), _dialect())
+        result = Partitioner().plan(
+            _task({"parts": 3}), _conn(fetchone=(0, 100)), _dialect()
+        )
         for spec in result[:-1]:
             assert " < " in spec["where"]
             assert "<=" not in spec["where"]
 
     def test_auto_numeric_last_partition_hi_pins_to_max_value(self):
-        result = Partitioner().plan(_task({"parts": 3}), _conn(fetchone=(0, 5)), _dialect())
+        result = Partitioner().plan(
+            _task({"parts": 3}), _conn(fetchone=(0, 5)), _dialect()
+        )
         assert result[-1]["where"].endswith("<= 5")
 
     def test_auto_numeric_empty_table_falls_back_to_single_partition(self):
@@ -168,7 +180,9 @@ class TestPartitionerAutoNumeric:
         )
         Partitioner().plan(task, conn, _dialect())
         sql = conn.cursor.return_value.execute.call_args.args[0]
-        assert 'FROM (SELECT id, amount FROM public.orders) AS ffengine_inline_sql' in sql
+        assert (
+            "FROM (SELECT id, amount FROM public.orders) AS ffengine_inline_sql" in sql
+        )
         assert "WHERE id > 10" in sql
 
 
@@ -176,7 +190,9 @@ class TestPartitionerAutoDatetime:
     def test_auto_datetime_returns_n_parts(self):
         result = Partitioner().plan(
             _task({"mode": "auto_datetime", "column": "created_at", "parts": 2}),
-            _conn(fetchone=(datetime(2026, 1, 1, 0, 0, 0), datetime(2026, 1, 3, 0, 0, 0))),
+            _conn(
+                fetchone=(datetime(2026, 1, 1, 0, 0, 0), datetime(2026, 1, 3, 0, 0, 0))
+            ),
             _dialect(),
         )
         assert len(result) == 2
@@ -184,14 +200,18 @@ class TestPartitionerAutoDatetime:
     def test_auto_datetime_where_uses_timestamp_literals(self):
         result = Partitioner().plan(
             _task({"mode": "auto_datetime", "column": "created_at", "parts": 2}),
-            _conn(fetchone=(datetime(2026, 1, 1, 0, 0, 0), datetime(2026, 1, 3, 0, 0, 0))),
+            _conn(
+                fetchone=(datetime(2026, 1, 1, 0, 0, 0), datetime(2026, 1, 3, 0, 0, 0))
+            ),
             _dialect(),
         )
         assert "TIMESTAMP '" in result[0]["where"]
         assert '"created_at" >=' in result[0]["where"]
 
     def test_auto_datetime_applies_resolved_where_to_sampling_query(self):
-        conn = _conn(fetchone=(datetime(2026, 1, 1, 0, 0, 0), datetime(2026, 1, 3, 0, 0, 0)))
+        conn = _conn(
+            fetchone=(datetime(2026, 1, 1, 0, 0, 0), datetime(2026, 1, 3, 0, 0, 0))
+        )
         task = _task(
             {"mode": "auto_datetime", "column": "created_at", "parts": 2},
             _resolved_where="created_at >= '2026-01-01'",
@@ -203,7 +223,12 @@ class TestPartitionerAutoDatetime:
     def test_auto_datetime_literals_use_fixed_six_digit_precision(self):
         result = Partitioner().plan(
             _task({"mode": "auto_datetime", "column": "created_at", "parts": 2}),
-            _conn(fetchone=(datetime(2026, 1, 1, 0, 0, 0, 120000), datetime(2026, 1, 1, 0, 0, 1, 320000))),
+            _conn(
+                fetchone=(
+                    datetime(2026, 1, 1, 0, 0, 0, 120000),
+                    datetime(2026, 1, 1, 0, 0, 1, 320000),
+                )
+            ),
             _dialect(),
         )
         assert ".120000" in result[0]["where"]
@@ -211,7 +236,12 @@ class TestPartitionerAutoDatetime:
     def test_auto_datetime_boundaries_are_contiguous_without_gap_or_overlap(self):
         result = Partitioner().plan(
             _task({"mode": "auto_datetime", "column": "created_at", "parts": 4}),
-            _conn(fetchone=(datetime(2026, 1, 1, 0, 0, 0, 100000), datetime(2026, 1, 1, 0, 0, 4, 900000))),
+            _conn(
+                fetchone=(
+                    datetime(2026, 1, 1, 0, 0, 0, 100000),
+                    datetime(2026, 1, 1, 0, 0, 4, 900000),
+                )
+            ),
             _dialect(),
         )
 
@@ -234,8 +264,12 @@ class TestPartitionerAutoDatetime:
             _task({"mode": "auto_datetime", "column": "created_at", "parts": 2}),
             _conn(
                 fetchone=(
-                    datetime(2026, 1, 1, 3, 0, 0, 120000, tzinfo=timezone(timedelta(hours=3))),
-                    datetime(2026, 1, 1, 5, 0, 0, 120000, tzinfo=timezone(timedelta(hours=3))),
+                    datetime(
+                        2026, 1, 1, 3, 0, 0, 120000, tzinfo=timezone(timedelta(hours=3))
+                    ),
+                    datetime(
+                        2026, 1, 1, 5, 0, 0, 120000, tzinfo=timezone(timedelta(hours=3))
+                    ),
                 )
             ),
             _dialect(),
@@ -251,8 +285,12 @@ class TestPartitionerAutoDatetime:
             _task({"mode": "auto_datetime", "column": "created_at", "parts": 2}),
             _conn(
                 fetchone=(
-                    datetime(2026, 1, 1, 3, 0, 0, 120000, tzinfo=timezone(timedelta(hours=3))),
-                    datetime(2026, 1, 1, 5, 0, 0, 120000, tzinfo=timezone(timedelta(hours=3))),
+                    datetime(
+                        2026, 1, 1, 3, 0, 0, 120000, tzinfo=timezone(timedelta(hours=3))
+                    ),
+                    datetime(
+                        2026, 1, 1, 5, 0, 0, 120000, tzinfo=timezone(timedelta(hours=3))
+                    ),
                 )
             ),
             PostgresDialect(),
@@ -262,7 +300,12 @@ class TestPartitionerAutoDatetime:
     def test_auto_datetime_last_partition_hi_pins_to_source_max(self):
         result = Partitioner().plan(
             _task({"mode": "auto_datetime", "column": "created_at", "parts": 4}),
-            _conn(fetchone=(datetime(2026, 1, 1, 0, 0, 0, 0), datetime(2026, 1, 1, 0, 0, 0, 5))),
+            _conn(
+                fetchone=(
+                    datetime(2026, 1, 1, 0, 0, 0, 0),
+                    datetime(2026, 1, 1, 0, 0, 0, 5),
+                )
+            ),
             _dialect(),
         )
         assert "TIMESTAMP '2026-01-01 00:00:00.000005'" in result[-1]["where"]
@@ -312,13 +355,17 @@ class TestPartitionerHashMod:
 class TestPartitionerDistinct:
     def test_distinct_groups_numeric_values(self):
         conn = _conn(fetchall=[(1,), (2,), (3,), (4,)])
-        result = Partitioner().plan(_task({"mode": "distinct", "parts": 2}), conn, _dialect())
+        result = Partitioner().plan(
+            _task({"mode": "distinct", "parts": 2}), conn, _dialect()
+        )
         assert len(result) == 2
         assert "IN" in result[0]["where"]
 
     def test_distinct_string_values_quoted(self):
         conn = _conn(fetchall=[("US",), ("EU",)])
-        result = Partitioner().plan(_task({"mode": "distinct", "parts": 2}), conn, _dialect())
+        result = Partitioner().plan(
+            _task({"mode": "distinct", "parts": 2}), conn, _dialect()
+        )
         assert "'US'" in result[0]["where"] or "'EU'" in result[0]["where"]
 
     def test_distinct_empty_table_falls_back_to_single_partition(self):
@@ -331,18 +378,24 @@ class TestPartitionerDistinct:
 
     def test_distinct_fewer_values_than_parts(self):
         conn = _conn(fetchall=[(10,), (20,)])
-        result = Partitioner().plan(_task({"mode": "distinct", "parts": 4}), conn, _dialect())
+        result = Partitioner().plan(
+            _task({"mode": "distinct", "parts": 4}), conn, _dialect()
+        )
         assert len(result) == 2
 
     def test_distinct_part_ids_sequential(self):
         conn = _conn(fetchall=[(1,), (2,), (3,), (4,)])
-        result = Partitioner().plan(_task({"mode": "distinct", "parts": 2}), conn, _dialect())
+        result = Partitioner().plan(
+            _task({"mode": "distinct", "parts": 2}), conn, _dialect()
+        )
         assert [s["part_id"] for s in result] == [0, 1]
 
     def test_distinct_limit_applies_pagination_limit(self):
         conn = _conn(fetchall=[(1,), (2,), (3,), (4,)])
         dialect = _dialect()
-        Partitioner().plan(_task({"mode": "distinct", "parts": 2, "distinct_limit": 2}), conn, dialect)
+        Partitioner().plan(
+            _task({"mode": "distinct", "parts": 2, "distinct_limit": 2}), conn, dialect
+        )
         dialect.get_pagination_query.assert_called_once()
         args = dialect.get_pagination_query.call_args.args
         assert args[1] == 2
@@ -355,7 +408,9 @@ class TestPartitionerDistinct:
 
     def test_distinct_applies_resolved_where_to_sampling_query(self):
         conn = _conn(fetchall=[(1,), (2,)])
-        task = _task({"mode": "distinct", "parts": 2}, _resolved_where="status = 'ACTIVE'")
+        task = _task(
+            {"mode": "distinct", "parts": 2}, _resolved_where="status = 'ACTIVE'"
+        )
         Partitioner().plan(task, conn, _dialect())
         sql = conn.cursor.return_value.execute.call_args.args[0]
         assert "WHERE status = 'ACTIVE'" in sql
@@ -368,7 +423,9 @@ class TestPartitionerPercentile:
         conn = MagicMock()
         conn.cursor.return_value = cursor
 
-        result = Partitioner().plan(_task({"mode": "percentile", "parts": 4}), conn, _dialect())
+        result = Partitioner().plan(
+            _task({"mode": "percentile", "parts": 4}), conn, _dialect()
+        )
         assert len(result) == 4
 
     def test_percentile_query_attempted_before_fallback(self):
@@ -377,8 +434,12 @@ class TestPartitionerPercentile:
         conn = MagicMock()
         conn.cursor.return_value = cursor
 
-        with patch.object(Partitioner, "_query_percentiles", side_effect=Exception("forced")) as mock_qp:
-            result = Partitioner().plan(_task({"mode": "percentile", "parts": 2}), conn, _dialect())
+        with patch.object(
+            Partitioner, "_query_percentiles", side_effect=Exception("forced")
+        ) as mock_qp:
+            result = Partitioner().plan(
+                _task({"mode": "percentile", "parts": 2}), conn, _dialect()
+            )
 
         mock_qp.assert_called_once()
         assert len(result) == 2
@@ -418,7 +479,9 @@ class TestPartitionerPercentileDialectSql:
         conn = MagicMock()
         conn.cursor.side_effect = [percentile_cursor, minmax_cursor]
 
-        result = Partitioner().plan(_task({"mode": "percentile", "parts": 2}), conn, PostgresDialect())
+        result = Partitioner().plan(
+            _task({"mode": "percentile", "parts": 2}), conn, PostgresDialect()
+        )
 
         assert len(result) == 2
         assert "50" in result[0]["where"]

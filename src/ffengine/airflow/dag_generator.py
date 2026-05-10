@@ -5,7 +5,6 @@ Scans YAML config directory and creates Airflow DAG objects per task.
 """
 
 import logging
-import os
 from pathlib import Path
 
 _log = logging.getLogger(__name__)
@@ -75,7 +74,9 @@ def generate_dags(
             if not tg_id:
                 continue
             partition_cfg = task_def.get("partitioning")
-            partition_enabled = isinstance(partition_cfg, dict) and bool(partition_cfg.get("enabled", False))
+            partition_enabled = isinstance(partition_cfg, dict) and bool(
+                partition_cfg.get("enabled", False)
+            )
 
             dag_id = f"{dag_prefix}_{yaml_file.stem}_{tg_id}"
 
@@ -183,4 +184,3 @@ def register_dags(
     """
     dags = generate_dags(config_dir, **kwargs)
     globals_dict.update(dags)
-

@@ -87,8 +87,7 @@ class TestGenerateDags:
     def test_custom_prefix_and_tags(self, tmp_path):
         cfg = tmp_path / "test.yaml"
         cfg.write_text(
-            "flow_tasks:\n"
-            "  - task_group_id: x\n",
+            "flow_tasks:\n" "  - task_group_id: x\n",
             encoding="utf-8",
         )
         dags = generate_dags(str(tmp_path), dag_prefix="myapp", tags=["prod"])
@@ -113,10 +112,10 @@ class TestGenerateDags:
         dag = dags["ffengine_orders_load_orders"]
 
         task_ids = {t.task_id for t in dag.tasks}
-        assert f"plan_load_orders" in task_ids
-        assert f"prepare_load_orders" in task_ids
-        assert f"run_load_orders" in task_ids
-        assert f"aggregate_load_orders" in task_ids
+        assert "plan_load_orders" in task_ids
+        assert "prepare_load_orders" in task_ids
+        assert "run_load_orders" in task_ids
+        assert "aggregate_load_orders" in task_ids
 
     def test_partition_disabled_uses_single_operator(self, tmp_path):
         cfg = tmp_path / "orders.yaml"
@@ -141,8 +140,7 @@ class TestRegisterDags:
     def test_updates_globals_dict(self, tmp_path):
         cfg = tmp_path / "reg.yaml"
         cfg.write_text(
-            "flow_tasks:\n"
-            "  - task_group_id: r1\n",
+            "flow_tasks:\n" "  - task_group_id: r1\n",
             encoding="utf-8",
         )
         g = {}
@@ -152,8 +150,7 @@ class TestRegisterDags:
     def test_dag_id_format(self, tmp_path):
         cfg = tmp_path / "pipeline.yaml"
         cfg.write_text(
-            "flow_tasks:\n"
-            "  - task_group_id: load\n",
+            "flow_tasks:\n" "  - task_group_id: load\n",
             encoding="utf-8",
         )
         g = {}

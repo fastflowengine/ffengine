@@ -132,11 +132,15 @@ class ConfigValidator:
 
         parts = part.get("parts", 4)
         if not isinstance(parts, int) or parts < 1:
-            raise ValidationError(
-                f"partitioning.parts >= 1 olmali, su an: {parts!r}"
-            )
+            raise ValidationError(f"partitioning.parts >= 1 olmali, su an: {parts!r}")
 
-        column_modes = {"auto_numeric", "auto_datetime", "percentile", "hash_mod", "distinct"}
+        column_modes = {
+            "auto_numeric",
+            "auto_datetime",
+            "percentile",
+            "hash_mod",
+            "distinct",
+        }
         if mode in column_modes and not part.get("column"):
             raise ValidationError(
                 f"partitioning.mode='{mode}' icin 'partitioning.column' zorunludur."
@@ -167,7 +171,9 @@ class ConfigValidator:
     def _check_passthrough_config(self, task: dict) -> None:
         if task.get("column_mapping_mode", "source") != "source":
             return
-        if task.get("passthrough_full", True) is False and not task.get("source_columns"):
+        if task.get("passthrough_full", True) is False and not task.get(
+            "source_columns"
+        ):
             raise ValidationError(
                 "passthrough_full=False iken 'source_columns' listesi zorunludur."
             )

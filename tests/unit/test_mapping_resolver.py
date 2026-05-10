@@ -12,7 +12,6 @@ from ffengine.mapping.resolver import MappingResolver, MappingResult, _dialect_n
 from ffengine.dialects.base import ColumnInfo
 from ffengine.errors.exceptions import MappingError
 
-
 # ---------------------------------------------------------------------------
 # Yardımcılar
 # ---------------------------------------------------------------------------
@@ -23,8 +22,10 @@ def _make_dialect(class_name: str, cols: list[ColumnInfo] | None = None):
     type(dialect).__name__ == class_name olan minimal bir dialect nesnesi döndürür.
     MagicMock yerine gerçek bir sınıf kullanılır çünkü _dialect_name() type()'a bakar.
     """
+
     class _D:
         pass
+
     _D.__name__ = class_name
     _D.get_table_schema = lambda self, *a, **kw: (cols or [])
     return _D()
@@ -64,21 +65,25 @@ class TestDialectNameHelper:
     def test_postgres_dialect(self):
         class PostgresDialect:
             pass
+
         assert _dialect_name(PostgresDialect()) == "postgres"
 
     def test_mssql_dialect(self):
         class MSSQLDialect:
             pass
+
         assert _dialect_name(MSSQLDialect()) == "mssql"
 
     def test_oracle_dialect(self):
         class OracleDialect:
             pass
+
         assert _dialect_name(OracleDialect()) == "oracle"
 
     def test_unknown_dialect_returns_class_name(self):
         class FooBar:
             pass
+
         assert _dialect_name(FooBar()) == "foobar"
 
 
@@ -94,8 +99,8 @@ class TestMappingResolverSourceMode:
             ColumnInfo("name", "VARCHAR"),
             ColumnInfo("age", "SMALLINT"),
         ]
-        src = _src_dialect(cols)         # PostgresDialect
-        tgt = _tgt_dialect()             # PostgresDialect
+        src = _src_dialect(cols)  # PostgresDialect
+        tgt = _tgt_dialect()  # PostgresDialect
         result = MappingResolver().resolve(_task(), _conn(), src, tgt)
         assert isinstance(result, MappingResult)
         assert result.source_columns == ["id", "name", "age"]
@@ -111,7 +116,11 @@ class TestMappingResolverSourceMode:
         assert result.target_columns_meta[0].data_type == "NUMERIC"
 
     def test_passthrough_full_preserves_column_order(self):
-        cols = [ColumnInfo("c", "INTEGER"), ColumnInfo("a", "INTEGER"), ColumnInfo("b", "INTEGER")]
+        cols = [
+            ColumnInfo("c", "INTEGER"),
+            ColumnInfo("a", "INTEGER"),
+            ColumnInfo("b", "INTEGER"),
+        ]
         src = _src_dialect(cols)
         tgt = _tgt_dialect()
         result = MappingResolver().resolve(_task(), _conn(), src, tgt)
@@ -134,7 +143,11 @@ class TestMappingResolverSourceMode:
             MappingResolver().resolve(_task(), _conn(), src, tgt)
 
     def test_passthrough_partial_filters_columns(self):
-        cols = [ColumnInfo("id", "INTEGER"), ColumnInfo("name", "VARCHAR"), ColumnInfo("secret", "TEXT")]
+        cols = [
+            ColumnInfo("id", "INTEGER"),
+            ColumnInfo("name", "VARCHAR"),
+            ColumnInfo("secret", "TEXT"),
+        ]
         src = _src_dialect(cols)
         tgt = _tgt_dialect()
         task = _task(passthrough_full=False, source_columns=["id", "name"])
@@ -151,7 +164,7 @@ class TestMappingResolverSourceMode:
             MappingResolver().resolve(task, _conn(), src, tgt)
 
     def test_unsupported_type_raises_mapping_error(self):
-        cols = [ColumnInfo("col1", "XMLTYPE")]   # XMLTYPE desteklenmiyor
+        cols = [ColumnInfo("col1", "XMLTYPE")]  # XMLTYPE desteklenmiyor
         src = _src_dialect(cols, "OracleDialect")
         tgt = _tgt_dialect("PostgresDialect")
         with pytest.raises(MappingError, match="col1"):
@@ -193,7 +206,9 @@ class TestMappingResolverMappingFileMode:
         p = tmp_path / "mapping.yaml"
         p.write_text(_VALID_MAPPING_YAML)
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
-        result = MappingResolver().resolve(task, _conn(), _src_dialect([]), _tgt_dialect())
+        result = MappingResolver().resolve(
+            task, _conn(), _src_dialect([]), _tgt_dialect()
+        )
         assert result.source_columns == ["ORDER_ID", "ORDER_AMT"]
         assert result.target_columns == ["order_id", "order_amt"]
 
@@ -201,7 +216,9 @@ class TestMappingResolverMappingFileMode:
         p = tmp_path / "m.yaml"
         p.write_text(_VALID_MAPPING_YAML)
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
-        result = MappingResolver().resolve(task, _conn(), _src_dialect([]), _tgt_dialect())
+        result = MappingResolver().resolve(
+            task, _conn(), _src_dialect([]), _tgt_dialect()
+        )
         assert result.source_columns[0] == "ORDER_ID"
         assert result.target_columns[0] == "order_id"
 
@@ -209,7 +226,9 @@ class TestMappingResolverMappingFileMode:
         p = tmp_path / "m.yaml"
         p.write_text(_VALID_MAPPING_YAML)
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
-        result = MappingResolver().resolve(task, _conn(), _src_dialect([]), _tgt_dialect())
+        result = MappingResolver().resolve(
+            task, _conn(), _src_dialect([]), _tgt_dialect()
+        )
         assert result.target_columns_meta[0].data_type == "INTEGER"
         assert result.target_columns_meta[1].data_type == "NUMERIC(18,4)"
 
@@ -217,7 +236,9 @@ class TestMappingResolverMappingFileMode:
         p = tmp_path / "m.yaml"
         p.write_text(_VALID_MAPPING_YAML)
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
-        result = MappingResolver().resolve(task, _conn(), _src_dialect([]), _tgt_dialect())
+        result = MappingResolver().resolve(
+            task, _conn(), _src_dialect([]), _tgt_dialect()
+        )
         assert result.target_columns_meta[0].nullable is False
 
     def test_nullable_defaults_to_true(self, tmp_path):
@@ -231,11 +252,15 @@ class TestMappingResolverMappingFileMode:
         p = tmp_path / "m.yaml"
         p.write_text(yaml_no_nullable)
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
-        result = MappingResolver().resolve(task, _conn(), _src_dialect([]), _tgt_dialect())
+        result = MappingResolver().resolve(
+            task, _conn(), _src_dialect([]), _tgt_dialect()
+        )
         assert result.target_columns_meta[0].nullable is True
 
     def test_missing_file_raises_mapping_error(self, tmp_path):
-        task = _task(column_mapping_mode="mapping_file", mapping_file=str(tmp_path / "nope.yaml"))
+        task = _task(
+            column_mapping_mode="mapping_file", mapping_file=str(tmp_path / "nope.yaml")
+        )
         with pytest.raises(MappingError, match="bulunamadı"):
             MappingResolver().resolve(task, _conn(), _src_dialect([]), _tgt_dialect())
 

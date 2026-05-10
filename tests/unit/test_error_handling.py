@@ -82,7 +82,9 @@ def test_http_status_for_domain_and_builtin_errors():
 
 
 def test_error_payload_is_stable():
-    payload = error_payload(MappingError("mapping failed", details={"mode": "mapping_file"}))
+    payload = error_payload(
+        MappingError("mapping failed", details={"mode": "mapping_file"})
+    )
     assert payload["error_type"] == "MappingError"
     assert payload["error_code"] == "mapping_error"
     assert payload["message"] == "mapping failed"

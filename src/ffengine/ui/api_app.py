@@ -1,4 +1,4 @@
-﻿"""Airflow 3 FastAPI app for Flow Studio."""
+"""Airflow 3 FastAPI app for Flow Studio."""
 
 from __future__ import annotations
 
@@ -140,8 +140,13 @@ class BindingPayload(BaseModel):
             raise ValueError("default_value is required when binding_source='default'.")
         if self.binding_source in {"source", "target"} and not (self.sql or "").strip():
             raise ValueError("sql is required when binding_source='source|target'.")
-        if self.binding_source == "airflow_variable" and not (self.airflow_variable_key or "").strip():
-            raise ValueError("airflow_variable_key is required when binding_source='airflow_variable'.")
+        if (
+            self.binding_source == "airflow_variable"
+            and not (self.airflow_variable_key or "").strip()
+        ):
+            raise ValueError(
+                "airflow_variable_key is required when binding_source='airflow_variable'."
+            )
         return self
 
 
@@ -203,7 +208,9 @@ class FlowTaskPayload(BaseModel):
     def _v_task_type(cls, v: str) -> str:
         value = str(v or "").strip()
         if value not in _VALID_TASK_TYPES:
-            raise ValueError("task_type must be one of: 'source_target', 'script_run', or 'dag'.")
+            raise ValueError(
+                "task_type must be one of: 'source_target', 'script_run', or 'dag'."
+            )
         return value
 
     @field_validator("load_method")
@@ -230,19 +237,33 @@ class FlowTaskPayload(BaseModel):
     @model_validator(mode="after")
     def _v_mapping(self) -> FlowTaskPayload:
         if self.task_type == "source_target":
-            if not (self.target_schema or "").strip() or not (self.target_table or "").strip():
-                raise ValueError("target_schema and target_table are required when task_type='source_target'.")
+            if (
+                not (self.target_schema or "").strip()
+                or not (self.target_table or "").strip()
+            ):
+                raise ValueError(
+                    "target_schema and target_table are required when task_type='source_target'."
+                )
             if self.source_type == "sql" and self.column_mapping_mode != "mapping_file":
-                raise ValueError("column_mapping_mode='mapping_file' is required when source_type='sql'.")
+                raise ValueError(
+                    "column_mapping_mode='mapping_file' is required when source_type='sql'."
+                )
             if self.source_type in {"table", "view"}:
-                if not (self.source_schema or "").strip() or not (self.source_table or "").strip():
-                    raise ValueError("source_schema and source_table are required when source_type=table|view.")
+                if (
+                    not (self.source_schema or "").strip()
+                    or not (self.source_table or "").strip()
+                ):
+                    raise ValueError(
+                        "source_schema and source_table are required when source_type=table|view."
+                    )
             if self.source_type == "sql" and not (self.inline_sql or "").strip():
                 raise ValueError("inline_sql is required when source_type='sql'.")
         elif self.task_type == "script_run":
             environment = str(self.script_run_environment or "").strip()
             if environment not in _VALID_SCRIPT_RUN_ENVIRONMENTS:
-                raise ValueError("script_run_environment must be one of: 'source' or 'target'.")
+                raise ValueError(
+                    "script_run_environment must be one of: 'source' or 'target'."
+                )
             if not (self.script_sql or "").strip():
                 raise ValueError("script_sql is required when task_type='script_run'.")
         elif self.task_type == "dag":
@@ -362,7 +383,9 @@ class DagUpsertPayload(BaseModel):
     def _v_task_type(cls, v: str) -> str:
         value = str(v or "").strip()
         if value not in _VALID_TASK_TYPES:
-            raise ValueError("task_type must be one of: 'source_target', 'script_run', or 'dag'.")
+            raise ValueError(
+                "task_type must be one of: 'source_target', 'script_run', or 'dag'."
+            )
         return value
 
     @field_validator("load_method")
@@ -392,7 +415,9 @@ class DagUpsertPayload(BaseModel):
         if v is None:
             return None
         if len(v) > _CUSTOM_TAG_MAX_COUNT:
-            raise ValueError(f"custom_tags can contain at most {_CUSTOM_TAG_MAX_COUNT} items.")
+            raise ValueError(
+                f"custom_tags can contain at most {_CUSTOM_TAG_MAX_COUNT} items."
+            )
         return v
 
     @model_validator(mode="after")
@@ -401,8 +426,13 @@ class DagUpsertPayload(BaseModel):
         if has_task_list:
             return self
         if self.task_type == "script_run":
-            if str(self.script_run_environment or "").strip() not in _VALID_SCRIPT_RUN_ENVIRONMENTS:
-                raise ValueError("script_run_environment must be one of: 'source' or 'target'.")
+            if (
+                str(self.script_run_environment or "").strip()
+                not in _VALID_SCRIPT_RUN_ENVIRONMENTS
+            ):
+                raise ValueError(
+                    "script_run_environment must be one of: 'source' or 'target'."
+                )
             if not (self.script_sql or "").strip():
                 raise ValueError("script_sql is required when task_type='script_run'.")
             items = list(self.bindings or [])
@@ -428,19 +458,26 @@ class DagUpsertPayload(BaseModel):
                 expression_label="Where Clause",
             )
             return self
-        target_required_ok = all([(self.target_schema or "").strip(), (self.target_table or "").strip()])
+        target_required_ok = all(
+            [(self.target_schema or "").strip(), (self.target_table or "").strip()]
+        )
         if self.source_type in {"table", "view"}:
-            source_required_ok = all([(self.source_schema or "").strip(), (self.source_table or "").strip()])
+            source_required_ok = all(
+                [(self.source_schema or "").strip(), (self.source_table or "").strip()]
+            )
             if not (source_required_ok and target_required_ok):
                 raise ValueError(
-                    "When flow_tasks is not provided and source_type=table|view, source_schema/source_table/target_schema/target_table are required."
+                    "When flow_tasks is not provided and source_type=table|view, "
+                    "source_schema/source_table/target_schema/target_table are required."
                 )
         elif not target_required_ok:
             raise ValueError(
                 "When flow_tasks is not provided, target_schema/target_table are required."
             )
         if self.source_type == "sql" and self.column_mapping_mode != "mapping_file":
-            raise ValueError("column_mapping_mode='mapping_file' is required when source_type='sql'.")
+            raise ValueError(
+                "column_mapping_mode='mapping_file' is required when source_type='sql'."
+            )
         if self.source_type == "sql" and not (self.inline_sql or "").strip():
             raise ValueError("inline_sql is required when source_type='sql'.")
         items = list(self.bindings or [])
@@ -484,8 +521,13 @@ class MappingGeneratePayload(BaseModel):
     @model_validator(mode="after")
     def _v_required_fields(self) -> "MappingGeneratePayload":
         if self.source_type in {"table", "view"}:
-            if not (self.source_schema or "").strip() or not (self.source_table or "").strip():
-                raise ValueError("source_schema and source_table are required when source_type=table|view.")
+            if (
+                not (self.source_schema or "").strip()
+                or not (self.source_table or "").strip()
+            ):
+                raise ValueError(
+                    "source_schema and source_table are required when source_type=table|view."
+                )
         if self.source_type == "sql" and not (self.inline_sql or "").strip():
             raise ValueError("inline_sql is required when source_type='sql'.")
         return self
@@ -495,7 +537,7 @@ flow_studio_app = FastAPI(title="Flow Studio", version="1.1.0")
 flow_studio_app.mount(
     "/static",
     StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
-    name="static"
+    name="static",
 )
 
 
@@ -567,7 +609,9 @@ def api_airflow_variables(
     limit: int = Query(200, ge=1, le=1000),
 ) -> dict[str, Any]:
     try:
-        items = discover_airflow_variables(search=(q or "").strip() or None, limit=limit)
+        items = discover_airflow_variables(
+            search=(q or "").strip() or None, limit=limit
+        )
         return {"ok": True, "items": items, "count": len(items)}
     except Exception as exc:
         _raise_http_from_exception(exc)
@@ -787,4 +831,3 @@ def api_delete_dag(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         _raise_http_from_exception(exc)
-

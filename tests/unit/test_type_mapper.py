@@ -1,7 +1,6 @@
 import pytest
 from ffengine.dialects.type_mapper import TypeMapper, UnsupportedTypeError
 
-
 # ------------------------------------------------------------------
 # Critical Mappings from TYPE_MAPPING.md
 # ------------------------------------------------------------------

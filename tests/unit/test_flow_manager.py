@@ -1,10 +1,9 @@
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 from ffengine.core.flow_manager import FlowManager, PythonEngine
 from ffengine.core.base_engine import FlowResult
 from ffengine.errors import EngineError
 from ffengine.errors.exceptions import ConnectionError
-
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -107,7 +106,9 @@ def test_python_engine_run_raises_config_error_for_missing_sessions(tmp_path):
 # ------------------------------------------------------------------
 
 
-def test_run_flow_task_returns_etl_result(src_session, tgt_session, dialect, task_config):
+def test_run_flow_task_returns_etl_result(
+    src_session, tgt_session, dialect, task_config
+):
     manager = FlowManager()
     result = manager.run_flow_task(
         src_session=src_session,
@@ -122,7 +123,9 @@ def test_run_flow_task_returns_etl_result(src_session, tgt_session, dialect, tas
     assert result.errors == []
 
 
-def test_run_flow_task_duration_positive(src_session, tgt_session, dialect, task_config):
+def test_run_flow_task_duration_positive(
+    src_session, tgt_session, dialect, task_config
+):
     manager = FlowManager()
     result = manager.run_flow_task(
         src_session=src_session,
@@ -134,7 +137,9 @@ def test_run_flow_task_duration_positive(src_session, tgt_session, dialect, task
     assert result.duration_seconds >= 0
 
 
-def test_run_flow_task_throughput_non_negative(src_session, tgt_session, dialect, task_config):
+def test_run_flow_task_throughput_non_negative(
+    src_session, tgt_session, dialect, task_config
+):
     manager = FlowManager()
     result = manager.run_flow_task(
         src_session=src_session,
@@ -151,7 +156,9 @@ def test_run_flow_task_throughput_non_negative(src_session, tgt_session, dialect
 # ------------------------------------------------------------------
 
 
-def test_run_flow_task_partition_spec_injects_where(src_session, tgt_session, dialect, task_config):
+def test_run_flow_task_partition_spec_injects_where(
+    src_session, tgt_session, dialect, task_config
+):
     with patch("ffengine.core.flow_manager.SourceReader") as MockReader:
         mock_reader_instance = MagicMock()
         mock_reader_instance.read.return_value = iter([])
@@ -176,7 +183,9 @@ def test_run_flow_task_partition_spec_injects_where(src_session, tgt_session, di
 # ------------------------------------------------------------------
 
 
-def test_run_flow_task_rollback_on_write_error(src_session, tgt_session, dialect, task_config):
+def test_run_flow_task_rollback_on_write_error(
+    src_session, tgt_session, dialect, task_config
+):
     with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
         mock_writer = MagicMock()
         mock_writer.write_batch.side_effect = RuntimeError("insert failed")
@@ -195,7 +204,9 @@ def test_run_flow_task_rollback_on_write_error(src_session, tgt_session, dialect
         mock_writer.rollback_batch.assert_called()
 
 
-def test_run_flow_task_rollback_called_once_on_error(src_session, tgt_session, dialect, task_config):
+def test_run_flow_task_rollback_called_once_on_error(
+    src_session, tgt_session, dialect, task_config
+):
     with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
         mock_writer = MagicMock()
         mock_writer.write_batch.side_effect = Exception("fail")
@@ -214,7 +225,9 @@ def test_run_flow_task_rollback_called_once_on_error(src_session, tgt_session, d
         assert mock_writer.rollback_batch.call_count == 1
 
 
-def test_run_flow_task_logs_db_details_on_connection_error(src_session, tgt_session, dialect, task_config):
+def test_run_flow_task_logs_db_details_on_connection_error(
+    src_session, tgt_session, dialect, task_config
+):
     class FakePgError(Exception):
         __module__ = "psycopg.errors"
         sqlstate = "22001"
@@ -262,7 +275,9 @@ def test_run_flow_task_logs_db_details_on_connection_error(src_session, tgt_sess
 # ------------------------------------------------------------------
 
 
-def test_skip_prepare_true_skips_writer_prepare(src_session, tgt_session, dialect, task_config):
+def test_skip_prepare_true_skips_writer_prepare(
+    src_session, tgt_session, dialect, task_config
+):
     with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
         mock_writer = MagicMock()
         mock_writer.write_batch.return_value = 0
@@ -281,7 +296,9 @@ def test_skip_prepare_true_skips_writer_prepare(src_session, tgt_session, dialec
         mock_writer.prepare.assert_not_called()
 
 
-def test_skip_prepare_false_calls_writer_prepare(src_session, tgt_session, dialect, task_config):
+def test_skip_prepare_false_calls_writer_prepare(
+    src_session, tgt_session, dialect, task_config
+):
     with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
         mock_writer = MagicMock()
         mock_writer.write_batch.return_value = 0
@@ -325,11 +342,13 @@ def test_skip_prepare_default_is_false(src_session, tgt_session, dialect, task_c
 
 def test_detect_community_returns_python_engine():
     from ffengine.core.base_engine import BaseEngine
+
     engine = BaseEngine.detect("community")
     assert isinstance(engine, PythonEngine)
 
 
 def test_detect_auto_fallback_to_python_engine():
     from ffengine.core.base_engine import BaseEngine
+
     engine = BaseEngine.detect("auto")
     assert isinstance(engine, PythonEngine)

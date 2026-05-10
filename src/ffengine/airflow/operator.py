@@ -15,11 +15,13 @@ except Exception:  # pragma: no cover - airflow olmayan ortamlarda import fallba
     try:
         from airflow.models.baseoperator import BaseOperator
     except Exception:
+
         class BaseOperator:  # type: ignore[no-redef]
             template_fields: tuple[str, ...] = ()
 
             def __init__(self, *args, **kwargs):
                 self.task_id = kwargs.get("task_id")
+
 
 from ffengine.core.base_engine import FlowResult
 from ffengine.errors import error_payload, normalize_exception
@@ -56,6 +58,7 @@ def _log_structured(
         if v is not None:
             payload[k] = v
     _log.log(level, "%s", payload)
+
 
 # ---------------------------------------------------------------------------
 # Dialect çözümleme
@@ -439,7 +442,9 @@ def run_partition_for_task(
     }
 
 
-def aggregate_partition_payloads(results: list[dict[str, Any]] | None) -> dict[str, Any]:
+def aggregate_partition_payloads(
+    results: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
     """
     Dynamic mapped partition task sonuçlarını tek summary payload'a indirger.
     """

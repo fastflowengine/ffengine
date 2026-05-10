@@ -32,7 +32,11 @@ class _FakeDBSession:
         return False
 
 
-@patch.object(ss.AirflowConnectionAdapter, "get_connection_params", return_value={"conn_type": "postgres"})
+@patch.object(
+    ss.AirflowConnectionAdapter,
+    "get_connection_params",
+    return_value={"conn_type": "postgres"},
+)
 @patch.object(ss, "resolve_dialect", return_value=_FakeDialect())
 @patch.object(ss, "DBSession", _FakeDBSession)
 def test_discover_schemas_search_case_insensitive(_mock_dialect, _mock_conn):
@@ -41,7 +45,11 @@ def test_discover_schemas_search_case_insensitive(_mock_dialect, _mock_conn):
     assert "pub_admin" in items
 
 
-@patch.object(ss.AirflowConnectionAdapter, "get_connection_params", return_value={"conn_type": "postgres"})
+@patch.object(
+    ss.AirflowConnectionAdapter,
+    "get_connection_params",
+    return_value={"conn_type": "postgres"},
+)
 @patch.object(ss, "resolve_dialect", return_value=_FakeDialect())
 @patch.object(ss, "DBSession", _FakeDBSession)
 def test_discover_tables_schema_case_insensitive_exact(_mock_dialect, _mock_conn):
@@ -50,7 +58,11 @@ def test_discover_tables_schema_case_insensitive_exact(_mock_dialect, _mock_conn
     assert "orders" in data["items"]
 
 
-@patch.object(ss.AirflowConnectionAdapter, "get_connection_params", return_value={"conn_type": "postgres"})
+@patch.object(
+    ss.AirflowConnectionAdapter,
+    "get_connection_params",
+    return_value={"conn_type": "postgres"},
+)
 @patch.object(ss, "resolve_dialect", return_value=_FakeDialect())
 @patch.object(ss, "DBSession", _FakeDBSession)
 def test_discover_tables_schema_single_partial_match(_mock_dialect, _mock_conn):
@@ -59,7 +71,11 @@ def test_discover_tables_schema_single_partial_match(_mock_dialect, _mock_conn):
     assert data["items"] == ["daily_sales"]
 
 
-@patch.object(ss.AirflowConnectionAdapter, "get_connection_params", return_value={"conn_type": "postgres"})
+@patch.object(
+    ss.AirflowConnectionAdapter,
+    "get_connection_params",
+    return_value={"conn_type": "postgres"},
+)
 @patch.object(ss, "resolve_dialect", return_value=_FakeDialect())
 @patch.object(ss, "DBSession", _FakeDBSession)
 def test_discover_tables_schema_partial_ambiguous_raises(_mock_dialect, _mock_conn):
@@ -73,8 +89,12 @@ def test_discover_hierarchy_options_from_dag_root(monkeypatch, tmp_path):
     dag_root.mkdir(parents=True, exist_ok=True)
     projects_root.mkdir(parents=True, exist_ok=True)
 
-    (dag_root / "webhook" / "whk" / "level1" / "src_to_stg").mkdir(parents=True, exist_ok=True)
-    (dag_root / "test" / "public_level1" / "src_to_odc").mkdir(parents=True, exist_ok=True)
+    (dag_root / "webhook" / "whk" / "level1" / "src_to_stg").mkdir(
+        parents=True, exist_ok=True
+    )
+    (dag_root / "test" / "public_level1" / "src_to_odc").mkdir(
+        parents=True, exist_ok=True
+    )
     (dag_root / "__pycache__").mkdir(parents=True, exist_ok=True)
     (dag_root / ".hidden").mkdir(parents=True, exist_ok=True)
 
@@ -87,7 +107,9 @@ def test_discover_hierarchy_options_from_dag_root(monkeypatch, tmp_path):
     domain_data = ss.discover_hierarchy_options(project="webhook", source="dag")
     assert domain_data["domains"] == ["whk"]
 
-    level_data = ss.discover_hierarchy_options(project="webhook", domain="whk", source="dag")
+    level_data = ss.discover_hierarchy_options(
+        project="webhook", domain="whk", source="dag"
+    )
     assert level_data["levels"] == ["level1"]
 
     flow_data = ss.discover_hierarchy_options(

@@ -40,9 +40,7 @@ class OracleDialect(BaseDialect):
     # Schema Discovery
     # ------------------------------------------------------------------
 
-    def get_table_schema(
-        self, conn: Any, schema: str, table: str
-    ) -> list[ColumnInfo]:
+    def get_table_schema(self, conn: Any, schema: str, table: str) -> list[ColumnInfo]:
         query = """
             SELECT COLUMN_NAME,
                    DATA_TYPE,
@@ -72,9 +70,7 @@ class OracleDialect(BaseDialect):
 
     def list_schemas(self, conn: Any) -> list[str]:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT USERNAME FROM ALL_USERS ORDER BY USERNAME"
-        )
+        cur.execute("SELECT USERNAME FROM ALL_USERS ORDER BY USERNAME")
         schemas = [row[0] for row in cur.fetchall()]
         cur.close()
         return schemas
@@ -82,8 +78,7 @@ class OracleDialect(BaseDialect):
     def list_tables(self, conn: Any, schema: str) -> list[str]:
         cur = conn.cursor()
         cur.execute(
-            "SELECT TABLE_NAME FROM ALL_TABLES "
-            "WHERE OWNER = :1 ORDER BY TABLE_NAME",
+            "SELECT TABLE_NAME FROM ALL_TABLES " "WHERE OWNER = :1 ORDER BY TABLE_NAME",
             (schema.upper(),),
         )
         tables = [row[0] for row in cur.fetchall()]
@@ -111,21 +106,13 @@ class OracleDialect(BaseDialect):
             f"END;"
         )
 
-    def generate_bulk_insert_query(
-        self, table: str, columns: list[str]
-    ) -> str:
+    def generate_bulk_insert_query(self, table: str, columns: list[str]) -> str:
         quoted = ", ".join(self.quote_identifier(c) for c in columns)
-        placeholders = ", ".join(
-            [f":{i + 1}" for i in range(len(columns))]
-        )
+        placeholders = ", ".join([f":{i + 1}" for i in range(len(columns))])
         return f"INSERT INTO {table} ({quoted}) VALUES ({placeholders})"
 
-    def get_pagination_query(
-        self, query: str, limit: int, offset: int
-    ) -> str:
-        return (
-            f"{query} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
-        )
+    def get_pagination_query(self, query: str, limit: int, offset: int) -> str:
+        return f"{query} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
 
     # ------------------------------------------------------------------
     # Quoting & Type Map

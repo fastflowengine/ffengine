@@ -83,13 +83,15 @@ class MappingGenerator:
                 raise MappingError(
                     f"'{col.name}' kolonu için tür çevirisi başarısız: {exc}"
                 ) from exc
-            columns.append({
-                "source_name": col.name,
-                "target_name": col.name,
-                "source_type": col.data_type,
-                "target_type": tgt_type,
-                "nullable": col.nullable,
-            })
+            columns.append(
+                {
+                    "source_name": col.name,
+                    "target_name": col.name,
+                    "source_type": col.data_type,
+                    "target_type": tgt_type,
+                    "nullable": col.nullable,
+                }
+            )
 
         return {
             "version": version,
@@ -113,9 +115,7 @@ class MappingGenerator:
         """
         parent = os.path.dirname(os.path.abspath(path))
         if not os.path.isdir(parent):
-            raise MappingError(
-                f"Hedef dizin mevcut değil: '{parent}'"
-            )
+            raise MappingError(f"Hedef dizin mevcut değil: '{parent}'")
         with open(path, "w", encoding="utf-8") as fh:
             yaml.dump(
                 mapping,

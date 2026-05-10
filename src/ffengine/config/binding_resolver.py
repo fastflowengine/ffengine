@@ -19,7 +19,9 @@ from ffengine.errors.exceptions import ConfigError
 _log = logging.getLogger(__name__)
 
 # Legacy: {{ source.col }}, {{ literal.val }}, {{ airflow_var.KEY }}
-_LEGACY_BINDING_RE = re.compile(r"\{\{\s*(source|target|literal|airflow_var)\.(\S+?)\s*\}\}")
+_LEGACY_BINDING_RE = re.compile(
+    r"\{\{\s*(source|target|literal|airflow_var)\.(\S+?)\s*\}\}"
+)
 _PARAM_RE = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
 _DATETIME_TIMESPEC = "microseconds"
 
@@ -34,7 +36,9 @@ class BindingResolver:
 
         where = task_config.get("where")
         if where:
-            result["_resolved_where"] = self._resolve_legacy_string(str(where), task_config, ctx)
+            result["_resolved_where"] = self._resolve_legacy_string(
+                str(where), task_config, ctx
+            )
 
         return result
 
@@ -60,7 +64,9 @@ class BindingResolver:
             return task_config
 
         result = dict(task_config)
-        where_clause = str(result.get("_resolved_where") or result.get("where") or "").strip()
+        where_clause = str(
+            result.get("_resolved_where") or result.get("where") or ""
+        ).strip()
         if not where_clause:
             return result
 
@@ -80,7 +86,9 @@ class BindingResolver:
             elif source == "airflow_variable":
                 key = str(item.get("airflow_variable_key") or "").strip()
                 if not key:
-                    raise ConfigError(f"Binding '{name}' icin airflow_variable_key zorunludur.")
+                    raise ConfigError(
+                        f"Binding '{name}' icin airflow_variable_key zorunludur."
+                    )
                 if key not in ctx:
                     raise ConfigError(f"Airflow Variable '{key}' bulunamadi.")
                 resolved_values[name] = ctx[key]
@@ -89,14 +97,20 @@ class BindingResolver:
                 if not sql:
                     raise ConfigError(f"Binding '{name}' icin sql zorunludur.")
                 session = source_session if source == "source" else target_session
-                resolved_values[name] = self._run_scalar_sql(session, sql, name=name, binding_source=source)
+                resolved_values[name] = self._run_scalar_sql(
+                    session, sql, name=name, binding_source=source
+                )
             else:
-                raise ConfigError(f"Binding '{name}' icin gecersiz binding_source: {source!r}")
+                raise ConfigError(
+                    f"Binding '{name}' icin gecersiz binding_source: {source!r}"
+                )
 
         def _replace(match: re.Match) -> str:
             param_name = match.group(1)
             if param_name not in resolved_values:
-                raise ConfigError(f"Where Clause parametresi icin binding bulunamadi: :{param_name}")
+                raise ConfigError(
+                    f"Where Clause parametresi icin binding bulunamadi: :{param_name}"
+                )
             return self._to_sql_literal(
                 resolved_values[param_name],
                 where_dialect=where_dialect,
@@ -105,7 +119,9 @@ class BindingResolver:
         result["_resolved_where"] = _PARAM_RE.sub(_replace, where_clause)
         return result
 
-    def _resolve_legacy_string(self, value: str, task_config: dict, context: dict) -> str:
+    def _resolve_legacy_string(
+        self, value: str, task_config: dict, context: dict
+    ) -> str:
         def _replace(match: re.Match) -> str:
             binding_source = match.group(1)
             key = match.group(2)
@@ -115,7 +131,9 @@ class BindingResolver:
 
             if binding_source == "airflow_var":
                 if key not in context:
-                    raise ConfigError(f"Airflow Variable '{key}' context'te bulunamadi.")
+                    raise ConfigError(
+                        f"Airflow Variable '{key}' context'te bulunamadi."
+                    )
                 return str(context[key])
 
             if binding_source in ("source", "target"):
@@ -134,7 +152,9 @@ class BindingResolver:
 
         return _LEGACY_BINDING_RE.sub(_replace, value)
 
-    def _run_scalar_sql(self, session: Any, sql: str, *, name: str, binding_source: str) -> Any:
+    def _run_scalar_sql(
+        self, session: Any, sql: str, *, name: str, binding_source: str
+    ) -> Any:
         cursor = None
         try:
             cursor = session.cursor()
@@ -211,12 +231,16 @@ class BindingResolver:
         return name in {"postgresdialect", "postgresqldialect"} or "postgres" in name
 
     @classmethod
-    def _datetime_to_sql_literal(cls, value: datetime, *, where_dialect: Any = None) -> str:
+    def _datetime_to_sql_literal(
+        cls, value: datetime, *, where_dialect: Any = None
+    ) -> str:
         dt = value
         if dt.tzinfo is not None:
             dt_utc = dt.astimezone(timezone.utc)
             if cls._is_postgres_dialect(where_dialect):
-                text_tz = dt_utc.isoformat(sep=" ", timespec=_DATETIME_TIMESPEC).replace("'", "''")
+                text_tz = dt_utc.isoformat(
+                    sep=" ", timespec=_DATETIME_TIMESPEC
+                ).replace("'", "''")
                 return f"TIMESTAMPTZ '{text_tz}'"
             dt = dt_utc.replace(tzinfo=None)
         text = dt.isoformat(sep=" ", timespec=_DATETIME_TIMESPEC).replace("'", "''")

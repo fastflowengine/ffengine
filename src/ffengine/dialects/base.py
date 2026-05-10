@@ -40,9 +40,7 @@ class BaseDialect(ABC):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def get_table_schema(
-        self, conn: Any, schema: str, table: str
-    ) -> list[ColumnInfo]:
+    def get_table_schema(self, conn: Any, schema: str, table: str) -> list[ColumnInfo]:
         """Return column metadata for the given table."""
         ...
 
@@ -66,16 +64,12 @@ class BaseDialect(ABC):
         ...
 
     @abstractmethod
-    def generate_bulk_insert_query(
-        self, table: str, columns: list[str]
-    ) -> str:
+    def generate_bulk_insert_query(self, table: str, columns: list[str]) -> str:
         """Generate a parameterized INSERT statement for bulk loading."""
         ...
 
     @abstractmethod
-    def get_pagination_query(
-        self, query: str, limit: int, offset: int
-    ) -> str:
+    def get_pagination_query(self, query: str, limit: int, offset: int) -> str:
         """Wrap a query with dialect-specific pagination."""
         ...
 

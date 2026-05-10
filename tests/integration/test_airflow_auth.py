@@ -18,15 +18,15 @@ import subprocess
 import httpx
 import pytest
 
-_CSRF_PATTERN = re.compile(
-    r'name="csrf_token"[^>]*value="([^"]+)"', re.IGNORECASE
-)
+_CSRF_PATTERN = re.compile(r'name="csrf_token"[^>]*value="([^"]+)"', re.IGNORECASE)
 
 pytestmark = [pytest.mark.integration]
 
 if os.getenv("FFENGINE_ENABLE_AIRFLOW_AUTH_TESTS", "0").strip() != "1":
     pytestmark.append(
-        pytest.mark.skip(reason="FFENGINE_ENABLE_AIRFLOW_AUTH_TESTS=1 olmadigi icin skip.")
+        pytest.mark.skip(
+            reason="FFENGINE_ENABLE_AIRFLOW_AUTH_TESTS=1 olmadigi icin skip."
+        )
     )
 
 
@@ -42,7 +42,9 @@ USERS = {
 
 
 def _login_client(username: str, password: str) -> httpx.Client:
-    client = httpx.Client(base_url=AIRFLOW_BASE_URL, follow_redirects=False, timeout=30.0)
+    client = httpx.Client(
+        base_url=AIRFLOW_BASE_URL, follow_redirects=False, timeout=30.0
+    )
     page = client.get("/auth/login/")
     page.raise_for_status()
     match = _CSRF_PATTERN.search(page.text)
@@ -55,10 +57,13 @@ def _login_client(username: str, password: str) -> httpx.Client:
             "password": password,
         },
     )
-    assert resp.status_code in (200, 302), (
-        f"Login POST beklenmeyen status {resp.status_code} for user={username}"
-    )
-    assert "session" in client.cookies, f"Session cookie yok; login basarisiz olabilir ({username})"
+    assert resp.status_code in (
+        200,
+        302,
+    ), f"Login POST beklenmeyen status {resp.status_code} for user={username}"
+    assert (
+        "session" in client.cookies
+    ), f"Session cookie yok; login basarisiz olabilir ({username})"
     return client
 
 
@@ -129,9 +134,9 @@ def test_simple_auth_manager_artifacts_absent():
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, (
-        "simple_auth_manager_passwords.json hala image icinde; C18 sokum eksik."
-    )
+    assert (
+        result.returncode == 0
+    ), "simple_auth_manager_passwords.json hala image icinde; C18 sokum eksik."
 
 
 def test_fab_user_table_populated():

@@ -173,7 +173,9 @@ class TargetWriter:
         try:
             cursor.execute(ddl)
         except Exception as exc:
-            raise DialectError.wrap(exc, "DDL yurutme basarisiz.", details={"ddl": ddl}) from exc
+            raise DialectError.wrap(
+                exc, "DDL yurutme basarisiz.", details={"ddl": ddl}
+            ) from exc
         finally:
             cursor.close()
 
