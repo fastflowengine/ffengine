@@ -19,7 +19,7 @@ services:
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: ${MSSQL_SA_PASS}
-      MSSQL_PID: "Developer"
+      MSSQL_PID: ${MSSQL_PID:-Developer}
     ports:
       - "1433:1433"
 
@@ -27,8 +27,8 @@ services:
     container_name: test-oracle
     image: gvenzl/oracle-free:latest
     environment:
-      ORACLE_PASSWORD: ${ORACLE_PASS}
-      APP_USER: "ffengine"
-      APP_USER_PASSWORD: ${ORACLE_PASS}
+      ORACLE_PASSWORD: ${ORACLE_TEST_PASS:-${ORACLE_PASS}}
+      APP_USER: ${ORACLE_TEST_USER:-ffengine}
+      APP_USER_PASSWORD: ${ORACLE_TEST_PASS:-${ORACLE_PASS}}
     ports:
       - "1521:1521"

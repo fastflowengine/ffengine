@@ -1,4 +1,4 @@
-﻿"""Airflow 3 FastAPI app for Flow Studio."""
+"""Airflow 3 FastAPI app for Flow Studio."""
 
 from __future__ import annotations
 
@@ -69,38 +69,42 @@ def _optional_api_key_dep(
 
 
 _BINDING_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_WHERE_PARAM_RE = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+_BINDING_PARAM_RE = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
 _CUSTOM_TAG_MAX_COUNT = 10
+_VALID_TASK_TYPES = {"source_target", "script_run", "dag"}
+_VALID_SCRIPT_RUN_ENVIRONMENTS = {"source", "target"}
 
 
-def _extract_where_params(where_clause: str | None) -> set[str]:
-    return set(_WHERE_PARAM_RE.findall(str(where_clause or "")))
+def _extract_binding_params(expression: str | None) -> set[str]:
+    return set(_BINDING_PARAM_RE.findall(str(expression or "")))
 
 
-def _validate_bindings_where_contract(
-    where_clause: str | None,
+def _validate_bindings_expression_contract(
+    expression: str | None,
     bindings: list["BindingPayload"] | None,
+    *,
+    expression_label: str,
 ) -> None:
-    where_params = _extract_where_params(where_clause)
+    expression_params = _extract_binding_params(expression)
     items = list(bindings or [])
-    if where_params and not items:
+    if expression_params and not items:
         raise ValueError(
-            "Where Clause contains parameter(s) without binding definition: "
-            + ", ".join(sorted(where_params))
+            f"{expression_label} contains parameter(s) without binding definition: "
+            + ", ".join(sorted(expression_params))
         )
     if not items:
         return
     binding_names = {item.variable_name for item in items}
-    missing = sorted(where_params - binding_names)
-    unused = sorted(binding_names - where_params)
+    missing = sorted(expression_params - binding_names)
+    unused = sorted(binding_names - expression_params)
     if missing:
         raise ValueError(
-            "Where Clause contains parameter(s) without binding definition: "
+            f"{expression_label} contains parameter(s) without binding definition: "
             + ", ".join(missing)
         )
     if unused:
         raise ValueError(
-            "Binding definition exists but parameter(s) are unused in Where Clause: "
+            f"Binding definition exists but parameter(s) are unused in {expression_label}: "
             + ", ".join(unused)
         )
 
@@ -136,21 +140,30 @@ class BindingPayload(BaseModel):
             raise ValueError("default_value is required when binding_source='default'.")
         if self.binding_source in {"source", "target"} and not (self.sql or "").strip():
             raise ValueError("sql is required when binding_source='source|target'.")
-        if self.binding_source == "airflow_variable" and not (self.airflow_variable_key or "").strip():
-            raise ValueError("airflow_variable_key is required when binding_source='airflow_variable'.")
+        if (
+            self.binding_source == "airflow_variable"
+            and not (self.airflow_variable_key or "").strip()
+        ):
+            raise ValueError(
+                "airflow_variable_key is required when binding_source='airflow_variable'."
+            )
         return self
 
 
 class FlowTaskPayload(BaseModel):
     model_config = {"extra": "forbid"}
 
+    task_type: str = "source_target"
     task_group_id: str | None = Field(default=None, min_length=1)
     source_schema: str | None = Field(default=None, min_length=1)
     source_table: str | None = Field(default=None, min_length=1)
     source_type: str = "table"
     inline_sql: str | None = None
-    target_schema: str = Field(..., min_length=1)
-    target_table: str = Field(..., min_length=1)
+    script_run_environment: str | None = None
+    script_sql: str | None = None
+    dag_task_dag_id: str | None = None
+    target_schema: str | None = Field(default=None, min_length=1)
+    target_table: str | None = Field(default=None, min_length=1)
     load_method: str = "create_if_not_exists_or_truncate"
     column_mapping_mode: str = "source"
     mapping_file: str | None = None
@@ -158,7 +171,7 @@ class FlowTaskPayload(BaseModel):
     where: str | None = None
     batch_size: int = Field(10000, ge=1, le=1_000_000)
     partitioning_enabled: bool = False
-    partitioning_mode: str = "auto"
+    partitioning_mode: str = "auto_numeric"
     partitioning_column: str | None = None
     partitioning_parts: int = Field(2, ge=1, le=10_000)
     partitioning_distinct_limit: int | None = Field(default=None, ge=1, le=1_000_000)
@@ -190,6 +203,16 @@ class FlowTaskPayload(BaseModel):
             raise ValueError(f"Invalid source_type: {v!r}")
         return v
 
+    @field_validator("task_type")
+    @classmethod
+    def _v_task_type(cls, v: str) -> str:
+        value = str(v or "").strip()
+        if value not in _VALID_TASK_TYPES:
+            raise ValueError(
+                "task_type must be one of: 'source_target', 'script_run', or 'dag'."
+            )
+        return value
+
     @field_validator("load_method")
     @classmethod
     def _v_load_method(cls, v: str) -> str:
@@ -213,13 +236,40 @@ class FlowTaskPayload(BaseModel):
 
     @model_validator(mode="after")
     def _v_mapping(self) -> FlowTaskPayload:
-        if self.source_type == "sql" and self.column_mapping_mode != "mapping_file":
-            raise ValueError("column_mapping_mode='mapping_file' is required when source_type='sql'.")
-        if self.source_type in {"table", "view"}:
-            if not (self.source_schema or "").strip() or not (self.source_table or "").strip():
-                raise ValueError("source_schema and source_table are required when source_type=table|view.")
-        if self.source_type == "sql" and not (self.inline_sql or "").strip():
-            raise ValueError("inline_sql is required when source_type='sql'.")
+        if self.task_type == "source_target":
+            if (
+                not (self.target_schema or "").strip()
+                or not (self.target_table or "").strip()
+            ):
+                raise ValueError(
+                    "target_schema and target_table are required when task_type='source_target'."
+                )
+            if self.source_type == "sql" and self.column_mapping_mode != "mapping_file":
+                raise ValueError(
+                    "column_mapping_mode='mapping_file' is required when source_type='sql'."
+                )
+            if self.source_type in {"table", "view"}:
+                if (
+                    not (self.source_schema or "").strip()
+                    or not (self.source_table or "").strip()
+                ):
+                    raise ValueError(
+                        "source_schema and source_table are required when source_type=table|view."
+                    )
+            if self.source_type == "sql" and not (self.inline_sql or "").strip():
+                raise ValueError("inline_sql is required when source_type='sql'.")
+        elif self.task_type == "script_run":
+            environment = str(self.script_run_environment or "").strip()
+            if environment not in _VALID_SCRIPT_RUN_ENVIRONMENTS:
+                raise ValueError(
+                    "script_run_environment must be one of: 'source' or 'target'."
+                )
+            if not (self.script_sql or "").strip():
+                raise ValueError("script_sql is required when task_type='script_run'.")
+        elif self.task_type == "dag":
+            dag_id = str(self.dag_task_dag_id or "").strip()
+            if not dag_id:
+                raise ValueError("dag_task_dag_id is required when task_type='dag'.")
         items = list(self.bindings or [])
         names = [item.variable_name for item in items]
         if len(names) != len(set(names)):
@@ -229,7 +279,16 @@ class FlowTaskPayload(BaseModel):
             for dep in list(self.depends_on or []):
                 if dep == task_group_id:
                     raise ValueError("depends_on cannot include task_group_id itself.")
-        _validate_bindings_where_contract(self.where, items)
+        binding_expression = self.where
+        binding_expression_label = "Where Clause"
+        if self.task_type == "script_run":
+            binding_expression = self.script_sql
+            binding_expression_label = "Script SQL / Stored Procedure"
+        _validate_bindings_expression_contract(
+            binding_expression,
+            items,
+            expression_label=binding_expression_label,
+        )
         return self
 
 
@@ -285,6 +344,10 @@ class DagUpsertPayload(BaseModel):
     source_table: str | None = Field(default=None, min_length=1)
     source_type: str = "table"
     inline_sql: str | None = None
+    task_type: str = "source_target"
+    script_run_environment: str | None = None
+    script_sql: str | None = None
+    dag_task_dag_id: str | None = None
     target_schema: str | None = Field(default=None, min_length=1)
     target_table: str | None = Field(default=None, min_length=1)
     load_method: str = "create_if_not_exists_or_truncate"
@@ -294,7 +357,7 @@ class DagUpsertPayload(BaseModel):
     where: str | None = None
     batch_size: int = Field(10000, ge=1, le=1_000_000)
     partitioning_enabled: bool = False
-    partitioning_mode: str = "auto"
+    partitioning_mode: str = "auto_numeric"
     partitioning_column: str | None = None
     partitioning_parts: int = Field(2, ge=1, le=10_000)
     partitioning_distinct_limit: int | None = Field(default=None, ge=1, le=1_000_000)
@@ -314,6 +377,16 @@ class DagUpsertPayload(BaseModel):
         if v not in VALID_SOURCE_TYPES:
             raise ValueError(f"Invalid source_type: {v!r}")
         return v
+
+    @field_validator("task_type")
+    @classmethod
+    def _v_task_type(cls, v: str) -> str:
+        value = str(v or "").strip()
+        if value not in _VALID_TASK_TYPES:
+            raise ValueError(
+                "task_type must be one of: 'source_target', 'script_run', or 'dag'."
+            )
+        return value
 
     @field_validator("load_method")
     @classmethod
@@ -342,7 +415,9 @@ class DagUpsertPayload(BaseModel):
         if v is None:
             return None
         if len(v) > _CUSTOM_TAG_MAX_COUNT:
-            raise ValueError(f"custom_tags can contain at most {_CUSTOM_TAG_MAX_COUNT} items.")
+            raise ValueError(
+                f"custom_tags can contain at most {_CUSTOM_TAG_MAX_COUNT} items."
+            )
         return v
 
     @model_validator(mode="after")
@@ -350,26 +425,70 @@ class DagUpsertPayload(BaseModel):
         has_task_list = isinstance(self.flow_tasks, list) and len(self.flow_tasks) > 0
         if has_task_list:
             return self
-        target_required_ok = all([(self.target_schema or "").strip(), (self.target_table or "").strip()])
+        if self.task_type == "script_run":
+            if (
+                str(self.script_run_environment or "").strip()
+                not in _VALID_SCRIPT_RUN_ENVIRONMENTS
+            ):
+                raise ValueError(
+                    "script_run_environment must be one of: 'source' or 'target'."
+                )
+            if not (self.script_sql or "").strip():
+                raise ValueError("script_sql is required when task_type='script_run'.")
+            items = list(self.bindings or [])
+            names = [item.variable_name for item in items]
+            if len(names) != len(set(names)):
+                raise ValueError("bindings.variable_name must be unique within a task.")
+            _validate_bindings_expression_contract(
+                self.script_sql,
+                items,
+                expression_label="Script SQL / Stored Procedure",
+            )
+            return self
+        if self.task_type == "dag":
+            if not (self.dag_task_dag_id or "").strip():
+                raise ValueError("dag_task_dag_id is required when task_type='dag'.")
+            items = list(self.bindings or [])
+            names = [item.variable_name for item in items]
+            if len(names) != len(set(names)):
+                raise ValueError("bindings.variable_name must be unique within a task.")
+            _validate_bindings_expression_contract(
+                self.where,
+                items,
+                expression_label="Where Clause",
+            )
+            return self
+        target_required_ok = all(
+            [(self.target_schema or "").strip(), (self.target_table or "").strip()]
+        )
         if self.source_type in {"table", "view"}:
-            source_required_ok = all([(self.source_schema or "").strip(), (self.source_table or "").strip()])
+            source_required_ok = all(
+                [(self.source_schema or "").strip(), (self.source_table or "").strip()]
+            )
             if not (source_required_ok and target_required_ok):
                 raise ValueError(
-                    "When flow_tasks is not provided and source_type=table|view, source_schema/source_table/target_schema/target_table are required."
+                    "When flow_tasks is not provided and source_type=table|view, "
+                    "source_schema/source_table/target_schema/target_table are required."
                 )
         elif not target_required_ok:
             raise ValueError(
                 "When flow_tasks is not provided, target_schema/target_table are required."
             )
         if self.source_type == "sql" and self.column_mapping_mode != "mapping_file":
-            raise ValueError("column_mapping_mode='mapping_file' is required when source_type='sql'.")
+            raise ValueError(
+                "column_mapping_mode='mapping_file' is required when source_type='sql'."
+            )
         if self.source_type == "sql" and not (self.inline_sql or "").strip():
             raise ValueError("inline_sql is required when source_type='sql'.")
         items = list(self.bindings or [])
         names = [item.variable_name for item in items]
         if len(names) != len(set(names)):
             raise ValueError("bindings.variable_name must be unique within a task.")
-        _validate_bindings_where_contract(self.where, items)
+        _validate_bindings_expression_contract(
+            self.where,
+            items,
+            expression_label="Where Clause",
+        )
         return self
 
 
@@ -402,8 +521,13 @@ class MappingGeneratePayload(BaseModel):
     @model_validator(mode="after")
     def _v_required_fields(self) -> "MappingGeneratePayload":
         if self.source_type in {"table", "view"}:
-            if not (self.source_schema or "").strip() or not (self.source_table or "").strip():
-                raise ValueError("source_schema and source_table are required when source_type=table|view.")
+            if (
+                not (self.source_schema or "").strip()
+                or not (self.source_table or "").strip()
+            ):
+                raise ValueError(
+                    "source_schema and source_table are required when source_type=table|view."
+                )
         if self.source_type == "sql" and not (self.inline_sql or "").strip():
             raise ValueError("inline_sql is required when source_type='sql'.")
         return self
@@ -413,7 +537,7 @@ flow_studio_app = FastAPI(title="Flow Studio", version="1.1.0")
 flow_studio_app.mount(
     "/static",
     StaticFiles(directory=str(Path(__file__).resolve().parent / "static")),
-    name="static"
+    name="static",
 )
 
 
@@ -485,7 +609,9 @@ def api_airflow_variables(
     limit: int = Query(200, ge=1, le=1000),
 ) -> dict[str, Any]:
     try:
-        items = discover_airflow_variables(search=(q or "").strip() or None, limit=limit)
+        items = discover_airflow_variables(
+            search=(q or "").strip() or None, limit=limit
+        )
         return {"ok": True, "items": items, "count": len(items)}
     except Exception as exc:
         _raise_http_from_exception(exc)
@@ -705,4 +831,3 @@ def api_delete_dag(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         _raise_http_from_exception(exc)
-

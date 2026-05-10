@@ -36,15 +36,19 @@ def _task(**overrides) -> dict:
 # Zorunlu alanlar
 # ---------------------------------------------------------------------------
 
+
 class TestRequiredFields:
-    @pytest.mark.parametrize("field", [
-        "task_group_id",
-        "source_schema",
-        "target_schema",
-        "target_table",
-        "source_type",
-        "load_method",
-    ])
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "task_group_id",
+            "source_schema",
+            "target_schema",
+            "target_table",
+            "source_type",
+            "load_method",
+        ],
+    )
     def test_missing_required_raises_config_error(self, field):
         task = _task()
         del task[field]
@@ -60,6 +64,7 @@ class TestRequiredFields:
 # source_type
 # ---------------------------------------------------------------------------
 
+
 class TestSourceType:
     @pytest.mark.parametrize("st", ["table", "view", "csv", "script"])
     def test_valid_source_types_pass(self, st):
@@ -73,7 +78,12 @@ class TestSourceType:
 
     def test_sql_without_source_schema_passes(self):
         ConfigValidator().validate(
-            _task(source_type="sql", source_schema=None, source_table=None, inline_sql="SELECT 1")
+            _task(
+                source_type="sql",
+                source_schema=None,
+                source_table=None,
+                inline_sql="SELECT 1",
+            )
         )
 
     def test_sql_without_sql_file_raises(self):
@@ -93,16 +103,20 @@ class TestSourceType:
 # load_method
 # ---------------------------------------------------------------------------
 
+
 class TestLoadMethod:
-    @pytest.mark.parametrize("lm", [
-        "create_if_not_exists_or_truncate",
-        "append",
-        "replace",
-        "upsert",
-        "delete_from_table",
-        "drop_if_exists_and_create",
-        "script",
-    ])
+    @pytest.mark.parametrize(
+        "lm",
+        [
+            "create_if_not_exists_or_truncate",
+            "append",
+            "replace",
+            "upsert",
+            "delete_from_table",
+            "drop_if_exists_and_create",
+            "script",
+        ],
+    )
     def test_valid_load_methods_pass(self, lm):
         ConfigValidator().validate(_task(load_method=lm))
 
@@ -120,6 +134,7 @@ class TestLoadMethod:
 # ---------------------------------------------------------------------------
 # column_mapping_mode
 # ---------------------------------------------------------------------------
+
 
 class TestColumnMappingMode:
     def test_source_mode_passes(self):
@@ -149,6 +164,7 @@ class TestColumnMappingMode:
 # extraction_method
 # ---------------------------------------------------------------------------
 
+
 class TestExtractionMethod:
     @pytest.mark.parametrize("em", ["auto", "cursor", "copy_binary"])
     def test_valid_extraction_methods_pass(self, em):
@@ -156,6 +172,7 @@ class TestExtractionMethod:
 
     def test_copy_binary_emits_warning(self, caplog):
         import logging
+
         with caplog.at_level(logging.WARNING):
             ConfigValidator().validate(_task(extraction_method="copy_binary"))
         assert "copy_binary" in caplog.text
@@ -189,6 +206,11 @@ class TestPartitioningValidation:
     def test_valid_auto_numeric_with_column_passes(self):
         ConfigValidator().validate(_part_task())
 
+    def test_valid_auto_datetime_with_column_passes(self):
+        ConfigValidator().validate(
+            _part_task(mode="auto_datetime", column="created_at")
+        )
+
     def test_valid_explicit_with_ranges_passes(self):
         ConfigValidator().validate(
             _part_task(mode="explicit", ranges=["id < 100", "id >= 100"], column=None)
@@ -204,9 +226,9 @@ class TestPartitioningValidation:
         with pytest.raises(ValidationError, match="mode"):
             ConfigValidator().validate(_part_task(mode="full_scan", column=None))
 
-    def test_auto_mode_alias_accepted(self):
-        # "auto" → "auto_numeric" normalize edilir, ValidationError fırlatılmaz
-        ConfigValidator().validate(_part_task(mode="auto"))
+    def test_auto_mode_rejected(self):
+        with pytest.raises(ValidationError, match="mode"):
+            ConfigValidator().validate(_part_task(mode="auto"))
 
     def test_invalid_mode_raises_validation_error(self):
         with pytest.raises(ValidationError, match="mode"):
@@ -263,7 +285,9 @@ class TestPassthroughConfig:
 
     def test_passthrough_full_false_without_source_columns_raises(self):
         with pytest.raises(ValidationError, match="source_columns"):
-            ConfigValidator().validate(_task(passthrough_full=False, source_columns=None))
+            ConfigValidator().validate(
+                _task(passthrough_full=False, source_columns=None)
+            )
 
     def test_passthrough_full_false_empty_list_raises(self):
         with pytest.raises(ValidationError, match="source_columns"):
@@ -279,4 +303,3 @@ class TestPassthroughConfig:
                 source_columns=None,
             )
         )
-

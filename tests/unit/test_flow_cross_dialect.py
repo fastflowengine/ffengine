@@ -16,7 +16,7 @@ Her kombinasyon için doğrulananlar:
 """
 
 import pytest
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 from ffengine.core.flow_manager import FlowManager
 from ffengine.core.base_engine import FlowResult
@@ -54,11 +54,7 @@ _EXPECTED_SRC_TBL_QUOTE = {
     "oracle": '"SRC"."EMPLOYEES"',
 }
 
-CROSS_PAIRS = [
-    (src, tgt)
-    for src in _DIALECT_CLASSES
-    for tgt in _DIALECT_CLASSES
-]
+CROSS_PAIRS = [(src, tgt) for src in _DIALECT_CLASSES for tgt in _DIALECT_CLASSES]
 
 SELF_PAIRS = [("postgres", "postgres"), ("mssql", "mssql"), ("oracle", "oracle")]
 
@@ -130,7 +126,9 @@ def _run(src_name, tgt_name, task_config=None, src_rows=None):
 @pytest.mark.parametrize("src_name,tgt_name", CROSS_PAIRS)
 def test_cross_dialect_row_count(src_name, tgt_name):
     result, _, _ = _run(src_name, tgt_name)
-    assert result.rows == 2, f"{src_name}→{tgt_name}: beklenen 2 satır, gelen {result.rows}"
+    assert (
+        result.rows == 2
+    ), f"{src_name}→{tgt_name}: beklenen 2 satır, gelen {result.rows}"
 
 
 # ------------------------------------------------------------------

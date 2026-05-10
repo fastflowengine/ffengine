@@ -4,7 +4,9 @@ from airflow.plugins_manager import AirflowPlugin
 
 from ffengine.ui.api_app import flow_studio_app
 
-_TRANSPARENT_ICON_DATA_URI = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="
+_TRANSPARENT_ICON_DATA_URI = (
+    "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="
+)
 
 
 class FlowStudioPlugin(AirflowPlugin):

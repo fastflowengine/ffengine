@@ -3,8 +3,8 @@ epic_id: C15
 wave: 8
 scope: Community
 started_at: "2026-04-11T00:00:00Z"
-last_updated_at: "2026-04-11T00:00:00Z"
-status: IN_PROGRESS
+last_updated_at: "2026-04-23T06:32:00Z"
+status: COMPLETED
 
 completed_tasks:
   - task_id: "C15_T01"
@@ -15,40 +15,56 @@ completed_tasks:
     files_modified:
       - src/ffengine/ui/studio_service.py
       - src/ffengine/ui/api_app.py
-      - src/ffengine/ui/static/etl_studio/js/app.js
-      - src/ffengine/ui/templates/etl_studio/index.html
-      - tests/unit/test_etl_studio_api.py
+      - src/ffengine/ui/static/flow_studio/js/app.js
+      - src/ffengine/ui/templates/flow_studio/index.html
+      - tests/unit/test_flow_studio_api.py
     tests_passed:
-      - tests/unit/test_etl_studio_api.py
+      - tests/unit/test_flow_studio_api.py
     completed_at: "2026-04-11T00:00:00Z"
 
-pending_tasks:
   - task_id: "C15_T02"
-    description: "UAT ortaminda promote + parse verification surelerini dogrula"
-    priority: 1
+    description: "UAT ortaminda promote + parse verification davranisi scheduler/webserver uzerinde dogrulandi"
+    files_created:
+      - projects/webhook/checkpoints/C15_handoff.md
+    files_modified:
+      - handbook/context/C15_DAG_SNAPSHOT_VERSIONING.md
+      - handbook/wbs/WBS_COMMUNITY.md
+      - handbook/AGENTS.md
+    tests_passed:
+      - pytest tests/unit/test_flow_studio_api.py -q
+      - GET /flow-studio/api/dag-revisions?dag_id=whk_to_stg_level1_group_1_dag
+      - docker exec core-airflow-webserver airflow dags test whk_to_stg_level1_group_1_dag 2026-04-23
+      - docker exec core-airflow-webserver airflow dags test whk_to_stg_level1_group_2_dag 2026-04-23
+    completed_at: "2026-04-23T06:32:00Z"
+
+pending_tasks: []
 
 created_files:
   - handbook/context/C15_DAG_SNAPSHOT_VERSIONING.md
   - projects/webhook/checkpoints/C15_checkpoint.yaml
+  - projects/webhook/checkpoints/C15_handoff.md
 
 modified_files:
   - src/ffengine/ui/studio_service.py
   - src/ffengine/ui/api_app.py
-  - src/ffengine/ui/static/etl_studio/js/app.js
-  - src/ffengine/ui/static/etl_studio/css/style.css
-  - src/ffengine/ui/templates/etl_studio/index.html
-  - tests/unit/test_etl_studio_api.py
+  - src/ffengine/ui/static/flow_studio/js/app.js
+  - src/ffengine/ui/static/flow_studio/css/style.css
+  - src/ffengine/ui/templates/flow_studio/index.html
+  - tests/unit/test_flow_studio_api.py
+  - handbook/context/C15_DAG_SNAPSHOT_VERSIONING.md
   - handbook/wbs/WBS_COMMUNITY.md
-  - handbook/context/C08_ETL_STUDIO.md
-  - handbook/context/C12_ETL_STUDIO_EVOLUTION.md
+  - handbook/AGENTS.md
 
 test_results:
   passed:
-    - tests/unit/test_etl_studio_api.py
+    - pytest tests/unit/test_flow_studio_api.py -q (89 passed)
+    - GET /flow-studio/api/dag-revisions?dag_id=whk_to_stg_level1_group_1_dag
+    - docker exec core-airflow-webserver airflow dags test whk_to_stg_level1_group_1_dag 2026-04-23
+    - docker exec core-airflow-webserver airflow dags test whk_to_stg_level1_group_2_dag 2026-04-23
   failed: []
 
 open_risks:
-  - "Windows test ortaminda revision klasoru fiziksel temizligi ACL nedeniyle gecikmeli olabilir; API seviyesi last-20 gorunurlugu korunuyor."
+  - "Revision metadata tarafinda active_revision_id null gelebilen edge-case izlenmeli; promote endpointi ve revision listesi calisiyor."
 
 blocked_reason: null
-next_action: "C15_T02 icin gerçek scheduler/webserver ortamında promote parse verification timeout tuning dogrulamalarini tamamla."
+next_action: "C15 kapatildi. C17 kapanis artefaktlari finalize edildi."

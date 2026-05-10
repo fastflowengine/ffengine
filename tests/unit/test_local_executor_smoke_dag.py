@@ -5,7 +5,9 @@ from pathlib import Path
 
 
 def _load_module():
-    dag_path = Path(__file__).resolve().parents[2] / "dags" / "local_executor_smoke_dag.py"
+    dag_path = (
+        Path(__file__).resolve().parents[2] / "dags" / "local_executor_smoke_dag.py"
+    )
     spec = importlib.util.spec_from_file_location("local_executor_smoke_dag", dag_path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)

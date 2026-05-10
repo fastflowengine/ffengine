@@ -19,6 +19,7 @@ def _load_dotenv():
 
 _load_dotenv()
 
+
 @pytest.fixture(scope="session")
 def postgres_credentials():
     return {
@@ -26,7 +27,7 @@ def postgres_credentials():
         "port": os.getenv("PG_PORT", 5432),
         "user": os.getenv("PG_USER", "airflow"),
         "password": os.getenv("PG_PASSWORD", "airflow_password"),
-        "database": os.getenv("PG_DATABASE", "airflow")
+        "database": os.getenv("PG_DATABASE", "airflow"),
     }
 
 

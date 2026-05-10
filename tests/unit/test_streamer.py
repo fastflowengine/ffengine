@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 from ffengine.pipeline.streamer import Streamer
 
 
@@ -54,7 +54,9 @@ def test_stream_applies_transformer(writer):
 
     streamer = Streamer()
     chunks = [[(1,), (2,)]]
-    streamer.stream(iter(chunks), writer=writer, transformer=transformer, task_config={})
+    streamer.stream(
+        iter(chunks), writer=writer, transformer=transformer, task_config={}
+    )
 
     transformer.apply.assert_called_once()
     written_rows = writer.write_batch.call_args[0][0]

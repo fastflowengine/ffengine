@@ -30,7 +30,7 @@
 - **`hash_mod` → DB sorgusu yok, `MOD(col, n) = i` / MSSQL `%`** ✓
 - **`distinct` → DISTINCT sorgu, IN grupları, boş tablo → fallback, string quote** ✓
 - **`ConfigValidator` partitioning kuralları — mod whitelist, parts>=1, column, ranges** ✓
-- **`"auto"` alias → `"auto_numeric"` normalize edilir** ✓
+- **`"auto"` mode kaldirildi (geriye donuk destek yok)** (done)
 - **`TASK_DEFAULTS["partitioning"]` artık `column: None` ve `ranges: []` içeriyor** ✓
 - **345/345 unit test PASSED** (C06: 25+14, C05 regresyon: 62, C04: 59, C03: 75, C02: 13, C01: 95) ✓
 
@@ -40,10 +40,10 @@
 |---|---|---|---|
 | `full_scan` / disabled | Hayır | Hayır | `[{"part_id": 0, "where": None}]` |
 | `explicit` | Hayır | Hayır | `ranges` listesinden spec |
-| `auto_numeric` | Evet (MIN/MAX) | Evet | `col >= lo AND col < hi` / son `<=` |
-| `percentile` | Evet (PERCENTILE_CONT) | Evet | Hata → `auto_numeric` fallback |
+| `auto_numeric` | Evet (MIN/MAX) | Evet | MIN/MAX sampling sorgusu `_resolved_where` uygulanarak hesaplanir |
+| `percentile` | Evet (PERCENTILE_CONT) | Evet | Percentile + min/max sampling sorgulari `_resolved_where` ile calisir; hata -> `auto_numeric` |
 | `hash_mod` | Hayır | Evet | `MOD(col, n) = i` veya MSSQL `%` |
-| `distinct` | Evet (DISTINCT) | Evet | `col IN (v1, v2, ...)` grupları |
+| `distinct` | Evet (DISTINCT) | Evet | DISTINCT sampling sorgusu `_resolved_where` ile calisir; sonra `col IN (...)` gruplari olusur |
 
 ## `partition_spec` Kontratı
 
@@ -99,3 +99,16 @@ FFEngineOperator.execute(context):
 - `from ffengine.partition import Partitioner`
 - `from ffengine.errors.exceptions import PartitionError`
 - `from ffengine.config.schema import VALID_PARTITION_MODES`
+
+## 2026-04-27 Patch Note (C06 Follow-up)
+
+- `partitioner._query_percentiles()` now accepts both `PostgresDialect` and `PostgreSQLDialect` class names for PostgreSQL percentile planning.
+- MSSQL percentile SQL was corrected to `TOP 1 ... OVER ()` (removed invalid `LIMIT 1`).
+- Oracle percentile SQL remains unchanged.
+- Unknown dialect behavior is unchanged: percentile errors still fall back to `auto_numeric`.
+- DAG runtime now uses dynamic task mapping for partition execution (`run_partition.expand(...)`) when `partitioning.enabled=true` in new DAG templates.
+- When `partitioning.enabled=false`, runtime keeps legacy single-task execution (no partition planning chain in DAG graph).
+- `partitioning.mode=\"auto\"` alias support was removed. Supported modes now start with `auto_numeric`.
+- Planning-time sampling queries now apply resolved filters (`_resolved_where` first, then `where`) for `auto_numeric`, `percentile`, and `distinct`.
+- `source_type=sql` partition planning now samples from `(<inline_sql>) AS ffengine_inline_sql` and applies the same resolved where filter outside the subquery.
+

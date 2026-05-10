@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 from ffengine.pipeline.source_reader import SourceReader
 
 
@@ -88,7 +88,10 @@ def test_build_query_sql_inline_sql_with_where(dialect, session):
     }
     reader = SourceReader(session, config, dialect)
     q = reader._build_query()
-    assert q == "SELECT * FROM (SELECT id FROM orders) AS ffengine_inline_sql WHERE id > 100"
+    assert (
+        q
+        == "SELECT * FROM (SELECT id FROM orders) AS ffengine_inline_sql WHERE id > 100"
+    )
 
 
 # ------------------------------------------------------------------

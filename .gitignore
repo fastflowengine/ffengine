@@ -14,5 +14,6 @@ logs/
 tempdir/
 tempdir_ready/
 handbook/
-docker/docker-compose.local.debug.yml
+# Local debug override file must stay untracked.
+/docker/docker-compose.local.debug.yml
 /.vscode/

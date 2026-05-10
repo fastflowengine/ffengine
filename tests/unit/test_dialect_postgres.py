@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 from ffengine.dialects.postgres import PostgresDialect
 from ffengine.dialects.base import ColumnInfo
 
@@ -138,12 +138,8 @@ def test_generate_ddl_deterministic(dialect):
 
 
 def test_generate_bulk_insert_query(dialect):
-    query = dialect.generate_bulk_insert_query(
-        "orders", ["id", "amount", "name"]
-    )
-    assert query == (
-        'INSERT INTO orders ("id", "amount", "name") VALUES (%s, %s, %s)'
-    )
+    query = dialect.generate_bulk_insert_query("orders", ["id", "amount", "name"])
+    assert query == ('INSERT INTO orders ("id", "amount", "name") VALUES (%s, %s, %s)')
 
 
 def test_get_pagination_query(dialect):

@@ -156,7 +156,9 @@ class MappingResolver:
             )
         return data
 
-    def _resolve_mapping_file_mode(self, task_config: dict, tgt_dialect) -> MappingResult:
+    def _resolve_mapping_file_mode(
+        self, task_config: dict, tgt_dialect
+    ) -> MappingResult:
         path = task_config.get("mapping_file")
         mapping = self._load_mapping_file(path)
         tgt_name = _dialect_name(tgt_dialect)

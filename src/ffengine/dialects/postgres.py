@@ -39,9 +39,7 @@ class PostgresDialect(BaseDialect):
     # Schema Discovery
     # ------------------------------------------------------------------
 
-    def get_table_schema(
-        self, conn: Any, schema: str, table: str
-    ) -> list[ColumnInfo]:
+    def get_table_schema(self, conn: Any, schema: str, table: str) -> list[ColumnInfo]:
         query = """
             SELECT column_name,
                    data_type,
@@ -106,16 +104,12 @@ class PostgresDialect(BaseDialect):
         cols_sql = ",\n".join(col_defs)
         return f"CREATE TABLE IF NOT EXISTS {table_name} (\n{cols_sql}\n);"
 
-    def generate_bulk_insert_query(
-        self, table: str, columns: list[str]
-    ) -> str:
+    def generate_bulk_insert_query(self, table: str, columns: list[str]) -> str:
         quoted = ", ".join(self.quote_identifier(c) for c in columns)
         placeholders = ", ".join(["%s"] * len(columns))
         return f"INSERT INTO {table} ({quoted}) VALUES ({placeholders})"
 
-    def get_pagination_query(
-        self, query: str, limit: int, offset: int
-    ) -> str:
+    def get_pagination_query(self, query: str, limit: int, offset: int) -> str:
         return f"{query} LIMIT {limit} OFFSET {offset}"
 
     # ------------------------------------------------------------------
@@ -168,7 +162,10 @@ class PostgresDialect(BaseDialect):
                 return f"{base}({col.precision},{col.scale})"
             return f"{base}({col.precision})"
 
-        if base in {"VARCHAR", "CHAR", "CHARACTER VARYING", "CHARACTER"} and col.precision is not None:
+        if (
+            base in {"VARCHAR", "CHAR", "CHARACTER VARYING", "CHARACTER"}
+            and col.precision is not None
+        ):
             return f"{base}({col.precision})"
 
         return base

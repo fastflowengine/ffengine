@@ -24,8 +24,9 @@ from ffengine.db.session import DBSession
 from ffengine.dialects import PostgresDialect
 from ffengine.mapping.generator import MappingGenerator
 
-
-_REQUIRED_ENV: list[str] = []  # Tüm bağlantı değerlerinin container-uyumlu default'u var; enable flag yeterli.
+_REQUIRED_ENV: list[str] = (
+    []
+)  # Tüm bağlantı değerlerinin container-uyumlu default'u var; enable flag yeterli.
 
 
 def _integration_enable_state() -> tuple[bool, str]:
@@ -68,7 +69,7 @@ def pg_session():
 def test_mapping_to_dag_to_run_chain(pg_session, tmp_path):
     """ff_test_data → MappingGenerator → FFEngineOperator → ff_test_target: 100 satır."""
     session, dialect = pg_session
-    src_table = "ff_test_data"   # kalıcı kaynak tablo
+    src_table = "ff_test_data"  # kalıcı kaynak tablo
     tgt_table = "ff_test_target"
     schema = "public"
     q_schema = dialect.quote_identifier(schema)
@@ -112,7 +113,8 @@ def test_mapping_to_dag_to_run_chain(pg_session, tmp_path):
                 "target_table": tgt_table,
                 "load_method": "append",
                 "column_mapping_mode": "mapping_file",
-                "mapping_file": str(mapping_path),
+                # ConfigLoader relative path'i config dosyasina gore cozer.
+                "mapping_file": mapping_path.name,
                 "passthrough_full": False,
             }
         ],
@@ -144,13 +146,16 @@ def test_mapping_to_dag_to_run_chain(pg_session, tmp_path):
         cur.execute(f"SELECT COUNT(*) FROM {q_schema}.{q_tgt}")
         assert cur.fetchone()[0] == 100
 
-        # İlk satır kontrolü
+        # İlk satır kontrolü (kaynak veriyle birebir)
         cur.execute(
-            f"SELECT id, name FROM {q_schema}.{q_tgt} ORDER BY id LIMIT 1"
+            f"SELECT id, name FROM {q_schema}.{dialect.quote_identifier(src_table)} "
+            "ORDER BY id LIMIT 1"
         )
+        expected_first = cur.fetchone()
+
+        cur.execute(f"SELECT id, name FROM {q_schema}.{q_tgt} ORDER BY id LIMIT 1")
         first = cur.fetchone()
-        assert first[0] == 1
-        assert first[1] == "test_record_001"
+        assert first == expected_first
     finally:
         cur.execute(f"DROP TABLE IF EXISTS {q_schema}.{q_tgt}")
         session.conn.commit()

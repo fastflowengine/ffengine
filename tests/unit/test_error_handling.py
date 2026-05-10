@@ -19,6 +19,7 @@ from ffengine.errors import (
     http_status_for,
     normalize_exception,
 )
+from ffengine.errors.handler import sanitize_sql_preview
 
 
 @pytest.mark.parametrize(
@@ -81,8 +82,38 @@ def test_http_status_for_domain_and_builtin_errors():
 
 
 def test_error_payload_is_stable():
-    payload = error_payload(MappingError("mapping failed", details={"mode": "mapping_file"}))
+    payload = error_payload(
+        MappingError("mapping failed", details={"mode": "mapping_file"})
+    )
     assert payload["error_type"] == "MappingError"
     assert payload["error_code"] == "mapping_error"
     assert payload["message"] == "mapping failed"
     assert payload["details"]["mode"] == "mapping_file"
+
+
+def test_error_payload_extracts_db_details_from_cause_chain():
+    class FakePgError(Exception):
+        __module__ = "psycopg.errors"
+        sqlstate = "23505"
+
+    wrapped = ConnectionError.wrap(
+        FakePgError("duplicate key value violates unique constraint"),
+        "db write failed",
+        details={"target": '"dwh_stg"."t"'},
+    )
+
+    payload = error_payload(wrapped)
+    assert payload["details"]["db_exception_type"] == "FakePgError"
+    assert payload["details"]["db_sqlstate"] == "23505"
+    assert payload["details"]["db_driver"] == "psycopg"
+    assert "db_root_cause" in payload["details"]
+
+
+def test_sanitize_sql_preview_masks_literals_and_truncates():
+    raw = "SELECT * FROM t WHERE token = 'abc' AND user = 'xyz'"
+    masked = sanitize_sql_preview(raw, max_len=40)
+    assert masked is not None
+    assert "'abc'" not in masked
+    assert "'xyz'" not in masked
+    assert "'?'" in masked
+    assert masked.endswith("...")

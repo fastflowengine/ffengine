@@ -1,0 +1,64 @@
+source_db_var: dwh_webhook
+target_db_var: dwh_webhook
+flow_tasks:
+- task_type: dag
+  task_group_id: 1_dwh_webhook_dag_webhook_oc_epr_level1_source_to_stg_group_3_dag_to_dwh_webhook_dag_tgt_table
+  depends_on: []
+  source_schema: ''
+  source_table: ''
+  source_type: table
+  inline_sql: null
+  script_run_environment: null
+  script_sql: null
+  dag_task_dag_id: webhook_oc_epr_level1_source_to_stg_group_3_dag
+  column_mapping_mode: source
+  target_schema: script_tgt
+  target_table: script_task
+  load_method: create_if_not_exists_or_truncate
+  where: null
+  batch_size: 10000
+  partitioning:
+    enabled: false
+    mode: auto_numeric
+    column: null
+    parts: 2
+    distinct_limit: 16
+    ranges: []
+  tags: &id001
+  - webhook
+  - oc_epr
+  - main
+- task_type: dag
+  task_group_id: 2_dwh_webhook_dag_webhook_oc_epr_level2_stg_to_ocepr_group_2_dag_to_dwh_webhook_dag_tgt_table
+  depends_on:
+  - 1_dwh_webhook_dag_webhook_oc_epr_level1_source_to_stg_group_3_dag_to_dwh_webhook_dag_tgt_table
+  source_schema: ''
+  source_table: ''
+  source_type: table
+  inline_sql: null
+  script_run_environment: null
+  script_sql: null
+  dag_task_dag_id: webhook_oc_epr_level2_stg_to_ocepr_group_2_dag
+  column_mapping_mode: source
+  target_schema: script_tgt
+  target_table: script_task
+  load_method: create_if_not_exists_or_truncate
+  where: null
+  batch_size: 10000
+  partitioning:
+    enabled: false
+    mode: auto_numeric
+    column: null
+    parts: 2
+    distinct_limit: 16
+    ranges: []
+  tags: *id001
+custom_tags:
+- main
+scheduler:
+  cron_expression: 16 * * * *
+  timezone: Europe/Istanbul
+  active: true
+  start_date: '2026-05-01T19:12:00'
+dag_dependencies:
+  upstream_dag_ids: []

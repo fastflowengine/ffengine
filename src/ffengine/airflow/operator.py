@@ -7,6 +7,7 @@ FFEngineOperator, Airflow ortamında FFEngine Flow pipeline'ını orkestre eder:
 
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 try:
     from airflow.sdk.bases.operator import BaseOperator
@@ -14,11 +15,13 @@ except Exception:  # pragma: no cover - airflow olmayan ortamlarda import fallba
     try:
         from airflow.models.baseoperator import BaseOperator
     except Exception:
+
         class BaseOperator:  # type: ignore[no-redef]
             template_fields: tuple[str, ...] = ()
 
             def __init__(self, *args, **kwargs):
                 self.task_id = kwargs.get("task_id")
+
 
 from ffengine.core.base_engine import FlowResult
 from ffengine.errors import error_payload, normalize_exception
@@ -55,6 +58,7 @@ def _log_structured(
         if v is not None:
             payload[k] = v
     _log.log(level, "%s", payload)
+
 
 # ---------------------------------------------------------------------------
 # Dialect çözümleme
@@ -183,6 +187,289 @@ def build_airflow_variable_context() -> dict:
     return _AirflowVarProxy()
 
 
+def _resolve_task_runtime(
+    *,
+    config_path: str,
+    task_group_id: str,
+    source_conn_id: str,
+    target_conn_id: str,
+    airflow_context: dict | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], Any, Any, Any, dict]:
+    """Config, connection, dialect ve BindingResolver context'ini hazırlar."""
+    from ffengine.config.loader import ConfigLoader
+    from ffengine.config.binding_resolver import BindingResolver
+    from ffengine.db.airflow_adapter import AirflowConnectionAdapter
+
+    task_config = ConfigLoader().load(config_path, task_group_id)
+    src_params = AirflowConnectionAdapter.get_connection_params(source_conn_id)
+    tgt_params = AirflowConnectionAdapter.get_connection_params(target_conn_id)
+    src_dialect = resolve_dialect(src_params["conn_type"])
+    tgt_dialect = resolve_dialect(tgt_params["conn_type"])
+
+    airflow_ctx = airflow_context or build_airflow_variable_context()
+    resolver = BindingResolver()
+    task_config = resolver.resolve(task_config, airflow_ctx)
+    return (
+        task_config,
+        src_params,
+        tgt_params,
+        src_dialect,
+        tgt_dialect,
+        resolver,
+        airflow_ctx,
+    )
+
+
+def _resolve_sql_bindings_if_needed(
+    *,
+    task_config: dict[str, Any],
+    resolver: Any,
+    airflow_ctx: dict,
+    source_session: Any,
+    target_session: Any,
+    source_dialect: Any,
+) -> dict[str, Any]:
+    if not task_config.get("bindings"):
+        return task_config
+    return resolver.resolve_sql_bindings(
+        task_config,
+        context=airflow_ctx,
+        source_session=source_session,
+        target_session=target_session,
+        where_dialect=source_dialect,
+    )
+
+
+def _attach_mapping_if_needed(
+    *,
+    task_config: dict[str, Any],
+    src_conn: Any,
+    src_dialect: Any,
+    tgt_dialect: Any,
+) -> dict[str, Any]:
+    from ffengine.mapping import MappingResolver
+
+    mapping = MappingResolver().resolve(task_config, src_conn, src_dialect, tgt_dialect)
+    effective = dict(task_config)
+    effective["source_columns"] = mapping.source_columns
+    effective["target_columns"] = mapping.target_columns
+    effective["target_columns_meta"] = mapping.target_columns_meta
+    return effective
+
+
+def plan_partitions_for_task(
+    *,
+    config_path: str,
+    task_group_id: str,
+    source_conn_id: str,
+    target_conn_id: str,
+    airflow_context: dict | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Dynamic task mapping için partition spec listesini hesaplar.
+    """
+    from ffengine.db.session import DBSession
+    from ffengine.partition import Partitioner
+
+    (
+        task_config,
+        src_params,
+        tgt_params,
+        src_dialect,
+        tgt_dialect,
+        resolver,
+        airflow_ctx,
+    ) = _resolve_task_runtime(
+        config_path=config_path,
+        task_group_id=task_group_id,
+        source_conn_id=source_conn_id,
+        target_conn_id=target_conn_id,
+        airflow_context=airflow_context,
+    )
+
+    with DBSession(src_params, src_dialect) as src_session:
+        with DBSession(tgt_params, tgt_dialect) as tgt_session:
+            effective = _resolve_sql_bindings_if_needed(
+                task_config=task_config,
+                resolver=resolver,
+                airflow_ctx=airflow_ctx,
+                source_session=src_session,
+                target_session=tgt_session,
+                source_dialect=src_dialect,
+            )
+            specs = Partitioner().plan(effective, src_session.conn, src_dialect)
+
+    return specs
+
+
+def prepare_target_for_task(
+    *,
+    config_path: str,
+    task_group_id: str,
+    source_conn_id: str,
+    target_conn_id: str,
+    airflow_context: dict | None = None,
+) -> dict[str, Any]:
+    """
+    Partition koşularından önce hedef hazırlığını bir kez yapar.
+    """
+    from ffengine.db.session import DBSession
+    from ffengine.pipeline.target_writer import TargetWriter
+
+    (
+        task_config,
+        src_params,
+        tgt_params,
+        src_dialect,
+        tgt_dialect,
+        resolver,
+        airflow_ctx,
+    ) = _resolve_task_runtime(
+        config_path=config_path,
+        task_group_id=task_group_id,
+        source_conn_id=source_conn_id,
+        target_conn_id=target_conn_id,
+        airflow_context=airflow_context,
+    )
+
+    with DBSession(src_params, src_dialect) as src_session:
+        with DBSession(tgt_params, tgt_dialect) as tgt_session:
+            effective = _resolve_sql_bindings_if_needed(
+                task_config=task_config,
+                resolver=resolver,
+                airflow_ctx=airflow_ctx,
+                source_session=src_session,
+                target_session=tgt_session,
+                source_dialect=src_dialect,
+            )
+            effective = _attach_mapping_if_needed(
+                task_config=effective,
+                src_conn=src_session.conn,
+                src_dialect=src_dialect,
+                tgt_dialect=tgt_dialect,
+            )
+            writer = TargetWriter(tgt_session, tgt_dialect)
+            writer.prepare(effective)
+
+    return {"prepared": True, "task_group_id": task_group_id}
+
+
+def run_partition_for_task(
+    *,
+    config_path: str,
+    task_group_id: str,
+    source_conn_id: str,
+    target_conn_id: str,
+    partition_spec: dict[str, Any] | None,
+    airflow_context: dict | None = None,
+) -> dict[str, Any]:
+    """
+    Tek bir partition spec için ETL çalıştırır (dynamic mapped task body).
+    """
+    from ffengine.core.flow_manager import FlowManager
+    from ffengine.db.session import DBSession
+
+    (
+        task_config,
+        src_params,
+        tgt_params,
+        src_dialect,
+        tgt_dialect,
+        resolver,
+        airflow_ctx,
+    ) = _resolve_task_runtime(
+        config_path=config_path,
+        task_group_id=task_group_id,
+        source_conn_id=source_conn_id,
+        target_conn_id=target_conn_id,
+        airflow_context=airflow_context,
+    )
+
+    with DBSession(src_params, src_dialect) as src_session:
+        with DBSession(tgt_params, tgt_dialect) as tgt_session:
+            effective = _resolve_sql_bindings_if_needed(
+                task_config=task_config,
+                resolver=resolver,
+                airflow_ctx=airflow_ctx,
+                source_session=src_session,
+                target_session=tgt_session,
+                source_dialect=src_dialect,
+            )
+            effective = _attach_mapping_if_needed(
+                task_config=effective,
+                src_conn=src_session.conn,
+                src_dialect=src_dialect,
+                tgt_dialect=tgt_dialect,
+            )
+
+            base_where = effective.get("_resolved_where")
+            partition_where = (partition_spec or {}).get("where")
+            effective["_resolved_where"] = combine_where(base_where, partition_where)
+            _log_structured(
+                level=logging.INFO,
+                stage="airflow",
+                message="run_partition effective where resolved.",
+                task_group_id=task_group_id,
+                source_db=str(src_params.get("conn_type") or "unknown"),
+                target_db=str(tgt_params.get("conn_type") or "unknown"),
+                partition_id=(partition_spec or {}).get("part_id"),
+                base_where=base_where,
+                partition_where=partition_where,
+                effective_where=effective.get("_resolved_where"),
+                datetime_timezone="UTC",
+                datetime_precision="timestamp(6)",
+                datetime_boundary_policy="half_open_[lo,hi)_last_lte",
+            )
+
+            manager = FlowManager()
+            result = manager.run_flow_task(
+                src_session=src_session,
+                tgt_session=tgt_session,
+                src_dialect=src_dialect,
+                tgt_dialect=tgt_dialect,
+                task_config=effective,
+                partition_spec=None,
+                skip_prepare=True,
+            )
+
+    return {
+        "rows": int(result.rows),
+        "duration_seconds": float(result.duration_seconds),
+        "throughput": float(result.throughput),
+        "partitions_completed": int(result.partitions_completed),
+        "errors": list(result.errors or []),
+        "partition_id": (partition_spec or {}).get("part_id"),
+    }
+
+
+def aggregate_partition_payloads(
+    results: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """
+    Dynamic mapped partition task sonuçlarını tek summary payload'a indirger.
+    """
+    payloads = list(results or [])
+    flow_results: list[FlowResult] = []
+    for item in payloads:
+        flow_results.append(
+            FlowResult(
+                rows=int(item.get("rows", 0)),
+                duration_seconds=float(item.get("duration_seconds", 0.0)),
+                throughput=float(item.get("throughput", 0.0)),
+                partitions_completed=int(item.get("partitions_completed", 1)),
+                errors=list(item.get("errors") or []),
+            )
+        )
+    aggregated = aggregate_results(flow_results)
+    return {
+        "rows": aggregated.rows,
+        "duration_seconds": aggregated.duration_seconds,
+        "throughput": aggregated.throughput,
+        "partitions_completed": aggregated.partitions_completed,
+        "errors": aggregated.errors,
+    }
+
+
 # ---------------------------------------------------------------------------
 # FFEngineOperator
 # ---------------------------------------------------------------------------
@@ -302,6 +589,7 @@ class FFEngineOperator(BaseOperator):
                             context=airflow_ctx,
                             source_session=src_session,
                             target_session=tgt_session,
+                            where_dialect=src_dialect,
                         )
                     # 6. Mapping çöz (C09 entegrasyonu)
                     mapping = MappingResolver().resolve(
@@ -396,6 +684,7 @@ class FFEngineOperator(BaseOperator):
         except Exception as exc:
             norm = normalize_exception(exc)
             payload = error_payload(norm)
+            err_details = dict(payload.get("details") or {})
             payload["retry_telemetry"] = retry_telemetry
             _log_structured(
                 level=logging.ERROR,
@@ -406,6 +695,13 @@ class FFEngineOperator(BaseOperator):
                 target_db=target_db,
                 error_type=payload.get("error_type"),
                 error_message=payload.get("message"),
+                error_details=err_details,
+                db_exception_type=err_details.get("db_exception_type"),
+                db_error_message=err_details.get("db_error_message"),
+                db_sqlstate=err_details.get("db_sqlstate"),
+                db_driver=err_details.get("db_driver"),
+                db_root_cause=err_details.get("db_root_cause"),
+                sql_preview=err_details.get("sql_preview"),
                 retry_telemetry=retry_telemetry,
             )
             if ti is not None:

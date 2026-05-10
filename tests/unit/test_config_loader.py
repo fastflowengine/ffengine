@@ -53,6 +53,7 @@ _MULTI_TASK_YAML = textwrap.dedent("""\
 # Geçerli config
 # ---------------------------------------------------------------------------
 
+
 class TestConfigLoaderValid:
     def test_load_returns_dict(self, tmp_path):
         p = tmp_path / "cfg.yaml"
@@ -126,11 +127,11 @@ class TestConfigLoaderValid:
         p.write_text(_VALID_YAML)
         part = ConfigLoader().load(str(p), "t1")["partitioning"]
         assert part["enabled"] is False
-        assert part["mode"] == "auto"
+        assert part["mode"] == "auto_numeric"
         assert part["parts"] == 4
         assert part["distinct_limit"] == 16
-        assert part["column"] is None   # C06 eklendi
-        assert part["ranges"] == []     # C06 eklendi
+        assert part["column"] is None  # C06 eklendi
+        assert part["ranges"] == []  # C06 eklendi
 
     def test_partitioning_override_merges_with_default(self, tmp_path):
         yaml_part = textwrap.dedent("""\
@@ -154,9 +155,9 @@ class TestConfigLoaderValid:
         part = ConfigLoader().load(str(p), "t1")["partitioning"]
         assert part["enabled"] is True
         assert part["column"] == "id"
-        assert part["parts"] == 4   # default korundu
+        assert part["parts"] == 4  # default korundu
         assert part["distinct_limit"] == 16
-        assert part["ranges"] == [] # default korundu
+        assert part["ranges"] == []  # default korundu
 
     def test_second_task_loaded_by_id(self, tmp_path):
         p = tmp_path / "cfg.yaml"
@@ -167,6 +168,7 @@ class TestConfigLoaderValid:
 
     def test_does_not_mutate_original_defaults(self, tmp_path):
         from ffengine.config.schema import TASK_DEFAULTS
+
         p = tmp_path / "cfg.yaml"
         p.write_text(_VALID_YAML)
         ConfigLoader().load(str(p), "t1")
@@ -191,12 +193,15 @@ class TestConfigLoaderValid:
         cfg.parent.mkdir(parents=True, exist_ok=True)
         cfg.write_text(yaml_m)
         loaded = ConfigLoader().load(str(cfg), "t1")
-        assert loaded["mapping_file"] == str((cfg.parent / "mapping" / "1_t1.yaml").resolve())
+        assert loaded["mapping_file"] == str(
+            (cfg.parent / "mapping" / "1_t1.yaml").resolve()
+        )
 
 
 # ---------------------------------------------------------------------------
 # Hata senaryoları
 # ---------------------------------------------------------------------------
+
 
 class TestConfigLoaderErrors:
     def test_file_not_found_raises_config_error(self, tmp_path):

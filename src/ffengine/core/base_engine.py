@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 class FlowResult:
     rows: int
     duration_seconds: float
-    throughput: float          # rows / second
+    throughput: float  # rows / second
     partitions_completed: int
     errors: list[str] = field(default_factory=list)
 
@@ -41,6 +41,7 @@ class BaseEngine(ABC):
         try:
             if preference in ("enterprise", "auto"):
                 from ffengine.enterprise.engine import CEngine  # type: ignore
+
                 engine = CEngine()
                 if engine.is_available():
                     return engine

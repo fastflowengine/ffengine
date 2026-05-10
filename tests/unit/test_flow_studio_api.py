@@ -61,7 +61,12 @@ def _minimal_table_payload():
 
 
 def _sql_mapping_yaml(columns: list[str]) -> str:
-    lines = ["version: v1", "source_dialect: postgres", "target_dialect: postgres", "columns:"]
+    lines = [
+        "version: v1",
+        "source_dialect: postgres",
+        "target_dialect: postgres",
+        "columns:",
+    ]
     for col in columns:
         lines.extend(
             [
@@ -183,7 +188,9 @@ def test_api_dag_explorer_mocked(client):
             },
         ],
     }
-    with patch.object(api_app_module, "discover_dag_explorer_items", return_value=mocked):
+    with patch.object(
+        api_app_module, "discover_dag_explorer_items", return_value=mocked
+    ):
         r = client.get("/api/dag-explorer")
     assert r.status_code == 200
     body = r.json()
@@ -195,7 +202,11 @@ def test_api_dag_explorer_mocked(client):
 
 
 def test_api_dag_explorer_maps_connection_error_to_502(client):
-    with patch.object(api_app_module, "discover_dag_explorer_items", side_effect=ConnectionError("db offline")):
+    with patch.object(
+        api_app_module,
+        "discover_dag_explorer_items",
+        side_effect=ConnectionError("db offline"),
+    ):
         r = client.get("/api/dag-explorer")
     assert r.status_code == 502
     assert r.json()["detail"] == "db offline"
@@ -214,7 +225,9 @@ def test_schemas_mocked_forwards_q_and_limit(client):
 
 
 def test_schemas_maps_connection_error_to_502(client):
-    with patch.object(api_app_module, "discover_schemas", side_effect=ConnectionError("db offline")):
+    with patch.object(
+        api_app_module, "discover_schemas", side_effect=ConnectionError("db offline")
+    ):
         r = client.get("/api/schemas?conn_id=test_pg")
     assert r.status_code == 502
     assert r.json()["detail"] == "db offline"
@@ -267,7 +280,9 @@ def test_mapping_generate_mocked(client):
         "warnings": [],
         "column_count": 0,
     }
-    with patch.object(api_app_module, "generate_mapping_preview", return_value=mocked) as fn:
+    with patch.object(
+        api_app_module, "generate_mapping_preview", return_value=mocked
+    ) as fn:
         r = client.post(
             "/api/mapping/generate",
             json={
@@ -285,7 +300,10 @@ def test_mapping_generate_mocked(client):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
-    assert body["generated_mapping_file"] == "mapping/1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
+    assert (
+        body["generated_mapping_file"]
+        == "mapping/1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
+    )
     fn.assert_called_once()
 
 
@@ -304,7 +322,9 @@ def test_connections_mocked(client):
 
 
 def test_airflow_variables_mocked(client):
-    with patch.object(api_app_module, "discover_airflow_variables", return_value=["k1", "k2"]) as mocked:
+    with patch.object(
+        api_app_module, "discover_airflow_variables", return_value=["k1", "k2"]
+    ) as mocked:
         r = client.get("/api/airflow-variables?q=k&limit=50")
     assert r.status_code == 200
     body = r.json()
@@ -315,7 +335,9 @@ def test_airflow_variables_mocked(client):
 
 
 def test_timezones_mocked(client):
-    with patch.object(api_app_module, "discover_timezones", return_value=["UTC", "Europe/Istanbul"]) as mocked:
+    with patch.object(
+        api_app_module, "discover_timezones", return_value=["UTC", "Europe/Istanbul"]
+    ) as mocked:
         r = client.get("/api/timezones?q=eu&limit=25")
     assert r.status_code == 200
     body = r.json()
@@ -348,7 +370,9 @@ def test_folder_options_source_param_passed(client):
         "levels": ["level1"],
         "flows": ["src_to_stg"],
     }
-    with patch.object(api_app_module, "discover_hierarchy_options", return_value=data) as mocked:
+    with patch.object(
+        api_app_module, "discover_hierarchy_options", return_value=data
+    ) as mocked:
         r = client.get("/api/folder-options?project=webhook&source=dag")
     assert r.status_code == 200
     mocked.assert_called_once_with(
@@ -361,8 +385,12 @@ def test_folder_options_source_param_passed(client):
 
 def test_folder_options_reads_real_dag_hierarchy(client, studio_paths):
     _proj, dag_root = studio_paths
-    (dag_root / "webhook" / "whk" / "level1" / "src_to_stg").mkdir(parents=True, exist_ok=True)
-    (dag_root / "test" / "public_level1" / "src_to_odc").mkdir(parents=True, exist_ok=True)
+    (dag_root / "webhook" / "whk" / "level1" / "src_to_stg").mkdir(
+        parents=True, exist_ok=True
+    )
+    (dag_root / "test" / "public_level1" / "src_to_odc").mkdir(
+        parents=True, exist_ok=True
+    )
 
     root_resp = client.get("/api/folder-options?source=dag")
     assert root_resp.status_code == 200
@@ -393,7 +421,9 @@ def test_create_dag_writes_files(client, studio_paths):
     body = r.json()
     assert body["ok"] is True
     assert "task_group_id" in body
-    assert body["task_group_id"] == "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"
+    assert (
+        body["task_group_id"] == "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"
+    )
     flow = Path(body["flow_dir"])
     assert flow.as_posix().endswith("/projects/webhook/whk/level1/src_to_stg")
     assert (flow / ss.STUDIO_METADATA_NAME).is_file()
@@ -401,15 +431,18 @@ def test_create_dag_writes_files(client, studio_paths):
     assert "user_tags" in meta
     assert "auto_tags" in meta
     dag_py = Path(body["dag_path"])
-    yaml_name = "webhook_whk_level1_src_to_stg_group_1.yaml"
+    yaml_name = "webhook_whk_level1_src_to_stg_1.yaml"
     assert (flow / yaml_name).is_file()
     assert dag_py.as_posix().endswith(
-        "/dags/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_1_dag.py"
+        "/dags/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_1_dag.py"
     )
     assert dag_py.is_file()
     dag_source = dag_py.read_text(encoding="utf-8")
     assert ss.STUDIO_DAG_MARKER in dag_source
-    assert "from ffengine.airflow.generated_factory import build_generated_dag" in dag_source
+    assert (
+        "from ffengine.airflow.generated_factory import build_generated_dag"
+        in dag_source
+    )
     assert "RAW_CONFIG = {" in dag_source
     assert "yaml.safe_load(" not in dag_source
     assert "CONFIG_PATH.read_text(" not in dag_source
@@ -449,14 +482,19 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
 
     flow = Path(r.json()["flow_dir"])
     cfg = yaml.safe_load(
-        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
     )
     task = cfg["flow_tasks"][0]
 
     assert task["source_type"] == "view"
     assert task["column_mapping_mode"] == "mapping_file"
-    assert task["task_group_id"] == "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"
-    assert task["mapping_file"] == "mapping/1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
+    assert (
+        task["task_group_id"] == "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"
+    )
+    assert (
+        task["mapping_file"]
+        == "mapping/1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
+    )
     assert (flow / task["mapping_file"]).is_file()
     assert task["batch_size"] == 20000
     assert task["partitioning"]["enabled"] is True
@@ -467,7 +505,9 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
     assert task["partitioning"]["ranges"] == ["id < 100", "id >= 100"]
 
 
-def test_create_dag_mapping_file_requires_content_when_file_missing(client, studio_paths):
+def test_create_dag_mapping_file_requires_content_when_file_missing(
+    client, studio_paths
+):
     payload = _minimal_table_payload()
     payload.update(
         {
@@ -477,16 +517,22 @@ def test_create_dag_mapping_file_requires_content_when_file_missing(client, stud
     )
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 422
-    assert "mapping_content is required when column_mapping_mode='mapping_file'" in r.text
+    assert (
+        "mapping_content is required when column_mapping_mode='mapping_file'" in r.text
+    )
 
 
-def test_create_dag_rejects_invalid_mapping_content_and_does_not_write_dag(client, studio_paths):
+def test_create_dag_rejects_invalid_mapping_content_and_does_not_write_dag(
+    client, studio_paths
+):
     _, dag_root = studio_paths
     payload = _minimal_table_payload()
     payload.update(
         {
             "column_mapping_mode": "mapping_file",
-            "mapping_content": "version: v1\ncolumns:\n  - source_name: id\n    target_name: id\n    source_type: TEXT\n    target_type: TEXT\n    nullable: [\n",
+            "mapping_content": "version: v1\ncolumns:\n  - source_name: id\n"
+            "    target_name: id\n    source_type: TEXT\n    target_type: TEXT\n"
+            "    nullable: [\n",
         }
     )
     r = client.post("/api/create-dag", json=payload)
@@ -511,7 +557,7 @@ def test_create_dag_distinct_mode_persists_distinct_limit(client, studio_paths):
 
     flow = Path(r.json()["flow_dir"])
     cfg = yaml.safe_load(
-        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
     )
     task = cfg["flow_tasks"][0]
     assert task["partitioning"]["mode"] == "distinct"
@@ -519,7 +565,9 @@ def test_create_dag_distinct_mode_persists_distinct_limit(client, studio_paths):
     assert task["partitioning"]["distinct_limit"] == 9
 
 
-def test_update_dag_rejects_invalid_existing_mapping_file_and_keeps_bundle(client, studio_paths):
+def test_update_dag_rejects_invalid_existing_mapping_file_and_keeps_bundle(
+    client, studio_paths
+):
     payload = _minimal_table_payload()
     payload.update(
         {
@@ -533,7 +581,11 @@ def test_update_dag_rejects_invalid_existing_mapping_file_and_keeps_bundle(clien
     dag_path = Path(r1.json()["dag_path"])
     cfg_path = Path(r1.json()["config_path"])
     flow_dir = Path(r1.json()["flow_dir"])
-    mapping_path = flow_dir / "mapping" / "1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
+    mapping_path = (
+        flow_dir
+        / "mapping"
+        / "1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
+    )
     assert mapping_path.is_file()
 
     dag_before = dag_path.read_text(encoding="utf-8")
@@ -600,15 +652,20 @@ def test_create_dag_sql_source_persists_inline_sql(client, studio_paths):
 
     flow = Path(r.json()["flow_dir"])
     cfg = yaml.safe_load(
-        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
     )
     task = cfg["flow_tasks"][0]
 
     assert task["source_type"] == "sql"
     assert task["inline_sql"] == "SELECT id, amount FROM public.orders WHERE amount > 0"
     assert task["task_group_id"] == "1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg"
-    assert task["mapping_file"] == "mapping/1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
-    assert (flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml").is_file()
+    assert (
+        task["mapping_file"]
+        == "mapping/1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+    )
+    assert (
+        flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+    ).is_file()
 
 
 def test_create_dag_sql_source_requires_inline_sql(client, studio_paths):
@@ -713,7 +770,7 @@ def test_create_dag_with_bindings_persists_yaml(client, studio_paths):
 
     flow = Path(r.json()["flow_dir"])
     cfg = yaml.safe_load(
-        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
     )
     task = cfg["flow_tasks"][0]
     assert task["where"] == "updated_at >= :last_sync"
@@ -775,20 +832,28 @@ def test_create_dag_script_run_with_bindings_persists_yaml(client, studio_paths)
 
     flow = Path(r.json()["flow_dir"])
     cfg = yaml.safe_load(
-        (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8")
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
     )
     task = cfg["flow_tasks"][0]
     assert task["task_type"] == "script_run"
-    assert task["script_sql"] == "DELETE FROM dwh.orders_stg WHERE updated_at >= :last_sync"
+    assert (
+        task["script_sql"]
+        == "DELETE FROM dwh.orders_stg WHERE updated_at >= :last_sync"
+    )
     assert task["bindings"][0]["variable_name"] == "last_sync"
 
     dag_source = Path(r.json()["dag_path"]).read_text(encoding="utf-8")
-    assert "from ffengine.airflow.generated_factory import build_generated_dag" in dag_source
+    assert (
+        "from ffengine.airflow.generated_factory import build_generated_dag"
+        in dag_source
+    )
     assert "RAW_CONFIG = {" in dag_source
     assert "script_sql" in dag_source
 
 
-def test_create_dag_script_run_rejects_missing_binding_for_script_param(client, studio_paths):
+def test_create_dag_script_run_rejects_missing_binding_for_script_param(
+    client, studio_paths
+):
     payload = _minimal_table_payload()
     payload.update(
         {
@@ -854,7 +919,9 @@ def test_create_dag_custom_tags_normalized_and_merged(client, studio_paths):
     body = r.json()
     flow = Path(body["flow_dir"])
 
-    cfg = yaml.safe_load((flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8"))
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
+    )
     assert cfg["custom_tags"] == ["team-a", "level1", "nightly", "odd_tag"]
     assert cfg["flow_tasks"][0]["tags"] == [
         "webhook",
@@ -869,7 +936,15 @@ def test_create_dag_custom_tags_normalized_and_merged(client, studio_paths):
     meta = json.loads((flow / ss.STUDIO_METADATA_NAME).read_text(encoding="utf-8"))
     assert meta["auto_tags"] == ["webhook", "whk", "level1", "src_to_stg"]
     assert meta["user_tags"] == ["team-a", "level1", "nightly", "odd_tag"]
-    assert meta["tags"] == ["webhook", "whk", "level1", "src_to_stg", "team-a", "nightly", "odd_tag"]
+    assert meta["tags"] == [
+        "webhook",
+        "whk",
+        "level1",
+        "src_to_stg",
+        "team-a",
+        "nightly",
+        "odd_tag",
+    ]
 
 
 def test_create_dag_rejects_custom_tags_count_over_limit(client, studio_paths):
@@ -908,10 +983,10 @@ def test_dag_filename_fallback_when_flow_not_to_pattern(client, studio_paths):
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 201
     dag_py = Path(r.json()["dag_path"])
-    assert dag_py.name == "webhook_whk_level1_delta_sync_group_1_dag.py"
+    assert dag_py.name == "webhook_whk_level1_delta_sync_1_dag.py"
 
 
-def test_create_dag_same_flow_creates_group_based_dags_and_yamls(client, studio_paths):
+def test_create_dag_same_flow_creates_numbered_dags_and_yamls(client, studio_paths):
     p1 = _minimal_table_payload()
     p2 = _minimal_table_payload()
     p2["source_table"] = "customers"
@@ -927,10 +1002,10 @@ def test_create_dag_same_flow_creates_group_based_dags_and_yamls(client, studio_
     assert body1["dag_path"] != body2["dag_path"]
 
     flow = Path(body1["flow_dir"])
-    assert (flow / "webhook_whk_level1_src_to_stg_group_1.yaml").is_file()
-    assert (flow / "webhook_whk_level1_src_to_stg_group_2.yaml").is_file()
-    assert Path(body1["dag_path"]).name == "webhook_whk_level1_src_to_stg_group_1_dag.py"
-    assert Path(body2["dag_path"]).name == "webhook_whk_level1_src_to_stg_group_2_dag.py"
+    assert (flow / "webhook_whk_level1_src_to_stg_1.yaml").is_file()
+    assert (flow / "webhook_whk_level1_src_to_stg_2.yaml").is_file()
+    assert Path(body1["dag_path"]).name == "webhook_whk_level1_src_to_stg_1_dag.py"
+    assert Path(body2["dag_path"]).name == "webhook_whk_level1_src_to_stg_2_dag.py"
 
 
 def test_update_dag_keeps_legacy_dag_id_and_path(client, studio_paths):
@@ -982,7 +1057,9 @@ def test_update_dag_keeps_legacy_dag_id_and_path(client, studio_paths):
     )
 
     legacy_dag_id = "whk_to_stg_level1_group_9_dag"
-    legacy_dag_path = dag_root / "webhook" / "whk" / "level1" / "src_to_stg" / f"{legacy_dag_id}.py"
+    legacy_dag_path = (
+        dag_root / "webhook" / "whk" / "level1" / "src_to_stg" / f"{legacy_dag_id}.py"
+    )
     legacy_dag_path.parent.mkdir(parents=True, exist_ok=True)
     legacy_dag_path.write_text(
         "\n".join(
@@ -1006,7 +1083,9 @@ def test_update_dag_keeps_legacy_dag_id_and_path(client, studio_paths):
     assert Path(body["dag_path"]).name == "whk_to_stg_level1_group_9_dag.py"
 
 
-def test_create_dag_group_no_increments_with_mixed_legacy_and_new_dag_names(client, studio_paths):
+def test_create_dag_group_no_increments_with_mixed_legacy_and_new_dag_names(
+    client, studio_paths
+):
     projects_root, dag_root = studio_paths
     flow_dir = projects_root / "webhook" / "whk" / "level1" / "src_to_stg"
     flow_dir.mkdir(parents=True, exist_ok=True)
@@ -1015,13 +1094,15 @@ def test_create_dag_group_no_increments_with_mixed_legacy_and_new_dag_names(clie
 
     legacy_dag = legacy_dag_dir / "whk_to_stg_level1_group_3_dag.py"
     legacy_dag.write_text("# legacy dag\n", encoding="utf-8")
+    new_style_dag = legacy_dag_dir / "webhook_whk_level1_src_to_stg_4_dag.py"
+    new_style_dag.write_text("# new style dag\n", encoding="utf-8")
 
     payload = _minimal_table_payload()
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 201, r.text
     dag_name = Path(r.json()["dag_path"]).name
-    assert dag_name == "webhook_whk_level1_src_to_stg_group_4_dag.py"
-    assert (flow_dir / "webhook_whk_level1_src_to_stg_group_4.yaml").is_file()
+    assert dag_name == "webhook_whk_level1_src_to_stg_5_dag.py"
+    assert (flow_dir / "webhook_whk_level1_src_to_stg_5.yaml").is_file()
 
 
 def test_update_dag_requires_dag_id_query(client, studio_paths):
@@ -1099,10 +1180,14 @@ def test_update_dag_allows_adding_new_task(client, studio_paths):
     assert tasks[0]["target_table"] == "orders_stg"
     assert tasks[1]["target_table"] == "customers_stg"
     assert tasks[0]["depends_on"] == []
-    assert tasks[1]["depends_on"] == ["1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"]
+    assert tasks[1]["depends_on"] == [
+        "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"
+    ]
 
 
-def test_update_dag_targets_selected_dag_when_same_flow_has_multiple_groups(client, studio_paths):
+def test_update_dag_targets_selected_dag_when_same_flow_has_multiple_groups(
+    client, studio_paths
+):
     p1 = _minimal_table_payload()
     p2 = _minimal_table_payload()
     p2["source_table"] = "customers"
@@ -1187,7 +1272,9 @@ def test_dag_dependencies_accept_cross_domain_in_same_project(client, studio_pat
     upd2["dag_dependencies"] = {"upstream_dag_ids": [dag1]}
     r_upd2 = client.post(f"/api/update-dag?dag_id={dag2}", json=upd2)
     assert r_upd2.status_code == 200, r_upd2.text
-    assert (r_upd2.json().get("dag_dependencies") or {}).get("upstream_dag_ids") == [dag1]
+    assert (r_upd2.json().get("dag_dependencies") or {}).get("upstream_dag_ids") == [
+        dag1
+    ]
 
     cfg2 = yaml.safe_load(cfg2_path.read_text(encoding="utf-8"))
     assert (cfg2.get("dag_dependencies") or {}).get("upstream_dag_ids") == [dag1]
@@ -1217,13 +1304,18 @@ def test_create_update_roundtrip_dag_dependencies(client, studio_paths):
 
     r_upd = client.post(f"/api/update-dag?dag_id={dag2}", json=update_payload)
     assert r_upd.status_code == 200, r_upd.text
-    assert (r_upd.json().get("dag_dependencies") or {}).get("upstream_dag_ids") == [dag1]
+    assert (r_upd.json().get("dag_dependencies") or {}).get("upstream_dag_ids") == [
+        dag1
+    ]
 
     cfg2 = yaml.safe_load(cfg2_path.read_text(encoding="utf-8"))
     assert (cfg2.get("dag_dependencies") or {}).get("upstream_dag_ids") == [dag1]
 
     dag2_source = Path(r2.json()["dag_path"]).read_text(encoding="utf-8")
-    assert "from ffengine.airflow.generated_factory import build_generated_dag" in dag2_source
+    assert (
+        "from ffengine.airflow.generated_factory import build_generated_dag"
+        in dag2_source
+    )
     assert "RAW_CONFIG = {" in dag2_source
     assert "raw_config_snapshot=RAW_CONFIG" in dag2_source
     assert "yaml.safe_load(" not in dag2_source
@@ -1362,15 +1454,24 @@ def test_dag_revisions_promote_roundtrip(client, studio_paths):
     payload["load_method"] = "replace"
     r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 200, r2.text
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
+    assert (
+        yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0][
+            "load_method"
+        ]
+        == "replace"
+    )
 
     r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
     assert r_rev.status_code == 200, r_rev.text
     rev_items = r_rev.json()["items"]
     assert len(rev_items) >= 2
     revision_count_before = len(rev_items)
-    create_revision = next((x["revision_id"] for x in rev_items if x.get("source") == "create_initial"), "")
-    update_revision = next((x["revision_id"] for x in rev_items if x.get("source") == "update"), "")
+    create_revision = next(
+        (x["revision_id"] for x in rev_items if x.get("source") == "create_initial"), ""
+    )
+    update_revision = next(
+        (x["revision_id"] for x in rev_items if x.get("source") == "update"), ""
+    )
     assert create_revision
     assert update_revision
     assert create_revision != update_revision
@@ -1380,23 +1481,37 @@ def test_dag_revisions_promote_roundtrip(client, studio_paths):
         json={},
     )
     assert r_promote_old.status_code == 200, r_promote_old.text
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "append"
+    assert (
+        yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0][
+            "load_method"
+        ]
+        == "append"
+    )
 
     r_rev_after = client.get(f"/api/dag-revisions?dag_id={dag_id}")
     assert r_rev_after.status_code == 200, r_rev_after.text
     rev_items_after = r_rev_after.json()["items"]
     assert len(rev_items_after) == revision_count_before
-    assert not any(str(x.get("source") or "") == "promote_before_switch" for x in rev_items_after)
+    assert not any(
+        str(x.get("source") or "") == "promote_before_switch" for x in rev_items_after
+    )
 
     r_promote_new = client.post(
         f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id={update_revision}",
         json={},
     )
     assert r_promote_new.status_code == 200, r_promote_new.text
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
+    assert (
+        yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0][
+            "load_method"
+        ]
+        == "replace"
+    )
 
 
-def test_promote_regenerates_missing_revision_mapping_file(client, studio_paths, monkeypatch):
+def test_promote_regenerates_missing_revision_mapping_file(
+    client, studio_paths, monkeypatch
+):
     payload = _minimal_table_payload()
     payload["column_mapping_mode"] = "mapping_file"
     payload["mapping_content"] = _sql_mapping_yaml(["id"])
@@ -1412,7 +1527,14 @@ def test_promote_regenerates_missing_revision_mapping_file(client, studio_paths,
 
     r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
     assert r_rev.status_code == 200, r_rev.text
-    create_revision = next((x["revision_id"] for x in r_rev.json()["items"] if x.get("source") == "create_initial"), "")
+    create_revision = next(
+        (
+            x["revision_id"]
+            for x in r_rev.json()["items"]
+            if x.get("source") == "create_initial"
+        ),
+        "",
+    )
     assert create_revision
 
     history_root = flow_dir / ".flow_studio_history" / dag_id
@@ -1448,7 +1570,9 @@ def test_promote_rejects_invalid_revision_id_format(client, studio_paths):
     r1 = client.post("/api/create-dag", json=payload)
     assert r1.status_code == 201, r1.text
     dag_id = Path(r1.json()["dag_path"]).stem
-    r = client.post(f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id=bad_revision", json={})
+    r = client.post(
+        f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id=bad_revision", json={}
+    )
     assert r.status_code == 422
     assert "revision_id" in r.text
 
@@ -1483,7 +1607,9 @@ def test_promote_returns_404_for_missing_revision(client, studio_paths):
     r1 = client.post("/api/create-dag", json=payload)
     assert r1.status_code == 201, r1.text
     dag_id = Path(r1.json()["dag_path"]).stem
-    r = client.post(f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id=rev_999999", json={})
+    r = client.post(
+        f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id=rev_999999", json={}
+    )
     assert r.status_code == 404
 
 
@@ -1590,7 +1716,11 @@ def test_delete_dag_continues_when_airflow_cleanup_fails(client, studio_paths):
     dag_path = Path(r1.json()["dag_path"])
     cfg_path = Path(r1.json()["config_path"])
 
-    with patch.object(ss, "_cleanup_airflow_dag_metadata", side_effect=RuntimeError("db cleanup failed")):
+    with patch.object(
+        ss,
+        "_cleanup_airflow_dag_metadata",
+        side_effect=RuntimeError("db cleanup failed"),
+    ):
         r2 = client.delete(f"/api/delete-dag?dag_id={dag_id}")
 
     assert r2.status_code == 200, r2.text
@@ -1599,9 +1729,13 @@ def test_delete_dag_continues_when_airflow_cleanup_fails(client, studio_paths):
     assert body["airflow_cleanup"]["ok"] is False
     assert any("cleanup exception" in str(x).lower() for x in body.get("warnings", []))
     if dag_path.exists():
-        assert any("DAG file could not be deleted" in str(x) for x in body.get("warnings", []))
+        assert any(
+            "DAG file could not be deleted" in str(x) for x in body.get("warnings", [])
+        )
     if cfg_path.exists():
-        assert any("YAML file could not be deleted" in str(x) for x in body.get("warnings", []))
+        assert any(
+            "YAML file could not be deleted" in str(x) for x in body.get("warnings", [])
+        )
 
 
 def test_revision_retention_keeps_last_20_snapshots(client, studio_paths, monkeypatch):
@@ -1624,7 +1758,9 @@ def test_revision_retention_keeps_last_20_snapshots(client, studio_paths, monkey
     assert len(list(dag_path.parent.glob("*_dag.py"))) == 1
 
 
-def test_promote_rolls_back_when_parse_verification_fails(client, studio_paths, monkeypatch):
+def test_promote_rolls_back_when_parse_verification_fails(
+    client, studio_paths, monkeypatch
+):
     monkeypatch.setenv("FFENGINE_STUDIO_PROMOTE_VERIFY_PARSE", "1")
     payload = _minimal_table_payload()
     r1 = client.post("/api/create-dag", json=payload)
@@ -1635,17 +1771,32 @@ def test_promote_rolls_back_when_parse_verification_fails(client, studio_paths, 
     payload["load_method"] = "replace"
     r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 200, r2.text
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
+    assert (
+        yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0][
+            "load_method"
+        ]
+        == "replace"
+    )
 
     r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
     assert r_rev.status_code == 200, r_rev.text
-    create_revision = next((x["revision_id"] for x in r_rev.json()["items"] if x.get("source") == "create_initial"), "")
+    create_revision = next(
+        (
+            x["revision_id"]
+            for x in r_rev.json()["items"]
+            if x.get("source") == "create_initial"
+        ),
+        "",
+    )
     assert create_revision
 
-    with patch.object(ss, "_wait_for_parse_refresh", return_value=False), patch.object(
-        ss,
-        "_active_bundle_hash_or_empty",
-        return_value="hash_mismatch",
+    with (
+        patch.object(ss, "_wait_for_parse_refresh", return_value=False),
+        patch.object(
+            ss,
+            "_active_bundle_hash_or_empty",
+            return_value="hash_mismatch",
+        ),
     ):
         r_promote = client.post(
             f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id={create_revision}",
@@ -1653,10 +1804,17 @@ def test_promote_rolls_back_when_parse_verification_fails(client, studio_paths, 
         )
     assert r_promote.status_code == 422
     assert "rolled back" in r_promote.text
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
+    assert (
+        yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0][
+            "load_method"
+        ]
+        == "replace"
+    )
 
 
-def test_promote_succeeds_when_parse_timeout_but_target_bundle_is_active(client, studio_paths, monkeypatch):
+def test_promote_succeeds_when_parse_timeout_but_target_bundle_is_active(
+    client, studio_paths, monkeypatch
+):
     monkeypatch.setenv("FFENGINE_STUDIO_PROMOTE_VERIFY_PARSE", "1")
     payload = _minimal_table_payload()
     r1 = client.post("/api/create-dag", json=payload)
@@ -1668,22 +1826,39 @@ def test_promote_succeeds_when_parse_timeout_but_target_bundle_is_active(client,
     payload["load_method"] = "replace"
     r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 200, r2.text
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
+    assert (
+        yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0][
+            "load_method"
+        ]
+        == "replace"
+    )
 
     r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
     assert r_rev.status_code == 200, r_rev.text
-    create_revision = next((x["revision_id"] for x in r_rev.json()["items"] if x.get("source") == "create_initial"), "")
+    create_revision = next(
+        (
+            x["revision_id"]
+            for x in r_rev.json()["items"]
+            if x.get("source") == "create_initial"
+        ),
+        "",
+    )
     assert create_revision
 
     history_root = flow_dir / ".flow_studio_history" / dag_id
-    create_manifest = json.loads((history_root / create_revision / "manifest.json").read_text(encoding="utf-8"))
+    create_manifest = json.loads(
+        (history_root / create_revision / "manifest.json").read_text(encoding="utf-8")
+    )
     create_bundle_hash = str((create_manifest.get("hashes") or {}).get("bundle") or "")
     assert create_bundle_hash
 
-    with patch.object(ss, "_wait_for_parse_refresh", return_value=False), patch.object(
-        ss,
-        "_active_bundle_hash_or_empty",
-        return_value=create_bundle_hash,
+    with (
+        patch.object(ss, "_wait_for_parse_refresh", return_value=False),
+        patch.object(
+            ss,
+            "_active_bundle_hash_or_empty",
+            return_value=create_bundle_hash,
+        ),
     ):
         r_promote = client.post(
             f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id={create_revision}",
@@ -1694,10 +1869,17 @@ def test_promote_succeeds_when_parse_timeout_but_target_bundle_is_active(client,
     body = r_promote.json()
     warnings = [str(x) for x in body.get("warnings", [])]
     assert any("parse refresh timeout" in w.lower() for w in warnings)
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "append"
+    assert (
+        yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0][
+            "load_method"
+        ]
+        == "append"
+    )
 
 
-def test_promote_uses_recalculated_hash_when_manifest_hash_is_stale(client, studio_paths, monkeypatch):
+def test_promote_uses_recalculated_hash_when_manifest_hash_is_stale(
+    client, studio_paths, monkeypatch
+):
     monkeypatch.setenv("FFENGINE_STUDIO_PROMOTE_VERIFY_PARSE", "1")
     payload = _minimal_table_payload()
     r1 = client.post("/api/create-dag", json=payload)
@@ -1709,11 +1891,23 @@ def test_promote_uses_recalculated_hash_when_manifest_hash_is_stale(client, stud
     payload["load_method"] = "replace"
     r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 200, r2.text
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "replace"
+    assert (
+        yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0][
+            "load_method"
+        ]
+        == "replace"
+    )
 
     r_rev = client.get(f"/api/dag-revisions?dag_id={dag_id}")
     assert r_rev.status_code == 200, r_rev.text
-    create_revision = next((x["revision_id"] for x in r_rev.json()["items"] if x.get("source") == "create_initial"), "")
+    create_revision = next(
+        (
+            x["revision_id"]
+            for x in r_rev.json()["items"]
+            if x.get("source") == "create_initial"
+        ),
+        "",
+    )
     assert create_revision
 
     history_root = flow_dir / ".flow_studio_history" / dag_id
@@ -1722,16 +1916,21 @@ def test_promote_uses_recalculated_hash_when_manifest_hash_is_stale(client, stud
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest.setdefault("hashes", {})
     manifest["hashes"]["bundle"] = "stale_manifest_hash"
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
 
     rev_bundle = ss._load_bundle_from_revision(rev_dir)
     recalculated_hash = ss._bundle_hash_from_loaded_bundle(rev_bundle)
     assert recalculated_hash and recalculated_hash != "stale_manifest_hash"
 
-    with patch.object(ss, "_wait_for_parse_refresh", return_value=False), patch.object(
-        ss,
-        "_active_bundle_hash_or_empty",
-        return_value=recalculated_hash,
+    with (
+        patch.object(ss, "_wait_for_parse_refresh", return_value=False),
+        patch.object(
+            ss,
+            "_active_bundle_hash_or_empty",
+            return_value=recalculated_hash,
+        ),
     ):
         r_promote = client.post(
             f"/api/dag-revisions/promote?dag_id={dag_id}&revision_id={create_revision}",
@@ -1743,7 +1942,12 @@ def test_promote_uses_recalculated_hash_when_manifest_hash_is_stale(client, stud
     warnings = [str(x) for x in body.get("warnings", [])]
     assert any("manifest hash mismatch" in w.lower() for w in warnings)
     assert body.get("active_revision_id") == create_revision
-    assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0]["load_method"] == "append"
+    assert (
+        yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["flow_tasks"][0][
+            "load_method"
+        ]
+        == "append"
+    )
 
 
 def test_wait_for_parse_refresh_timeout_from_env(monkeypatch):
@@ -1758,7 +1962,9 @@ def test_wait_for_parse_refresh_timeout_from_env(monkeypatch):
     }
 
     def _run_with_timeout(timeout_value: str) -> bool:
-        monkeypatch.setenv("FFENGINE_STUDIO_PROMOTE_VERIFY_TIMEOUT_SECONDS", timeout_value)
+        monkeypatch.setenv(
+            "FFENGINE_STUDIO_PROMOTE_VERIFY_TIMEOUT_SECONDS", timeout_value
+        )
         elapsed = {"v": 0.0}
 
         def _mono() -> float:
@@ -1767,7 +1973,7 @@ def test_wait_for_parse_refresh_timeout_from_env(monkeypatch):
         def _sleep(seconds: float) -> None:
             elapsed["v"] += float(seconds)
 
-        def _parse_state(_dag_id: str) -> dict[str, Any]:
+        def _parse_state(_dag_id: str) -> dict:
             # Simulate slow Airflow parse refresh: state changes only after 50s.
             if elapsed["v"] < 50.0:
                 return dict(before_state)
@@ -1848,7 +2054,14 @@ def test_resolve_task_dependencies_cycle_error():
 
 def test_build_dag_explorer_items_root_and_external():
     rows = [
-        ("dag_in", False, "/opt/airflow/dags/team/flow/dag_in.py", "alice, bob,alice", "2026-04-23T20:00:00+00:00", "2026-04-20T12:00:00+00:00"),
+        (
+            "dag_in",
+            False,
+            "/opt/airflow/dags/team/flow/dag_in.py",
+            "alice, bob,alice",
+            "2026-04-23T20:00:00+00:00",
+            "2026-04-20T12:00:00+00:00",
+        ),
         ("dag_out", True, "/tmp/dag_out.py", "", None, None),
     ]
     items = ss._build_dag_explorer_items(rows, Path("/opt/airflow/dags"))
@@ -1890,7 +2103,9 @@ def test_discover_dag_explorer_items_uses_env_root(monkeypatch):
     with patch.object(
         ss,
         "_read_dag_explorer_rows",
-        return_value=[("my_dag", False, "/opt/airflow/dags/p1/d1.py", "owner1", None, None)],
+        return_value=[
+            ("my_dag", False, "/opt/airflow/dags/p1/d1.py", "owner1", None, None)
+        ],
     ):
         data = ss.discover_dag_explorer_items()
     assert data["root"] == "/opt/airflow/dags"
@@ -1933,13 +2148,15 @@ def test_timeline_mocked(client):
 
 def test_dag_config_mocked_success(client):
     mocked = {
-        "dag_id": "webhook_whk_level1_src_to_stg_group_1_dag",
+        "dag_id": "webhook_whk_level1_src_to_stg_1_dag",
         "payload": {"project": "webhook"},
-        "dag_path": "/opt/airflow/dags/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_1_dag.py",
-        "config_path": "/opt/airflow/projects/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_group_1.yaml",
+        "dag_path": "/opt/airflow/dags/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_1_dag.py",
+        "config_path": "/opt/airflow/projects/webhook/whk/level1/src_to_stg/webhook_whk_level1_src_to_stg_1.yaml",
     }
-    with patch.object(api_app_module, "resolve_dag_config_for_update", return_value=mocked):
-        r = client.get("/api/dag-config?dag_id=webhook_whk_level1_src_to_stg_group_1_dag")
+    with patch.object(
+        api_app_module, "resolve_dag_config_for_update", return_value=mocked
+    ):
+        r = client.get("/api/dag-config?dag_id=webhook_whk_level1_src_to_stg_1_dag")
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
@@ -1981,16 +2198,20 @@ def test_resolve_dag_config_for_update_roundtrip(client, studio_paths):
     assert resolved["payload"]["flow_tasks"][0]["depends_on"] == []
 
 
-def test_resolve_dag_config_returns_empty_custom_tags_when_yaml_missing_field(client, studio_paths):
+def test_resolve_dag_config_returns_empty_custom_tags_when_yaml_missing_field(
+    client, studio_paths
+):
     payload = _minimal_table_payload()
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 201, r.text
     dag_id = Path(r.json()["dag_path"]).stem
     flow = Path(r.json()["flow_dir"])
-    yaml_path = flow / "webhook_whk_level1_src_to_stg_group_1.yaml"
+    yaml_path = flow / "webhook_whk_level1_src_to_stg_1.yaml"
     cfg = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
     cfg.pop("custom_tags", None)
-    yaml_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=False), encoding="utf-8")
+    yaml_path.write_text(
+        yaml.safe_dump(cfg, sort_keys=False, allow_unicode=False), encoding="utf-8"
+    )
 
     resolved = ss.resolve_dag_config_for_update(dag_id)
     assert resolved["payload"]["custom_tags"] == []
@@ -2035,7 +2256,9 @@ def test_create_dag_rejects_invalid_scheduler_start_date(client, studio_paths):
     assert "start_date" in r.text.lower()
 
 
-def test_create_dag_persists_scheduler_and_preload_returns_scheduler(client, studio_paths):
+def test_create_dag_persists_scheduler_and_preload_returns_scheduler(
+    client, studio_paths
+):
     payload = _minimal_table_payload()
     payload["scheduler"] = {
         "cron_expression": "15 4 * * 1",
@@ -2058,7 +2281,7 @@ def test_create_dag_persists_scheduler_and_preload_returns_scheduler(client, stu
 
     r2 = client.get(f"/api/dag-config?dag_id={dag_id}")
     assert r2.status_code == 200, r2.text
-    scheduler_payload = ((r2.json().get("payload") or {}).get("scheduler") or {})
+    scheduler_payload = (r2.json().get("payload") or {}).get("scheduler") or {}
     assert scheduler_payload["cron_expression"] == "15 4 * * 1"
     assert scheduler_payload["timezone"] == "Europe/Istanbul"
     assert scheduler_payload["active"] is False
@@ -2127,16 +2350,21 @@ def test_update_dag_sql_mapping_semantic_same_does_not_touch_file(client, studio
             "mapping_content": _sql_mapping_yaml(["id"]),
         }
     )
-    with patch.object(ss, "extract_sql_select_columns_for_conn", return_value=[{"name": "id", "source_type": "INTEGER"}]):
+    with patch.object(
+        ss,
+        "extract_sql_select_columns_for_conn",
+        return_value=[{"name": "id", "source_type": "INTEGER"}],
+    ):
         r1 = client.post("/api/create-dag", json=payload)
     assert r1.status_code == 201, r1.text
     dag_id = Path(r1.json()["dag_path"]).stem
     flow = Path(r1.json()["flow_dir"])
-    mapping_path = flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+    mapping_path = (
+        flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+    )
     before = mapping_path.stat().st_mtime_ns
 
-    payload["mapping_content"] = textwrap.dedent(
-        """\
+    payload["mapping_content"] = textwrap.dedent("""\
         version: v1
         source_dialect: postgres
         target_dialect: postgres
@@ -2146,16 +2374,21 @@ def test_update_dag_sql_mapping_semantic_same_does_not_touch_file(client, studio
             source_type: TEXT
             target_type: TEXT
             nullable: true
-        """
-    )
-    with patch.object(ss, "extract_sql_select_columns_for_conn", return_value=[{"name": "id", "source_type": "INTEGER"}]):
+        """)
+    with patch.object(
+        ss,
+        "extract_sql_select_columns_for_conn",
+        return_value=[{"name": "id", "source_type": "INTEGER"}],
+    ):
         r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 200, r2.text
     after = mapping_path.stat().st_mtime_ns
     assert after == before
 
 
-def test_update_dag_sql_mapping_task_group_change_moves_active_path_to_new_file(client, studio_paths):
+def test_update_dag_sql_mapping_task_group_change_moves_active_path_to_new_file(
+    client, studio_paths
+):
     payload = _minimal_table_payload()
     payload.update(
         {
@@ -2167,22 +2400,36 @@ def test_update_dag_sql_mapping_task_group_change_moves_active_path_to_new_file(
             "mapping_content": _sql_mapping_yaml(["id"]),
         }
     )
-    with patch.object(ss, "extract_sql_select_columns_for_conn", return_value=[{"name": "id", "source_type": "INTEGER"}]):
+    with patch.object(
+        ss,
+        "extract_sql_select_columns_for_conn",
+        return_value=[{"name": "id", "source_type": "INTEGER"}],
+    ):
         r1 = client.post("/api/create-dag", json=payload)
     assert r1.status_code == 201, r1.text
     dag_id = Path(r1.json()["dag_path"]).stem
     flow = Path(r1.json()["flow_dir"])
-    old_path = flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+    old_path = (
+        flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+    )
     assert old_path.is_file()
 
     payload["task_group_id"] = "custom_sql_orders_task"
-    with patch.object(ss, "extract_sql_select_columns_for_conn", return_value=[{"name": "id", "source_type": "INTEGER"}]):
+    with patch.object(
+        ss,
+        "extract_sql_select_columns_for_conn",
+        return_value=[{"name": "id", "source_type": "INTEGER"}],
+    ):
         r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 200, r2.text
     new_path = flow / "mapping" / "1_custom_sql_orders_task.yaml"
     assert new_path.is_file()
-    cfg = yaml.safe_load((flow / "webhook_whk_level1_src_to_stg_group_1.yaml").read_text(encoding="utf-8"))
-    assert cfg["flow_tasks"][0]["mapping_file"] == "mapping/1_custom_sql_orders_task.yaml"
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
+    )
+    assert (
+        cfg["flow_tasks"][0]["mapping_file"] == "mapping/1_custom_sql_orders_task.yaml"
+    )
 
 
 def test_resolve_dag_config_for_update_roundtrip_bindings(client, studio_paths):
@@ -2216,7 +2463,9 @@ def test_resolve_dag_config_for_update_not_found_raises_file_not_found():
         ss.resolve_dag_config_for_update(dag_id)
 
 
-def test_resolve_dag_config_for_update_with_nonstandard_dag_id_when_studio_dag_exists(studio_paths):
+def test_resolve_dag_config_for_update_with_nonstandard_dag_id_when_studio_dag_exists(
+    studio_paths,
+):
     proj_root, dag_root = studio_paths
     dag_id = "ffengine_config_group_12_public_ff_test_data_to_dbo_ff_test_data_psql_v12"
 
@@ -2485,7 +2734,9 @@ def test_create_dag_script_run_accepts_sql_and_sp_and_roundtrips(client, studio_
     assert preload_task["script_sql"] == "EXEC dbo.usp_housekeeping @mode = 'truncate'"
 
 
-def test_create_dag_script_run_does_not_require_target_schema_or_table(client, studio_paths):
+def test_create_dag_script_run_does_not_require_target_schema_or_table(
+    client, studio_paths
+):
     payload = _minimal_table_payload()
     payload.update(
         {
@@ -2507,7 +2758,9 @@ def test_create_dag_script_run_does_not_require_target_schema_or_table(client, s
     assert r.status_code == 201, r.text
 
 
-def test_bulk_backfill_legacy_task_type_is_idempotent_and_preserves_existing(studio_paths):
+def test_bulk_backfill_legacy_task_type_is_idempotent_and_preserves_existing(
+    studio_paths,
+):
     proj_root, _ = studio_paths
     marker = "_ffengine_task_type_backfilled_once"
     if hasattr(ss._bulk_backfill_legacy_task_types_once, marker):
@@ -2603,5 +2856,3 @@ def test_api_key_required_when_env_set(client, studio_paths, monkeypatch):
         headers={"X-Flow-Studio-API-Key": "secret123"},
     )
     assert r4.status_code == 200
-
-

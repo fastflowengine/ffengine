@@ -29,6 +29,11 @@
 - `docker exec core-airflow-webserver airflow dags test whk_to_stg_level1_group_1_dag 2026-04-23` -> success.
 - `docker exec core-airflow-webserver airflow dags test whk_to_stg_level1_group_2_dag 2026-04-23` -> success.
 
+## Promote Verify Param
+- `FFENGINE_STUDIO_PROMOTE_VERIFY_TIMEOUT_SECONDS` promote parse verification timeout'u kontrol eder.
+- Varsayilan/fallback timeout `60` saniyedir.
+- Unit testte timeout parametresi `35` iken timeout, `60` iken basarili parse refresh davranisi dogrulandi.
+
 ## Open Risks
 - Scheduler/runtime performance in very large DAG scopes should be monitored and tuned in later waves.
 

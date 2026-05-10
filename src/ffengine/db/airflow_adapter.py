@@ -1,4 +1,3 @@
-
 class AirflowConnectionAdapter:
     """
     Resolves Airflow Connection ID into standard parameters for Dialects.
@@ -11,7 +10,7 @@ class AirflowConnectionAdapter:
         except ImportError:
             from airflow.hooks.base import BaseHook
         conn = BaseHook.get_connection(conn_id)
-        
+
         # Build base params
         params = {}
         if conn.host:
@@ -22,12 +21,12 @@ class AirflowConnectionAdapter:
             params["user"] = conn.login
         if conn.password:
             params["password"] = conn.password
-        if conn.schema: # database config in standard airflow SQL
+        if conn.schema:  # database config in standard airflow SQL
             params["database"] = conn.schema
-            
+
         # Airflow extra params
         if conn.extra_dejson:
             params["extra"] = conn.extra_dejson
-            
+
         params["conn_type"] = conn.conn_type
         return params

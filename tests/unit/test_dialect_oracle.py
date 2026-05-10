@@ -150,9 +150,7 @@ def test_generate_ddl_deterministic(dialect):
 
 
 def test_generate_bulk_insert_query(dialect):
-    query = dialect.generate_bulk_insert_query(
-        "EMPLOYEES", ["ID", "NAME", "SALARY"]
-    )
+    query = dialect.generate_bulk_insert_query("EMPLOYEES", ["ID", "NAME", "SALARY"])
     assert query == (
         'INSERT INTO EMPLOYEES ("ID", "NAME", "SALARY") VALUES (:1, :2, :3)'
     )
