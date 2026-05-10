@@ -10,7 +10,7 @@ if (-not (Test-Path $hooksDir)) {
     throw "Git hooks dizini bulunamadi: $hooksDir"
 }
 
-$pattern = "debugpy|ENABLE_DEBUG|DEBUGPY_|5677|5678|5679|DEBUG_BREAKPOINT_MARKER"
+$pattern = "debugpy|ENABLE_DEBUG|DEBUGPY_|DEBUG_BREAKPOINT_MARKER|--wait-for-client|python -m debugpy"
 
 $preCommitPath = Join-Path $hooksDir "pre-commit"
 $prePushPath = Join-Path $hooksDir "pre-push"
@@ -21,8 +21,9 @@ set -eu
 
 PATTERN='__PATTERN__'
 EXCLUDED=':(exclude)docker/docker-compose.local.debug.yml'
+EXCLUDED_EXAMPLE=':(exclude)docker/docker-compose.local.debug.yml.example'
 
-if git diff --cached -U0 -- . "$EXCLUDED" | grep -E "^\+.*($PATTERN)" >/dev/null 2>&1; then
+if git diff --cached -U0 -- . "$EXCLUDED" "$EXCLUDED_EXAMPLE" | grep -E "^\+.*($PATTERN)" >/dev/null 2>&1; then
   echo "ERROR: Debug kalintisi staged diff icinde bulundu."
   echo "Temizleyin veya local debug override dosyasina tasiyin: docker/docker-compose.local.debug.yml"
   exit 1
@@ -35,6 +36,7 @@ set -eu
 
 PATTERN='__PATTERN__'
 EXCLUDED=':(exclude)docker/docker-compose.local.debug.yml'
+EXCLUDED_EXAMPLE=':(exclude)docker/docker-compose.local.debug.yml.example'
 ZERO='0000000000000000000000000000000000000000'
 
 while read local_ref local_sha remote_ref remote_sha
@@ -44,7 +46,7 @@ do
   if [ "$remote_sha" != "$ZERO" ]; then
     RANGE="$remote_sha..$local_sha"
   fi
-  if git diff -U0 "$RANGE" -- . "$EXCLUDED" | grep -E "^\+.*($PATTERN)" >/dev/null 2>&1; then
+  if git diff -U0 "$RANGE" -- . "$EXCLUDED" "$EXCLUDED_EXAMPLE" | grep -E "^\+.*($PATTERN)" >/dev/null 2>&1; then
     echo "ERROR: Push edilen commit diff icinde debug kalintisi bulundu: $RANGE"
     echo "Temizleyin veya local debug override dosyasina tasiyin: docker/docker-compose.local.debug.yml"
     exit 1
