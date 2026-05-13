@@ -13,6 +13,7 @@ def dialect():
     d.quote_identifier.side_effect = lambda n: f'"{n}"'
     d.generate_ddl.return_value = "CREATE TABLE ..."
     d.generate_bulk_insert_query.return_value = "INSERT INTO ..."
+    d.generate_upsert_query.return_value = "UPSERT INTO ..."
     return d
 
 
@@ -95,37 +96,6 @@ def test_prepare_drop_if_exists_and_create(writer, session, dialect):
     dialect.generate_ddl.assert_called_once()
 
 
-def test_prepare_delete_from_table_with_where(writer, session):
-    writer.prepare(
-        {
-            "load_method": "delete_from_table",
-            "target_schema": "s",
-            "target_table": "t",
-            "target_columns_meta": [],
-            "delete_where": "region = 'EU'",
-        }
-    )
-    executed_sqls = [
-        c[0][0] for c in session.cursor.return_value.execute.call_args_list
-    ]
-    assert any("DELETE" in sql and "region = 'EU'" in sql for sql in executed_sqls)
-
-
-def test_prepare_delete_from_table_no_where(writer, session):
-    writer.prepare(
-        {
-            "load_method": "delete_from_table",
-            "target_schema": "s",
-            "target_table": "t",
-            "target_columns_meta": [],
-        }
-    )
-    executed_sqls = [
-        c[0][0] for c in session.cursor.return_value.execute.call_args_list
-    ]
-    assert any("DELETE FROM" in sql for sql in executed_sqls)
-
-
 def test_prepare_script_executes_sql(writer, session):
     writer.prepare(
         {
@@ -147,7 +117,7 @@ def test_prepare_unsupported_load_method_raises(writer):
         writer.prepare({"load_method": "magic_load"})
 
 
-def test_prepare_upsert_no_ddl(writer, session, dialect):
+def test_prepare_upsert_calls_ddl(writer, session, dialect):
     writer.prepare(
         {
             "load_method": "upsert",
@@ -156,7 +126,7 @@ def test_prepare_upsert_no_ddl(writer, session, dialect):
             "target_columns_meta": [],
         }
     )
-    dialect.generate_ddl.assert_not_called()
+    dialect.generate_ddl.assert_called_once()
 
 
 # ------------------------------------------------------------------
@@ -177,6 +147,27 @@ def test_write_batch_calls_executemany(writer, session):
     rows = [(1,), (2,)]
     writer.write_batch(
         rows, {"target_schema": "s", "target_table": "t", "target_columns": ["id"]}
+    )
+    session.cursor.return_value.executemany.assert_called_once()
+
+
+def test_write_batch_upsert_calls_generate_upsert_query(writer, session, dialect):
+    rows = [(1, "x"), (2, "y")]
+    writer.write_batch(
+        rows,
+        {
+            "load_method": "upsert",
+            "target_schema": "s",
+            "target_table": "t",
+            "target_columns": ["id", "name"],
+            "upsert_match_columns": ["id"],
+        },
+    )
+    dialect.generate_upsert_query.assert_called_once_with(
+        '"s"."t"',
+        ["id", "name"],
+        ["id"],
+        ["name"],
     )
     session.cursor.return_value.executemany.assert_called_once()
 
@@ -213,6 +204,47 @@ def test_write_batch_wraps_db_error_as_connection_error(writer, session):
             {"target_schema": "s", "target_table": "t", "target_columns": ["id"]},
         )
     session.conn.rollback.assert_called_once()
+
+
+def test_write_batch_upsert_requires_match_columns(writer):
+    with pytest.raises(ValidationError, match="upsert_match_columns"):
+        writer.write_batch(
+            [(1, "x")],
+            {
+                "load_method": "upsert",
+                "target_schema": "s",
+                "target_table": "t",
+                "target_columns": ["id", "name"],
+            },
+        )
+
+
+def test_write_batch_upsert_rejects_unknown_match_column(writer):
+    with pytest.raises(ValidationError, match="target_columns alt kumesi"):
+        writer.write_batch(
+            [(1, "x")],
+            {
+                "load_method": "upsert",
+                "target_schema": "s",
+                "target_table": "t",
+                "target_columns": ["id", "name"],
+                "upsert_match_columns": ["missing_col"],
+            },
+        )
+
+
+def test_write_batch_upsert_rejects_null_match_value(writer):
+    with pytest.raises(ValidationError, match="NULL deger olamaz"):
+        writer.write_batch(
+            [(None, "x")],
+            {
+                "load_method": "upsert",
+                "target_schema": "s",
+                "target_table": "t",
+                "target_columns": ["id", "name"],
+                "upsert_match_columns": ["id"],
+            },
+        )
 
 
 def test_write_batch_error_details_include_root_cause_and_sql_preview(

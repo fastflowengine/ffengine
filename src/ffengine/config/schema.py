@@ -14,7 +14,6 @@ VALID_LOAD_METHODS: frozenset[str] = frozenset(
         "append",
         "replace",
         "upsert",
-        "delete_from_table",
         "drop_if_exists_and_create",
         "script",
     }
@@ -68,6 +67,7 @@ TASK_DEFAULTS: dict = {
     "source_columns": None,
     "target_columns": None,
     "target_columns_meta": None,
+    "upsert_match_columns": None,
     "mapping_file": None,
     "partitioning": {
         "enabled": False,

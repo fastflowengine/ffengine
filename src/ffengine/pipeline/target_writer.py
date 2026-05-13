@@ -6,7 +6,6 @@ Supported load methods (LOAD_METHODS.md):
   append                            - incremental
   replace                           - full refresh (DROP + CREATE + INSERT)
   upsert                            - PK-based INSERT/UPDATE
-  delete_from_table                 - delete by WHERE + INSERT
   drop_if_exists_and_create         - recreate from scratch
   script                            - run SQL script in target DB
 """
@@ -20,7 +19,6 @@ _SUPPORTED_LOAD_METHODS = frozenset(
         "append",
         "replace",
         "upsert",
-        "delete_from_table",
         "drop_if_exists_and_create",
         "script",
     }
@@ -70,14 +68,7 @@ class TargetWriter:
             self._ddl(self.dialect.generate_ddl(qualified, columns))
 
         elif load_method == "upsert":
-            pass
-
-        elif load_method == "delete_from_table":
-            where = task_config.get("delete_where", "")
-            if where:
-                self._exec(f"DELETE FROM {qualified} WHERE {where}")
-            else:
-                self._exec(f"DELETE FROM {qualified}")
+            self._ddl(self.dialect.generate_ddl(qualified, columns))
 
         elif load_method == "script":
             script_sql = task_config.get("script_sql", "")
@@ -99,14 +90,33 @@ class TargetWriter:
         table = task_config.get("target_table", "")
         columns = task_config.get("target_columns", [])
         qualified = self._qualify(schema, table)
+        load_method = task_config.get("load_method", "append")
 
+        if load_method == "upsert":
+            match_columns, update_columns = self._resolve_upsert_columns(
+                task_config=task_config,
+                target_columns=columns,
+            )
+            self._validate_upsert_rows_for_null_match(
+                rows=rows,
+                target_columns=columns,
+                match_columns=match_columns,
+            )
         try:
-            sql = self.dialect.generate_bulk_insert_query(qualified, columns)
+            if load_method == "upsert":
+                sql = self.dialect.generate_upsert_query(
+                    qualified,
+                    columns,
+                    match_columns,
+                    update_columns,
+                )
+            else:
+                sql = self.dialect.generate_bulk_insert_query(qualified, columns)
         except Exception as exc:
             raise DialectError.wrap(
                 exc,
-                f"Bulk insert SQL uretilemedi: {qualified}",
-                details={"target": qualified},
+                f"Yazma SQL uretilemedi: {qualified}",
+                details={"target": qualified, "load_method": load_method},
             ) from exc
 
         cursor = self.session.cursor(server_side=False)
@@ -122,6 +132,7 @@ class TargetWriter:
                 details={
                     "target": qualified,
                     "rows": len(rows),
+                    "load_method": load_method,
                     "root_cause": str(exc),
                     "sql_preview": sanitize_sql_preview(sql),
                 },
@@ -223,3 +234,61 @@ class TargetWriter:
             else:
                 out.append(row)
         return out if changed else rows
+
+    def _resolve_upsert_columns(
+        self,
+        *,
+        task_config: dict,
+        target_columns: list[str],
+    ) -> tuple[list[str], list[str]]:
+        match_columns_raw = task_config.get("upsert_match_columns") or []
+        if not isinstance(match_columns_raw, list):
+            raise ValidationError(
+                "upsert_match_columns listesi zorunludur (load_method='upsert')."
+            )
+
+        normalized_match: list[str] = []
+        seen: set[str] = set()
+        for raw in match_columns_raw:
+            col = str(raw or "").strip()
+            if not col or col in seen:
+                continue
+            seen.add(col)
+            normalized_match.append(col)
+
+        if not normalized_match:
+            raise ValidationError(
+                "upsert_match_columns bos olamaz (load_method='upsert')."
+            )
+
+        target_set = set(target_columns)
+        invalid = [col for col in normalized_match if col not in target_set]
+        if invalid:
+            raise ValidationError(
+                "upsert_match_columns target_columns alt kumesi olmali. "
+                f"Gecersiz kolon(lar): {invalid}"
+            )
+
+        update_columns = [col for col in target_columns if col not in set(normalized_match)]
+        return normalized_match, update_columns
+
+    def _validate_upsert_rows_for_null_match(
+        self,
+        *,
+        rows: list[tuple],
+        target_columns: list[str],
+        match_columns: list[str],
+    ) -> None:
+        index_by_column = {name: idx for idx, name in enumerate(target_columns)}
+        match_indexes = [index_by_column[name] for name in match_columns]
+        for row_idx, row in enumerate(rows):
+            for col_name, col_idx in zip(match_columns, match_indexes):
+                if col_idx >= len(row):
+                    raise ValidationError(
+                        "Upsert satirinda kolon sayisi target_columns ile uyusmuyor."
+                    )
+                if row[col_idx] is None:
+                    raise ValidationError(
+                        "upsert_match_columns kolonlarinda NULL deger olamaz. "
+                        f"Satir={row_idx}, kolon={col_name}"
+                    )

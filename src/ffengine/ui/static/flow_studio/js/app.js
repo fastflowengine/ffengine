@@ -398,11 +398,9 @@ async function studioFetch(path, options) {
     const SCHEDULER_DEFAULT_TIMEZONE = "UTC";
     const SCHEDULER_MODES = ["manual", "minutely", "hourly", "daily", "weekly", "monthly", "advanced"];
     const LOAD_METHOD_LABELS = Object.freeze({
-      create_if_not_exists_or_truncate: "Create if missing, then truncate",
+      create_if_not_exists_or_truncate: "Create if not exists or truncate",
       append: "Append rows",
-      replace: "Replace table data",
       upsert: "Upsert (insert/update)",
-      delete_from_table: "Delete from table",
       drop_if_exists_and_create: "Drop and recreate",
       script: "Run script",
     });
@@ -438,6 +436,7 @@ async function studioFetch(path, options) {
       "hash_mod",
       "distinct",
     ]);
+    const UPSERT_MATCH_MAX_COUNT = 32;
     let customTagsState = [];
     let schedulerModeState = "manual";
     let schedulerAppliedState = null;
@@ -2524,6 +2523,217 @@ async function studioFetch(path, options) {
       updateBindingsVisibility(card);
     }
 
+    function normalizeUpsertMatchColumns(rawValues) {
+      const values = Array.isArray(rawValues) ? rawValues : [];
+      const out = [];
+      const seen = new Set();
+      for (const raw of values) {
+        const col = String(raw || "").trim();
+        if (!col || seen.has(col)) continue;
+        seen.add(col);
+        out.push(col);
+        if (out.length >= UPSERT_MATCH_MAX_COUNT) break;
+      }
+      return out;
+    }
+
+    function parseMappingTargetColumns(mappingContent) {
+      const text = String(mappingContent || "");
+      if (!text.trim()) return [];
+      const out = [];
+      const seen = new Set();
+      const lines = text.split(/\r?\n/);
+      for (const line of lines) {
+        const match = line.match(/^\s*target_name\s*:\s*(.+)\s*$/);
+        if (!match) continue;
+        let value = String(match[1] || "").trim();
+        value = value.replace(/^['"]|['"]$/g, "").trim();
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        out.push(value);
+      }
+      return out;
+    }
+
+    function setUpsertMatchOptions(card, options) {
+      const datalistNode = card.querySelector(".upsert-match-options");
+      if (!datalistNode) return;
+      const normalized = Array.from(
+        new Set(
+          (Array.isArray(options) ? options : [])
+            .map((x) => String(x || "").trim())
+            .filter(Boolean)
+        )
+      ).sort((a, b) => a.localeCompare(b));
+      datalistNode.innerHTML = "";
+      for (const col of normalized) {
+        const opt = document.createElement("option");
+        opt.value = col;
+        datalistNode.appendChild(opt);
+      }
+    }
+
+    function setUpsertMatchState(card, values) {
+      const normalized = normalizeUpsertMatchColumns(values);
+      card.dataset.upsertMatchColumns = JSON.stringify(normalized);
+      renderUpsertMatchChips(card);
+    }
+
+    function getUpsertMatchState(card) {
+      try {
+        const parsed = JSON.parse(String(card.dataset.upsertMatchColumns || "[]"));
+        return normalizeUpsertMatchColumns(parsed);
+      } catch (_err) {
+        return [];
+      }
+    }
+
+    function setUpsertMatchNote(card, message, isError = false) {
+      const note = card.querySelector(".upsert-match-note");
+      if (!note) return;
+      note.textContent = String(message || "");
+      note.classList.toggle("warn", !!isError);
+      note.classList.toggle("ok", !!message && !isError);
+    }
+
+    function renderUpsertMatchChips(card) {
+      const chipsWrap = card.querySelector(".upsert-match-chips");
+      if (!chipsWrap) return;
+      const values = getUpsertMatchState(card);
+      chipsWrap.innerHTML = "";
+      for (const col of values) {
+        const chip = document.createElement("span");
+        chip.className = "tag-chip";
+        chip.textContent = col;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "tag-chip-remove";
+        remove.textContent = "x";
+        remove.title = `Remove match column: ${col}`;
+        remove.disabled = !!isBusy;
+        remove.addEventListener("click", () => {
+          setUpsertMatchState(card, values.filter((item) => item !== col));
+          syncUpsertMatchState(card);
+        });
+        chip.appendChild(remove);
+        chipsWrap.appendChild(chip);
+      }
+    }
+
+    function addUpsertMatchColumn(card, rawValue) {
+      const value = String(rawValue || "").trim();
+      if (!value) return;
+      const next = normalizeUpsertMatchColumns([...getUpsertMatchState(card), value]);
+      setUpsertMatchState(card, next);
+      syncUpsertMatchState(card);
+    }
+
+    async function loadUpsertMatchOptions(card) {
+      const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim() || TASK_TYPES.SOURCE_TARGET;
+      const loadMethod = String(card.querySelector(".load-method")?.value || "").trim();
+      if (taskType !== TASK_TYPES.SOURCE_TARGET || loadMethod !== "upsert") {
+        return;
+      }
+
+      const sourceType = String(card.querySelector(".source-type")?.value || "table").trim() || "table";
+      const sourceConnId = String(el("source_conn_id")?.value || "").trim();
+      const targetConnId = String(el("target_conn_id")?.value || "").trim();
+      const sourceSchema = String(card.querySelector(".source-schema")?.value || "").trim();
+      const sourceTable = normalizeRelationIdentifier(card.querySelector(".source-table")?.value || "");
+      const targetSchema = String(card.querySelector(".target-schema")?.value || "").trim();
+      const targetTable = normalizeRelationIdentifier(card.querySelector(".target-table")?.value || "");
+      const mappingMode = String(card.querySelector(".column-mapping-mode")?.value || "source").trim();
+      const mappingContent = String(card.querySelector(".mapping-content")?.value || "");
+
+      const requestKey = [
+        sourceType,
+        sourceConnId,
+        sourceSchema,
+        sourceTable,
+        targetConnId,
+        targetSchema,
+        targetTable,
+        mappingMode,
+        mappingContent.length,
+      ].join("|").toLowerCase();
+      card.dataset.upsertMatchRequestKey = requestKey;
+
+      const candidates = [];
+
+      if (mappingMode === "mapping_file") {
+        for (const col of parseMappingTargetColumns(mappingContent)) {
+          candidates.push(col);
+        }
+      } else if ((sourceType === "table" || sourceType === "view") && sourceConnId && sourceSchema && sourceTable) {
+        try {
+          const srcResp = await studioFetch(
+            `/api/columns?conn_id=${encodeURIComponent(sourceConnId)}&schema=${encodeURIComponent(sourceSchema)}&table=${encodeURIComponent(sourceTable)}`
+          );
+          const srcData = await parseJsonSafe(srcResp);
+          if (srcResp.ok && srcData.ok) {
+            for (const item of Array.isArray(srcData.items) ? srcData.items : []) {
+              const name = String(item && item.name ? item.name : "").trim();
+              if (name) candidates.push(name);
+            }
+          }
+        } catch (_err) {
+          // no-op
+        }
+      }
+
+      if (targetConnId && targetSchema && targetTable) {
+        try {
+          const tgtResp = await studioFetch(
+            `/api/columns?conn_id=${encodeURIComponent(targetConnId)}&schema=${encodeURIComponent(targetSchema)}&table=${encodeURIComponent(targetTable)}`
+          );
+          const tgtData = await parseJsonSafe(tgtResp);
+          if (tgtResp.ok && tgtData.ok) {
+            for (const item of Array.isArray(tgtData.items) ? tgtData.items : []) {
+              const name = String(item && item.name ? item.name : "").trim();
+              if (name) candidates.push(name);
+            }
+          }
+        } catch (_err) {
+          // no-op
+        }
+      }
+
+      if (card.dataset.upsertMatchRequestKey !== requestKey) return;
+      setUpsertMatchOptions(card, candidates);
+    }
+
+    function refreshAllUpsertMatchOptions() {
+      for (const card of getTaskCards()) {
+        loadUpsertMatchOptions(card);
+      }
+    }
+
+    function syncUpsertMatchState(card) {
+      const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim() || TASK_TYPES.SOURCE_TARGET;
+      const loadMethod = String(card.querySelector(".load-method")?.value || "").trim();
+      const wrap = card.querySelector(".upsert-match-wrap");
+      const input = card.querySelector(".upsert-match-input");
+      if (!wrap || !input) return;
+
+      const isVisible = taskType === TASK_TYPES.SOURCE_TARGET && loadMethod === "upsert";
+      wrap.classList.toggle("hidden", !isVisible);
+      input.disabled = !isVisible;
+      input.setAttribute("aria-disabled", isVisible ? "false" : "true");
+
+      if (!isVisible) {
+        setUpsertMatchNote(card, "", false);
+        return;
+      }
+
+      const selected = getUpsertMatchState(card);
+      if (!selected.length) {
+        setUpsertMatchNote(card, "Select at least one match column for upsert.", true);
+      } else {
+        setUpsertMatchNote(card, `${selected.length} match column selected.`, false);
+      }
+      loadUpsertMatchOptions(card);
+    }
+
     function syncTaskTypeState(card) {
       const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim() || TASK_TYPES.SOURCE_TARGET;
       syncTaskTypeSegment(card);
@@ -2594,6 +2804,7 @@ async function studioFetch(path, options) {
       if (modeSelect && taskType !== TASK_TYPES.SOURCE_TARGET) {
         modeSelect.disabled = false;
       }
+      syncUpsertMatchState(card);
     }
 
     function setTaskCardValues(card, values, fallbackIndex = 1) {
@@ -2625,6 +2836,7 @@ async function studioFetch(path, options) {
       card.querySelector(".target-schema").value = values.target_schema || "";
       card.querySelector(".target-table").value = values.target_table || "";
       card.querySelector(".load-method").value = values.load_method || "create_if_not_exists_or_truncate";
+      setUpsertMatchState(card, values.upsert_match_columns || []);
       card.querySelector(".column-mapping-mode").value = values.column_mapping_mode || "source";
       card.querySelector(".mapping-content").value = values.mapping_content || "";
       card.querySelector(".where").value = values.where || "";
@@ -2659,6 +2871,7 @@ async function studioFetch(path, options) {
       syncPartitionState(card);
       syncTaskGroupState(card, fallbackIndex);
       syncMappingState(card);
+      syncUpsertMatchState(card);
     }
 
     function toggleSourceMode(card) {
@@ -3049,6 +3262,7 @@ async function studioFetch(path, options) {
       } else if (!isMappingFileMode) {
         setMappingStatus(card, "", false);
       }
+      syncUpsertMatchState(card);
     }
 
     async function generateMappingForCard(card) {
@@ -3223,11 +3437,18 @@ async function studioFetch(path, options) {
           loadPartitionColumnOptions(card);
         }, 220);
       };
+      const scheduleUpsertColumnRefresh = () => {
+        clearTimeout(card._ffUpsertColumnTimer);
+        card._ffUpsertColumnTimer = setTimeout(() => {
+          loadUpsertMatchOptions(card);
+        }, 220);
+      };
 
       taskTypeSelect.addEventListener("change", () => {
         syncTaskTypeState(card);
         syncPartitionState(card);
         syncMappingState(card);
+        syncUpsertMatchState(card);
         refreshTaskCardHeaders();
       });
 
@@ -3236,6 +3457,7 @@ async function studioFetch(path, options) {
         refreshTaskCardHeaders();
         syncMappingState(card);
         schedulePartitionColumnRefresh();
+        scheduleUpsertColumnRefresh();
       });
 
       sourceSchemaInput.addEventListener("input", () => {
@@ -3249,9 +3471,13 @@ async function studioFetch(path, options) {
             "source_conn_id"
           );
           loadPartitionColumnOptions(card);
+          loadUpsertMatchOptions(card);
         }, 220);
       });
-      sourceSchemaInput.addEventListener("change", () => schedulePartitionColumnRefresh());
+      sourceSchemaInput.addEventListener("change", () => {
+        schedulePartitionColumnRefresh();
+        scheduleUpsertColumnRefresh();
+      });
 
       sourceTableInput.addEventListener("input", () => {
         if (sourceTypeSelect.value === "sql") return;
@@ -3264,12 +3490,17 @@ async function studioFetch(path, options) {
             "source_table_options"
           );
           loadPartitionColumnOptions(card);
+          loadUpsertMatchOptions(card);
         }, 220);
       });
-      sourceTableInput.addEventListener("change", () => schedulePartitionColumnRefresh());
+      sourceTableInput.addEventListener("change", () => {
+        schedulePartitionColumnRefresh();
+        scheduleUpsertColumnRefresh();
+      });
 
       targetSchemaInput.addEventListener("input", () => {
         refreshTaskCardHeaders();
+        scheduleUpsertColumnRefresh();
         clearTimeout(targetSchemaInput._ffTimer);
         targetSchemaInput._ffTimer = setTimeout(() => {
           autocompleteSchemas(
@@ -3283,6 +3514,7 @@ async function studioFetch(path, options) {
 
       targetTableInput.addEventListener("input", () => {
         refreshTaskCardHeaders();
+        scheduleUpsertColumnRefresh();
         clearTimeout(targetTableInput._ffTimer);
         targetTableInput._ffTimer = setTimeout(() => {
           autocompleteTables(
@@ -3295,12 +3527,32 @@ async function studioFetch(path, options) {
       });
       sourceSchemaInput.addEventListener("input", () => refreshTaskCardHeaders());
       sourceTableInput.addEventListener("input", () => refreshTaskCardHeaders());
-      loadMethodSelect.addEventListener("change", () => refreshTaskCardHeaders());
+      loadMethodSelect.addEventListener("change", () => {
+        refreshTaskCardHeaders();
+        syncUpsertMatchState(card);
+        scheduleUpsertColumnRefresh();
+      });
       scriptEnvSelect.addEventListener("change", () => refreshTaskCardHeaders());
       scriptSqlInput.addEventListener("input", () => refreshTaskCardHeaders());
       dagTaskDagSelect.addEventListener("change", () => {
         refreshTaskCardHeaders();
         syncTaskTypeState(card);
+      });
+      card.querySelector(".mapping-content").addEventListener("input", () => {
+        scheduleUpsertColumnRefresh();
+      });
+      card.querySelector(".upsert-match-input").addEventListener("keydown", (evt) => {
+        if (evt.key === "Enter" || evt.key === ",") {
+          evt.preventDefault();
+          const inputNode = card.querySelector(".upsert-match-input");
+          addUpsertMatchColumn(card, inputNode.value);
+          inputNode.value = "";
+        }
+      });
+      card.querySelector(".upsert-match-input").addEventListener("blur", () => {
+        const inputNode = card.querySelector(".upsert-match-input");
+        addUpsertMatchColumn(card, inputNode.value);
+        inputNode.value = "";
       });
     }
 
@@ -3308,6 +3560,13 @@ async function studioFetch(path, options) {
       const template = el("task_card_template");
       const node = template.content.firstElementChild.cloneNode(true);
       const fallbackIndex = getTaskCards().length + 1;
+      const upsertOptionsNode = node.querySelector(".upsert-match-options");
+      const upsertInputNode = node.querySelector(".upsert-match-input");
+      if (upsertOptionsNode && upsertInputNode) {
+        const upsertListId = `upsert_match_options_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+        upsertOptionsNode.id = upsertListId;
+        upsertInputNode.setAttribute("list", upsertListId);
+      }
       applyFriendlyLoadMethodLabels(node);
       bindBindingsSection(node);
       bindTaskTypeSegment(node);
@@ -3466,8 +3725,9 @@ async function studioFetch(path, options) {
         pushToast(`Update completed: ${currentUpdateDagId}`, "success", false);
       } catch (err) {
         logDebug("submit update error", err);
-        setUpdateModeStatus("Unexpected error occurred during update.", "warn");
-        pushToast("Unexpected error occurred during update.", "error", true);
+        const message = String(err && err.message ? err.message : "Unexpected error occurred during update.");
+        setUpdateModeStatus(message, "warn");
+        pushToast(message, "error", true);
       } finally {
         endOperation();
       }
@@ -3512,8 +3772,9 @@ async function studioFetch(path, options) {
         }
       } catch (err) {
         logDebug("submit create error", err);
-        setUpdateModeStatus("Unexpected error occurred during create.", "warn");
-        pushToast("Unexpected error occurred during create.", "error", true);
+        const message = String(err && err.message ? err.message : "Unexpected error occurred during create.");
+        setUpdateModeStatus(message, "warn");
+        pushToast(message, "error", true);
       } finally {
         endOperation();
       }
@@ -3583,6 +3844,16 @@ async function studioFetch(path, options) {
       const normalizedTargetTable = taskType === TASK_TYPES.SOURCE_TARGET
         ? (targetTableVal || undefined)
         : (targetTableVal || "script_task");
+      const loadMethod = card.querySelector(".load-method").value;
+      const upsertMatchColumns = getUpsertMatchState(card);
+      if (
+        taskType === TASK_TYPES.SOURCE_TARGET
+        && loadMethod === "upsert"
+        && !upsertMatchColumns.length
+      ) {
+        setUpsertMatchNote(card, "Select at least one match column for upsert.", true);
+        throw new Error("Upsert requires at least one match column.");
+      }
       const bindings = getBindingRows(card)
         .map((row) => {
           const bindingSource = row.querySelector(".binding-source").value;
@@ -3612,7 +3883,13 @@ async function studioFetch(path, options) {
         dag_task_dag_id: taskType === TASK_TYPES.DAG ? (dagTaskDagId || undefined) : undefined,
         target_schema: normalizedTargetSchema,
         target_table: normalizedTargetTable,
-        load_method: card.querySelector(".load-method").value,
+        load_method: loadMethod,
+        upsert_match_columns:
+          taskType === TASK_TYPES.SOURCE_TARGET
+          && loadMethod === "upsert"
+          && upsertMatchColumns.length
+            ? upsertMatchColumns
+            : undefined,
         column_mapping_mode: card.querySelector(".column-mapping-mode").value,
         mapping_content: taskType === TASK_TYPES.SOURCE_TARGET && card.querySelector(".column-mapping-mode").value === "mapping_file"
           ? (card.querySelector(".mapping-content").value || "").trim() || undefined
@@ -3661,6 +3938,7 @@ async function studioFetch(path, options) {
         target_schema: firstTask.target_schema,
         target_table: firstTask.target_table,
         load_method: firstTask.load_method,
+        upsert_match_columns: firstTask.upsert_match_columns,
         column_mapping_mode: firstTask.column_mapping_mode,
         where: firstTask.where,
         batch_size: firstTask.batch_size,
@@ -3751,8 +4029,12 @@ async function studioFetch(path, options) {
     el("source_conn_id").addEventListener("change", () => {
       refreshTaskCardHeaders();
       refreshAllPartitionColumnOptions();
+      refreshAllUpsertMatchOptions();
     });
-    el("target_conn_id").addEventListener("change", () => refreshTaskCardHeaders());
+    el("target_conn_id").addEventListener("change", () => {
+      refreshTaskCardHeaders();
+      refreshAllUpsertMatchOptions();
+    });
     const customTagsInput = el("custom_tags_input");
     if (customTagsInput) {
       customTagsInput.addEventListener("keydown", (evt) => {

@@ -258,11 +258,9 @@
             <label>
               <span class="global-control-label">Load Method</span>
               <select class="load-method" title="Select how data is written to the target.">
-                <option value="create_if_not_exists_or_truncate">create_if_not_exists_or_truncate</option>
+                <option value="create_if_not_exists_or_truncate">Create if not exists or truncate</option>
                 <option value="append">append</option>
-                <option value="replace">replace</option>
                 <option value="upsert">upsert</option>
-                <option value="delete_from_table">delete_from_table</option>
                 <option value="drop_if_exists_and_create">drop_if_exists_and_create</option>
                 <option value="script">script</option>
               </select>
@@ -276,6 +274,21 @@
                 <span class="global-control-label">Target Table</span>
                 <input class="target-table" list="target_table_options" value="orders_stg" placeholder="Search table" title="Type at least 3 characters to search.">
               </label>
+            </div>
+            <div class="upsert-match-wrap hidden">
+              <span class="global-control-label">Match Columns (Upsert)</span>
+              <div class="tag-chip-input upsert-match-control">
+                <div class="upsert-match-chips"></div>
+                <input
+                  class="upsert-match-input"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="Select/type target column and press Enter"
+                  title="Choose upsert match key columns"
+                >
+                <datalist class="upsert-match-options"></datalist>
+              </div>
+              <div class="upsert-match-note muted-note"></div>
             </div>
             </div>
             <div class="sub-card advanced-card">
@@ -617,9 +630,6 @@
     </div>
   </div>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=61"></script>
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=62"></script>
 </body>
 </html>
-
-
-

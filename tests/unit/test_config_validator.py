@@ -111,8 +111,6 @@ class TestLoadMethod:
             "create_if_not_exists_or_truncate",
             "append",
             "replace",
-            "upsert",
-            "delete_from_table",
             "drop_if_exists_and_create",
             "script",
         ],
@@ -129,6 +127,44 @@ class TestLoadMethod:
     def test_invalid_load_method_raises(self):
         with pytest.raises(ValidationError, match="load_method"):
             ConfigValidator().validate(_task(load_method="bulk_load"))
+
+    def test_upsert_without_match_columns_raises(self):
+        with pytest.raises(ValidationError, match="upsert_match_columns"):
+            ConfigValidator().validate(_task(load_method="upsert"))
+
+    def test_upsert_match_columns_are_normalized(self):
+        task = _task(
+            load_method="upsert",
+            upsert_match_columns=[" id ", "id", "name", ""],
+        )
+        ConfigValidator().validate(task)
+        assert task["upsert_match_columns"] == ["id", "name"]
+
+    def test_upsert_with_match_columns_passes(self):
+        ConfigValidator().validate(
+            _task(load_method="upsert", upsert_match_columns=["id"])
+        )
+
+    def test_upsert_match_columns_rejected_for_non_source_target_task(self):
+        with pytest.raises(ValidationError, match="task_type='source_target'"):
+            ConfigValidator().validate(
+                _task(
+                    task_type="script_run",
+                    load_method="script",
+                    upsert_match_columns=["id"],
+                )
+            )
+
+    def test_upsert_load_method_rejected_for_non_source_target_task(self):
+        with pytest.raises(ValidationError, match="load_method='upsert'"):
+            ConfigValidator().validate(
+                _task(
+                    task_type="script_run",
+                    load_method="upsert",
+                    script_sql="DELETE FROM x",
+                    script_run_environment="source",
+                )
+            )
 
 
 # ---------------------------------------------------------------------------
