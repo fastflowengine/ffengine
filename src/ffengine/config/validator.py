@@ -40,6 +40,7 @@ class ConfigValidator:
         self._check_required(task)
         self._check_source_type(task)
         self._check_load_method(task)
+        self._check_upsert_config(task)
         self._check_column_mapping_mode(task)
         self._check_extraction_method(task)
         self._check_sql_source(task)
@@ -73,6 +74,38 @@ class ConfigValidator:
             raise ValidationError(
                 f"Gecersiz load_method: '{value}'. "
                 f"Gecerli degerler: {sorted(VALID_LOAD_METHODS)}"
+            )
+
+    def _check_upsert_config(self, task: dict) -> None:
+        raw_cols = task.get("upsert_match_columns")
+        normalized: list[str] = []
+        if isinstance(raw_cols, list):
+            seen: set[str] = set()
+            for raw in raw_cols:
+                col = str(raw or "").strip()
+                if not col or col in seen:
+                    continue
+                seen.add(col)
+                normalized.append(col)
+            task["upsert_match_columns"] = normalized or None
+        elif raw_cols is not None:
+            raise ValidationError(
+                "upsert_match_columns listesi zorunludur (verildiginde)."
+            )
+
+        task_type = str(task.get("task_type") or "source_target").strip()
+        if task_type != "source_target" and task.get("load_method") == "upsert":
+            raise ValidationError(
+                "load_method='upsert' sadece task_type='source_target' icin desteklenir."
+            )
+        if task_type != "source_target" and normalized:
+            raise ValidationError(
+                "upsert_match_columns sadece task_type='source_target' icin desteklenir."
+            )
+
+        if task.get("load_method") == "upsert" and not normalized:
+            raise ValidationError(
+                "load_method='upsert' icin upsert_match_columns zorunludur."
             )
 
     def _check_column_mapping_mode(self, task: dict) -> None:

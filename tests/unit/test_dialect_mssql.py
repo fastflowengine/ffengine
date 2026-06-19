@@ -81,8 +81,8 @@ def test_get_table_schema(dialect):
     mock_cursor = MagicMock()
     mock_conn.cursor.return_value = mock_cursor
     mock_cursor.fetchall.return_value = [
-        ("OrderId", "int", "NO", 10, 0),
-        ("Total", "decimal", "YES", 18, 2),
+        ("OrderId", "int", "NO", 10, 0, None),
+        ("Total", "decimal", "YES", 18, 2, None),
     ]
 
     columns = dialect.get_table_schema(mock_conn, "dbo", "Orders")
@@ -91,6 +91,44 @@ def test_get_table_schema(dialect):
     assert columns[0] == ColumnInfo("OrderId", "INT", False, 10, 0)
     assert columns[1] == ColumnInfo("Total", "DECIMAL", True, 18, 2)
     mock_cursor.close.assert_called_once()
+
+
+def test_get_table_schema_uses_character_length_for_text_binary_types(dialect):
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_cursor.fetchall.return_value = [
+        ("ColNVar", "nvarchar", "YES", None, None, 120),
+        ("ColVar", "varchar", "YES", None, None, 80),
+        ("ColChar", "char", "NO", None, None, 3),
+        ("ColBin", "varbinary", "YES", None, None, 16),
+    ]
+
+    columns = dialect.get_table_schema(mock_conn, "dbo", "Orders")
+
+    assert columns == [
+        ColumnInfo("ColNVar", "NVARCHAR", True, 120, None),
+        ColumnInfo("ColVar", "VARCHAR", True, 80, None),
+        ColumnInfo("ColChar", "CHAR", False, 3, None),
+        ColumnInfo("ColBin", "VARBINARY", True, 16, None),
+    ]
+
+
+def test_get_table_schema_normalizes_max_length_to_none(dialect):
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_cursor.fetchall.return_value = [
+        ("ColNVarMax", "nvarchar", "YES", None, None, -1),
+        ("ColBinMax", "varbinary", "YES", None, None, -1),
+    ]
+
+    columns = dialect.get_table_schema(mock_conn, "dbo", "Orders")
+
+    assert columns == [
+        ColumnInfo("ColNVarMax", "NVARCHAR", True, None, None),
+        ColumnInfo("ColBinMax", "VARBINARY", True, None, None),
+    ]
 
 
 def test_list_schemas(dialect):
@@ -158,6 +196,31 @@ def test_generate_ddl_deterministic(dialect):
 def test_generate_bulk_insert_query(dialect):
     query = dialect.generate_bulk_insert_query("Orders", ["id", "name"])
     assert query == "INSERT INTO Orders ([id], [name]) VALUES (?, ?)"
+
+
+def test_generate_upsert_query_with_update_columns(dialect):
+    query = dialect.generate_upsert_query(
+        "dbo.Orders",
+        ["id", "name", "amount"],
+        ["id"],
+        ["name", "amount"],
+    )
+    assert "MERGE INTO dbo.Orders AS target" in query
+    assert "WHEN MATCHED THEN UPDATE SET" in query
+    assert "target.[name] = source.[name]" in query
+    assert "target.[amount] = source.[amount]" in query
+    assert "WHEN NOT MATCHED THEN INSERT ([id], [name], [amount])" in query
+
+
+def test_generate_upsert_query_without_update_columns(dialect):
+    query = dialect.generate_upsert_query(
+        "dbo.Orders",
+        ["id", "name"],
+        ["id"],
+        [],
+    )
+    assert "WHEN MATCHED THEN UPDATE SET" not in query
+    assert "WHEN NOT MATCHED THEN INSERT ([id], [name])" in query
 
 
 def test_get_pagination_query(dialect):

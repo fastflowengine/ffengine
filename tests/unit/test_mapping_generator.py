@@ -1,22 +1,16 @@
-"""
-C09 — MappingGenerator birim testleri.
+"""Unit tests for MappingGenerator."""
 
-Kapsam: generate yapısı, kolon sırası, tür çevirisi, kaydetme, hata senaryoları,
-        generate→save→resolve roundtrip.
-"""
+from __future__ import annotations
 
-import yaml
-import pytest
 from unittest.mock import MagicMock
 
-from ffengine.mapping.generator import MappingGenerator
-from ffengine.mapping.resolver import MappingResolver
+import pytest
+import yaml
+
 from ffengine.dialects.base import ColumnInfo
 from ffengine.errors.exceptions import MappingError
-
-# ---------------------------------------------------------------------------
-# Yardımcılar
-# ---------------------------------------------------------------------------
+from ffengine.mapping.generator import MappingGenerator
+from ffengine.mapping.resolver import MappingResolver
 
 
 def _make_dialect(class_name: str, cols=None):
@@ -36,13 +30,12 @@ def _postgres_dialect():
     return _make_dialect("PostgresDialect")
 
 
+def _mssql_dialect(cols: list[ColumnInfo]):
+    return _make_dialect("MSSQLDialect", cols)
+
+
 def _conn():
     return MagicMock()
-
-
-# ---------------------------------------------------------------------------
-# MappingGenerator testleri
-# ---------------------------------------------------------------------------
 
 
 class TestMappingGenerator:
@@ -57,13 +50,13 @@ class TestMappingGenerator:
         assert "columns" in result
 
     def test_generate_version_is_v1(self):
-        src = _oracle_dialect([ColumnInfo("id", "NUMBER")])
+        src = _oracle_dialect([ColumnInfo("id", "NUMBER", precision=10)])
         tgt = _postgres_dialect()
         result = MappingGenerator().generate(_conn(), src, tgt, "public", "t")
         assert result["version"] == "v1"
 
     def test_generate_dialect_names(self):
-        src = _oracle_dialect([ColumnInfo("id", "NUMBER")])
+        src = _oracle_dialect([ColumnInfo("id", "NUMBER", precision=10)])
         tgt = _postgres_dialect()
         result = MappingGenerator().generate(_conn(), src, tgt, "public", "t")
         assert result["source_dialect"] == "oracle"
@@ -71,8 +64,8 @@ class TestMappingGenerator:
 
     def test_generate_column_order_preserved(self):
         cols = [
-            ColumnInfo("col_c", "NUMBER"),
-            ColumnInfo("col_a", "VARCHAR2"),
+            ColumnInfo("col_c", "NUMBER", precision=10),
+            ColumnInfo("col_a", "VARCHAR2", precision=140),
             ColumnInfo("col_b", "DATE"),
         ]
         src = _oracle_dialect(cols)
@@ -81,20 +74,52 @@ class TestMappingGenerator:
         names = [c["source_name"] for c in result["columns"]]
         assert names == ["col_c", "col_a", "col_b"]
 
-    def test_generate_source_type_preserved(self):
+    def test_generate_source_type_is_parameterized(self):
         cols = [ColumnInfo("amount", "NUMBER", precision=18, scale=4)]
         src = _oracle_dialect(cols)
         tgt = _postgres_dialect()
         result = MappingGenerator().generate(_conn(), src, tgt, "public", "t")
-        assert result["columns"][0]["source_type"] == "NUMBER"
+        assert result["columns"][0]["source_type"] == "NUMBER(18,4)"
 
-    def test_generate_target_type_translated(self):
-        cols = [ColumnInfo("status", "VARCHAR2")]
+    def test_generate_target_type_translated_with_params(self):
+        cols = [ColumnInfo("status", "VARCHAR2", precision=140)]
         src = _oracle_dialect(cols)
         tgt = _postgres_dialect()
         result = MappingGenerator().generate(_conn(), src, tgt, "public", "t")
-        # Oracle VARCHAR2 → canonical VARCHAR → Postgres VARCHAR
-        assert result["columns"][0]["target_type"] == "VARCHAR"
+        assert result["columns"][0]["target_type"] == "VARCHAR(140)"
+
+    def test_generate_postgres_character_varying_length_is_preserved(self):
+        cols = [ColumnInfo("account_no", "CHARACTER VARYING", precision=64)]
+        src = _postgres_dialect()
+        src.get_table_schema = lambda *args, **kwargs: cols
+        tgt = _postgres_dialect()
+
+        result = MappingGenerator().generate(_conn(), src, tgt, "ocn_iss", "accounts")
+
+        assert result["columns"][0]["source_type"] == "CHARACTER VARYING(64)"
+        assert result["columns"][0]["target_type"] == "VARCHAR(64)"
+
+    def test_generate_mssql_to_oracle_char_length_is_preserved(self):
+        cols = [ColumnInfo("iata_code", "CHAR", precision=3)]
+        src = _mssql_dialect(cols)
+        tgt = _oracle_dialect([])
+        result = MappingGenerator().generate(_conn(), src, tgt, "dbo", "airports")
+        assert result["columns"][0]["source_type"] == "CHAR(3)"
+        assert result["columns"][0]["target_type"] == "CHAR(3)"
+
+    def test_generate_unparameterized_length_target_rejected_by_strict(self):
+        cols = [ColumnInfo("iata_code", "CHAR")]
+        src = _oracle_dialect(cols)
+        tgt = _postgres_dialect()
+        with pytest.raises(MappingError, match="requires explicit length"):
+            MappingGenerator().generate(_conn(), src, tgt, "public", "t")
+
+    def test_generate_unparameterized_numeric_target_rejected_by_strict(self):
+        cols = [ColumnInfo("amount", "NUMBER")]
+        src = _oracle_dialect(cols)
+        tgt = _postgres_dialect()
+        with pytest.raises(MappingError, match="requires explicit precision/scale"):
+            MappingGenerator().generate(_conn(), src, tgt, "public", "t")
 
     def test_generate_unsupported_type_raises_mapping_error(self):
         cols = [ColumnInfo("col1", "XMLTYPE")]
@@ -104,13 +129,13 @@ class TestMappingGenerator:
             MappingGenerator().generate(_conn(), src, tgt, "public", "t")
 
     def test_generate_invalid_version_raises_mapping_error(self):
-        src = _oracle_dialect([ColumnInfo("id", "NUMBER")])
+        src = _oracle_dialect([ColumnInfo("id", "NUMBER", precision=10)])
         tgt = _postgres_dialect()
-        with pytest.raises(MappingError, match="versiyon"):
+        with pytest.raises(MappingError, match="versiyonu"):
             MappingGenerator().generate(_conn(), src, tgt, "public", "t", version="v99")
 
     def test_save_writes_valid_yaml(self, tmp_path):
-        cols = [ColumnInfo("id", "NUMBER")]
+        cols = [ColumnInfo("id", "NUMBER", precision=10)]
         src = _oracle_dialect(cols)
         tgt = _postgres_dialect()
         gen = MappingGenerator()
@@ -124,7 +149,7 @@ class TestMappingGenerator:
         assert loaded["columns"][0]["source_name"] == "id"
 
     def test_save_nonexistent_directory_raises_mapping_error(self, tmp_path):
-        cols = [ColumnInfo("id", "NUMBER")]
+        cols = [ColumnInfo("id", "NUMBER", precision=10)]
         src = _oracle_dialect(cols)
         tgt = _postgres_dialect()
         gen = MappingGenerator()
@@ -133,7 +158,10 @@ class TestMappingGenerator:
             gen.save(mapping, str(tmp_path / "nonexistent" / "out.yaml"))
 
     def test_save_preserves_column_order(self, tmp_path):
-        cols = [ColumnInfo("z_col", "NUMBER"), ColumnInfo("a_col", "VARCHAR2")]
+        cols = [
+            ColumnInfo("z_col", "NUMBER", precision=10),
+            ColumnInfo("a_col", "VARCHAR2", precision=10),
+        ]
         src = _oracle_dialect(cols)
         tgt = _postgres_dialect()
         gen = MappingGenerator()
@@ -146,9 +174,8 @@ class TestMappingGenerator:
         assert [c["source_name"] for c in loaded["columns"]] == ["z_col", "a_col"]
 
     def test_roundtrip_generate_save_resolve(self, tmp_path):
-        """generate → save → MappingResolver(mapping_file) roundtrip."""
         cols = [
-            ColumnInfo("order_id", "NUMBER"),
+            ColumnInfo("order_id", "NUMBER", precision=10),
             ColumnInfo("amount", "NUMBER", precision=18, scale=4),
         ]
         src = _oracle_dialect(cols)

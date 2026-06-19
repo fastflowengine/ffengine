@@ -79,6 +79,22 @@ def _extract_binding_params(expression: str | None) -> set[str]:
     return set(_BINDING_PARAM_RE.findall(str(expression or "")))
 
 
+def _normalize_upsert_match_columns(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("upsert_match_columns must be a list.")
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        col = str(item or "").strip()
+        if not col or col in seen:
+            continue
+        seen.add(col)
+        out.append(col)
+    return out
+
+
 def _validate_bindings_expression_contract(
     expression: str | None,
     bindings: list["BindingPayload"] | None,
@@ -165,6 +181,7 @@ class FlowTaskPayload(BaseModel):
     target_schema: str | None = Field(default=None, min_length=1)
     target_table: str | None = Field(default=None, min_length=1)
     load_method: str = "create_if_not_exists_or_truncate"
+    upsert_match_columns: list[str] | None = None
     column_mapping_mode: str = "source"
     mapping_file: str | None = None
     mapping_content: str | None = None
@@ -236,6 +253,10 @@ class FlowTaskPayload(BaseModel):
 
     @model_validator(mode="after")
     def _v_mapping(self) -> FlowTaskPayload:
+        normalized_upsert_match_columns = _normalize_upsert_match_columns(
+            self.upsert_match_columns
+        )
+        self.upsert_match_columns = normalized_upsert_match_columns or None
         if self.task_type == "source_target":
             if (
                 not (self.target_schema or "").strip()
@@ -258,6 +279,16 @@ class FlowTaskPayload(BaseModel):
                     )
             if self.source_type == "sql" and not (self.inline_sql or "").strip():
                 raise ValueError("inline_sql is required when source_type='sql'.")
+            if self.load_method == "upsert" and not normalized_upsert_match_columns:
+                raise ValueError(
+                    "upsert_match_columns is required when load_method='upsert'."
+                )
+        elif self.load_method == "upsert":
+            raise ValueError("load_method='upsert' is only valid for source_target tasks.")
+        elif normalized_upsert_match_columns:
+            raise ValueError(
+                "upsert_match_columns is only supported when task_type='source_target'."
+            )
         elif self.task_type == "script_run":
             environment = str(self.script_run_environment or "").strip()
             if environment not in _VALID_SCRIPT_RUN_ENVIRONMENTS:
@@ -351,6 +382,7 @@ class DagUpsertPayload(BaseModel):
     target_schema: str | None = Field(default=None, min_length=1)
     target_table: str | None = Field(default=None, min_length=1)
     load_method: str = "create_if_not_exists_or_truncate"
+    upsert_match_columns: list[str] | None = None
     column_mapping_mode: str = "source"
     mapping_file: str | None = None
     mapping_content: str | None = None
@@ -425,7 +457,27 @@ class DagUpsertPayload(BaseModel):
         has_task_list = isinstance(self.flow_tasks, list) and len(self.flow_tasks) > 0
         if has_task_list:
             return self
-        if self.task_type == "script_run":
+        normalized_upsert_match_columns = _normalize_upsert_match_columns(
+            self.upsert_match_columns
+        )
+        self.upsert_match_columns = normalized_upsert_match_columns or None
+        parsed_task_type = str(self.task_type or "").strip()
+        if parsed_task_type == "source_target":
+            if self.load_method == "upsert" and not normalized_upsert_match_columns:
+                raise ValueError(
+                    "upsert_match_columns is required when load_method='upsert'."
+                )
+        else:
+            if self.load_method == "upsert":
+                raise ValueError(
+                    "load_method='upsert' is only valid for source_target tasks."
+                )
+            if normalized_upsert_match_columns:
+                raise ValueError(
+                    "upsert_match_columns is only supported when task_type='source_target'."
+                )
+
+        if parsed_task_type == "script_run":
             if (
                 str(self.script_run_environment or "").strip()
                 not in _VALID_SCRIPT_RUN_ENVIRONMENTS
@@ -445,7 +497,8 @@ class DagUpsertPayload(BaseModel):
                 expression_label="Script SQL / Stored Procedure",
             )
             return self
-        if self.task_type == "dag":
+
+        if parsed_task_type == "dag":
             if not (self.dag_task_dag_id or "").strip():
                 raise ValueError("dag_task_dag_id is required when task_type='dag'.")
             items = list(self.bindings or [])
@@ -458,6 +511,7 @@ class DagUpsertPayload(BaseModel):
                 expression_label="Where Clause",
             )
             return self
+
         target_required_ok = all(
             [(self.target_schema or "").strip(), (self.target_table or "").strip()]
         )

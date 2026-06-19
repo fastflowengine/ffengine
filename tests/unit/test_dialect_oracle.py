@@ -81,9 +81,9 @@ def test_get_table_schema(dialect):
     mock_cursor = MagicMock()
     mock_conn.cursor.return_value = mock_cursor
     mock_cursor.fetchall.return_value = [
-        ("ID", "NUMBER", "N", 10, 0),
-        ("AMOUNT", "NUMBER", "Y", 38, 10),
-        ("DESCRIPTION", "CLOB", "Y", None, None),
+        ("ID", "NUMBER", "N", 10, 0, None, None),
+        ("AMOUNT", "NUMBER", "Y", 38, 10, None, None),
+        ("DESCRIPTION", "CLOB", "Y", None, None, None, None),
     ]
 
     columns = dialect.get_table_schema(mock_conn, "HR", "EMPLOYEES")
@@ -97,6 +97,25 @@ def test_get_table_schema(dialect):
     call_args = mock_cursor.execute.call_args[0]
     assert call_args[1] == ("HR", "EMPLOYEES")
     mock_cursor.close.assert_called_once()
+
+
+def test_get_table_schema_uses_char_decl_length_for_text_types(dialect):
+    mock_conn = MagicMock()
+    mock_cursor = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_cursor.fetchall.return_value = [
+        ("CITY", "VARCHAR2", "Y", None, None, 80, 80),
+        ("IATA_CODE", "CHAR", "N", None, None, 3, 3),
+        ("PAYLOAD", "RAW", "Y", None, None, None, 64),
+    ]
+
+    columns = dialect.get_table_schema(mock_conn, "FFENGINE", "AIRPORTS")
+
+    assert columns == [
+        ColumnInfo("CITY", "VARCHAR2", True, 80, None),
+        ColumnInfo("IATA_CODE", "CHAR", False, 3, None),
+        ColumnInfo("PAYLOAD", "RAW", True, 64, None),
+    ]
 
 
 def test_list_schemas(dialect):
@@ -154,6 +173,32 @@ def test_generate_bulk_insert_query(dialect):
     assert query == (
         'INSERT INTO EMPLOYEES ("ID", "NAME", "SALARY") VALUES (:1, :2, :3)'
     )
+
+
+def test_generate_upsert_query_with_update_columns(dialect):
+    query = dialect.generate_upsert_query(
+        "HR.EMPLOYEES",
+        ["ID", "NAME", "SALARY"],
+        ["ID"],
+        ["NAME", "SALARY"],
+    )
+    assert "MERGE INTO HR.EMPLOYEES target" in query
+    assert 'ON (target."ID" = source."ID")' in query
+    assert "WHEN MATCHED THEN UPDATE SET" in query
+    assert 'target."NAME" = source."NAME"' in query
+    assert 'target."SALARY" = source."SALARY"' in query
+    assert 'WHEN NOT MATCHED THEN INSERT ("ID", "NAME", "SALARY")' in query
+
+
+def test_generate_upsert_query_without_update_columns(dialect):
+    query = dialect.generate_upsert_query(
+        "HR.EMPLOYEES",
+        ["ID", "NAME"],
+        ["ID"],
+        [],
+    )
+    assert "WHEN MATCHED THEN UPDATE SET" not in query
+    assert 'WHEN NOT MATCHED THEN INSERT ("ID", "NAME")' in query
 
 
 def test_get_pagination_query(dialect):

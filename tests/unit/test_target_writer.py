@@ -66,6 +66,56 @@ def test_prepare_create_if_not_exists_calls_ddl_and_truncate(writer, session, di
     assert any("TRUNCATE" in sql for sql in executed_sqls)
 
 
+def test_prepare_create_if_not_exists_never_drops_existing_table(
+    writer, session, dialect
+):
+    cols = [ColumnInfo("airport_name", "VARCHAR2", False, 140, None)]
+
+    writer.prepare(
+        {
+            "load_method": "create_if_not_exists_or_truncate",
+            "target_schema": "FFENGINE",
+            "target_table": "FFE_AIRPORTS",
+            "target_columns_meta": cols,
+        }
+    )
+
+    executed_sqls = [
+        c[0][0] for c in session.cursor.return_value.execute.call_args_list
+    ]
+    assert not any("DROP TABLE IF EXISTS" in sql for sql in executed_sqls)
+    assert any("TRUNCATE" in sql for sql in executed_sqls)
+
+
+def test_prepare_replace_uses_oracle_drop_block_when_needed(session):
+    class OracleDialectStub:
+        def quote_identifier(self, name):
+            return f'"{name}"'
+
+        def generate_ddl(self, *_args, **_kwargs):
+            return "CREATE TABLE ..."
+
+        def get_table_schema(self, *_args, **_kwargs):
+            return [ColumnInfo("AIRPORT_NAME", "VARCHAR2", False, 4000, None)]
+
+    writer = TargetWriter(session, OracleDialectStub())
+    writer.prepare(
+        {
+            "load_method": "replace",
+            "target_schema": "FFENGINE",
+            "target_table": "FFE_AIRPORTS",
+            "target_columns_meta": [
+                ColumnInfo("airport_name", "VARCHAR2", False, 140, None)
+            ],
+        }
+    )
+    executed_sqls = [
+        c[0][0] for c in session.cursor.return_value.execute.call_args_list
+    ]
+    assert any("EXECUTE IMMEDIATE 'DROP TABLE" in sql for sql in executed_sqls)
+    assert any("SQLCODE != -942" in sql for sql in executed_sqls)
+
+
 def test_prepare_replace_calls_drop_and_ddl(writer, session, dialect):
     cols = [ColumnInfo("id", "INT", False)]
     writer.prepare(
@@ -96,6 +146,41 @@ def test_prepare_drop_if_exists_and_create(writer, session, dialect):
     dialect.generate_ddl.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    "load_method",
+    ["create_if_not_exists_or_truncate", "replace", "drop_if_exists_and_create", "upsert"],
+)
+def test_prepare_rejects_empty_columns_meta_for_ddl_methods(
+    writer, session, dialect, load_method
+):
+    with pytest.raises(ValidationError, match="target_columns_meta bos olamaz"):
+        writer.prepare(
+            {
+                "load_method": load_method,
+                "target_schema": "s",
+                "target_table": "t",
+                "target_columns_meta": [],
+            }
+        )
+    dialect.generate_ddl.assert_not_called()
+    session.cursor.return_value.execute.assert_not_called()
+
+
+def test_prepare_replace_raises_when_drop_fails(writer, session, dialect):
+    session.cursor.return_value.execute.side_effect = RuntimeError("drop failed")
+    with pytest.raises(ConnectionError, match="Hedef tablo drop islemi basarisiz"):
+        writer.prepare(
+            {
+                "load_method": "replace",
+                "target_schema": "s",
+                "target_table": "t",
+                "target_columns_meta": [ColumnInfo("id", "INT", False)],
+            }
+        )
+    session.conn.rollback.assert_called_once()
+    dialect.generate_ddl.assert_not_called()
+
+
 def test_prepare_script_executes_sql(writer, session):
     writer.prepare(
         {
@@ -123,7 +208,7 @@ def test_prepare_upsert_calls_ddl(writer, session, dialect):
             "load_method": "upsert",
             "target_schema": "s",
             "target_table": "t",
-            "target_columns_meta": [],
+            "target_columns_meta": [ColumnInfo("id", "INT", False)],
         }
     )
     dialect.generate_ddl.assert_called_once()
@@ -184,6 +269,15 @@ def test_write_batch_empty_rows(writer, session):
         [], {"target_schema": "s", "target_table": "t", "target_columns": []}
     )
     assert count == 0
+    session.cursor.return_value.executemany.assert_not_called()
+
+
+def test_write_batch_rejects_empty_target_columns(writer, session):
+    with pytest.raises(ValidationError, match="target_columns bos olamaz"):
+        writer.write_batch(
+            [(1,)],
+            {"target_schema": "s", "target_table": "t", "target_columns": []},
+        )
     session.cursor.return_value.executemany.assert_not_called()
 
 

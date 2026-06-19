@@ -46,7 +46,9 @@ class OracleDialect(BaseDialect):
                    DATA_TYPE,
                    NULLABLE,
                    DATA_PRECISION,
-                   DATA_SCALE
+                   DATA_SCALE,
+                   CHAR_COL_DECL_LENGTH,
+                   DATA_LENGTH
             FROM   ALL_TAB_COLUMNS
             WHERE  OWNER       = :1
               AND  TABLE_NAME  = :2
@@ -56,13 +58,29 @@ class OracleDialect(BaseDialect):
         cur.execute(query, (schema.upper(), table.upper()))
         columns = []
         for row in cur.fetchall():
+            data_type = row[1].upper()
+            numeric_precision = row[3]
+            numeric_scale = row[4]
+            char_decl_length = row[5]
+            data_length = row[6]
+            precision = None
+            scale = None
+
+            if data_type in {"NUMBER", "NUMERIC", "DECIMAL", "FLOAT"}:
+                precision = numeric_precision
+                scale = numeric_scale
+            elif data_type in {"VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR"}:
+                precision = char_decl_length
+            elif data_type in {"RAW"}:
+                precision = data_length
+
             columns.append(
                 ColumnInfo(
                     name=row[0],
-                    data_type=row[1].upper(),
+                    data_type=data_type,
                     nullable=row[2] == "Y",
-                    precision=row[3],
-                    scale=row[4],
+                    precision=precision,
+                    scale=scale,
                 )
             )
         cur.close()
@@ -110,6 +128,42 @@ class OracleDialect(BaseDialect):
         quoted = ", ".join(self.quote_identifier(c) for c in columns)
         placeholders = ", ".join([f":{i + 1}" for i in range(len(columns))])
         return f"INSERT INTO {table} ({quoted}) VALUES ({placeholders})"
+
+    def generate_upsert_query(
+        self,
+        table: str,
+        columns: list[str],
+        match_columns: list[str],
+        update_columns: list[str],
+    ) -> str:
+        quoted_columns = [self.quote_identifier(c) for c in columns]
+        quoted_match_columns = [self.quote_identifier(c) for c in match_columns]
+        quoted_update_columns = [self.quote_identifier(c) for c in update_columns]
+        source_select = ", ".join(
+            f":{i + 1} AS {quoted_col}" for i, quoted_col in enumerate(quoted_columns)
+        )
+        on_clause = " AND ".join(
+            f"target.{quoted_col} = source.{quoted_col}"
+            for quoted_col in quoted_match_columns
+        )
+        clauses: list[str] = []
+        if quoted_update_columns:
+            updates = ", ".join(
+                f"target.{quoted_col} = source.{quoted_col}"
+                for quoted_col in quoted_update_columns
+            )
+            clauses.append(f"WHEN MATCHED THEN UPDATE SET {updates}")
+        insert_columns = ", ".join(quoted_columns)
+        insert_values = ", ".join(f"source.{quoted_col}" for quoted_col in quoted_columns)
+        clauses.append(
+            f"WHEN NOT MATCHED THEN INSERT ({insert_columns}) VALUES ({insert_values})"
+        )
+        return (
+            f"MERGE INTO {table} target "
+            f"USING (SELECT {source_select} FROM DUAL) source "
+            f"ON ({on_clause}) "
+            f"{' '.join(clauses)}"
+        )
 
     def get_pagination_query(self, query: str, limit: int, offset: int) -> str:
         return f"{query} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"

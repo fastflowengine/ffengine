@@ -31,6 +31,12 @@ from ffengine.db.session import DBSession
 from ffengine.dialects.type_mapper import TypeMapper, UnsupportedTypeError
 from ffengine.mapping.generator import MappingGenerator
 from ffengine.mapping.resolver import VALID_MAPPING_VERSIONS, _dialect_name
+from ffengine.mapping.type_contract import (
+    LENGTH_BEARING_TYPES,
+    NUMERIC_PARAM_TYPES,
+    parse_type,
+    validate_mapping_object_strict,
+)
 
 STUDIO_METADATA_NAME = ".flow_studio.json"
 STUDIO_DAG_MARKER = "# generated_by: flow_studio"
@@ -99,6 +105,22 @@ def _normalize_bindings(raw_bindings: Any) -> list[dict[str, Any]]:
         }
         normalized.append(normalized_item)
     return normalized
+
+
+def _normalize_upsert_match_columns(raw_columns: Any) -> list[str]:
+    if raw_columns is None:
+        return []
+    if not isinstance(raw_columns, list):
+        raise ValueError("upsert_match_columns must be a list.")
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_columns:
+        col = str(raw or "").strip()
+        if not col or col in seen:
+            continue
+        seen.add(col)
+        out.append(col)
+    return out
 
 
 def _normalize_task_type(raw_task_type: Any) -> str:
@@ -944,17 +966,13 @@ def _resolve_mapping_file_path(flow_dir: Path, mapping_file: str) -> Path:
 
 
 def _mapping_yaml_to_source_columns(mapping_obj: dict[str, Any]) -> list[str]:
-    if not isinstance(mapping_obj, dict):
-        raise ValueError("Mapping YAML root must be a dict.")
-    version = mapping_obj.get("version")
-    if version not in VALID_MAPPING_VERSIONS:
-        raise ValueError(
-            f"Unsupported mapping file version: {version!r}. "
-            f"Gecerli: {sorted(VALID_MAPPING_VERSIONS)}"
-        )
-    entries = mapping_obj.get("columns")
-    if not isinstance(entries, list) or not entries:
-        raise ValueError("columns in Mapping YAML is empty or invalid.")
+    validated = validate_mapping_object_strict(
+        mapping_obj,
+        valid_versions=VALID_MAPPING_VERSIONS,
+        error_cls=ValueError,
+        context="flow_studio",
+    )
+    entries = validated.get("columns") or []
     out: list[str] = []
     for idx, item in enumerate(entries, start=1):
         if not isinstance(item, dict):
@@ -973,7 +991,12 @@ def _parse_yaml_mapping_text(mapping_content: str, *, label: str) -> dict[str, A
         raise ValueError(f"Invalid mapping YAML ({label}): {exc}") from exc
     if not isinstance(parsed, dict):
         raise ValueError(f"Invalid mapping YAML ({label} ): root must be a dict.")
-    _mapping_yaml_to_source_columns(parsed)
+    validate_mapping_object_strict(
+        parsed,
+        valid_versions=VALID_MAPPING_VERSIONS,
+        error_cls=ValueError,
+        context=label,
+    )
     return parsed
 
 
@@ -985,7 +1008,34 @@ def _read_mapping_object(path: Path) -> dict[str, Any]:
     )
 
 
-def _normalize_description_type(type_code: Any) -> str:
+_POSTGRES_OID_TYPE_NAMES: dict[str, str] = {
+    "16": "BOOLEAN",
+    "20": "BIGINT",
+    "21": "SMALLINT",
+    "23": "INTEGER",
+    "25": "TEXT",
+    "700": "REAL",
+    "701": "DOUBLE PRECISION",
+    "1042": "CHAR",
+    "1043": "VARCHAR",
+    "1082": "DATE",
+    "1083": "TIME",
+    "1114": "TIMESTAMP",
+    "1184": "TIMESTAMP WITH TIME ZONE",
+    "1700": "NUMERIC",
+    "2950": "UUID",
+    "3802": "JSONB",
+}
+
+
+def _normalize_description_type(
+    type_code: Any,
+    type_display: Any | None = None,
+) -> str:
+    if type_display is not None:
+        display = str(type_display or "").strip().upper()
+        if display:
+            return display
     if type_code is None:
         return "TEXT"
     if isinstance(type_code, str):
@@ -994,8 +1044,123 @@ def _normalize_description_type(type_code: Any) -> str:
         raw = str(getattr(type_code, "__name__", ""))
     else:
         raw = str(type_code)
+    mapped = _POSTGRES_OID_TYPE_NAMES.get(raw.strip())
+    if mapped:
+        return mapped
     cleaned = re.sub(r"[^A-Za-z0-9_ ]+", "_", raw).strip("_ ").upper()
     return cleaned or "TEXT"
+
+
+def _description_value(col: Any, attr_name: str, index: int) -> Any:
+    if hasattr(col, attr_name):
+        return getattr(col, attr_name)
+    try:
+        return col[index] if len(col) > index else None
+    except TypeError:
+        return None
+
+
+def _as_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _as_non_negative_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _parse_param_pair(params: str | None) -> tuple[int | None, int | None]:
+    if not params:
+        return None, None
+    parts = [p.strip() for p in str(params).split(",")]
+    precision = _as_positive_int(parts[0]) if parts else None
+    scale = _as_non_negative_int(parts[1]) if len(parts) > 1 else None
+    return precision, scale
+
+
+def _target_length_fallback(base_type: str, target_dialect: str) -> int | None:
+    by_dialect: dict[str, dict[str, int]] = {
+        "oracle": {
+            "VARCHAR2": 4000,
+            "NVARCHAR2": 2000,
+            "RAW": 2000,
+            "CHAR": 1,
+            "NCHAR": 1,
+        },
+        "mssql": {
+            "NVARCHAR": 4000,
+            "VARCHAR": 8000,
+            "VARBINARY": 8000,
+            "BINARY": 1,
+            "NCHAR": 1,
+            "CHAR": 1,
+        },
+        "postgres": {
+            "VARCHAR": 65535,
+            "CHAR": 1,
+        },
+    }
+    return by_dialect.get(target_dialect, {}).get(base_type)
+
+
+def _normalize_target_type_for_strict(
+    *,
+    target_type: str,
+    source_type: str,
+    source_meta: dict[str, Any],
+    target_dialect: str,
+    column_name: str,
+) -> str:
+    target_base, target_params = parse_type(target_type)
+    if target_params is not None:
+        return str(target_type or "").strip().upper()
+
+    source_base, source_params = parse_type(source_type)
+    src_param_precision, src_param_scale = _parse_param_pair(source_params)
+    src_meta_length = _as_positive_int(source_meta.get("source_length"))
+    src_meta_precision = _as_positive_int(source_meta.get("source_precision"))
+    src_meta_scale = _as_non_negative_int(source_meta.get("source_scale"))
+
+    if target_base in LENGTH_BEARING_TYPES:
+        explicit_length = src_meta_length or src_meta_precision
+        if explicit_length is None and source_base in LENGTH_BEARING_TYPES:
+            explicit_length = src_param_precision
+        if explicit_length is not None and explicit_length > 0:
+            return f"{target_base}({explicit_length})"
+        fallback = _target_length_fallback(target_base, target_dialect)
+        if fallback is not None:
+            return f"{target_base}({fallback})"
+        raise ValueError(
+            "Global strict mapping validation failed: "
+            f"column '{column_name}' target_type '{target_base}' requires explicit length "
+            "and no fallback is defined. Regenerate mapping."
+        )
+
+    if target_base in NUMERIC_PARAM_TYPES:
+        precision = src_meta_precision or src_param_precision
+        scale = src_meta_scale if src_meta_scale is not None else src_param_scale
+        if precision is not None and precision > 0:
+            if scale is not None and scale >= 0:
+                return f"{target_base}({precision},{scale})"
+            return f"{target_base}({precision})"
+        raise ValueError(
+            "Global strict mapping validation failed: "
+            f"column '{column_name}' target_type '{target_base}' requires explicit precision/scale. "
+            "Regenerate mapping."
+        )
+
+    return target_base
 
 
 def _wrap_zero_row_sql_for_dialect(inline_sql: str, dialect_name: str) -> str:
@@ -1009,11 +1174,127 @@ def _wrap_zero_row_sql_for_dialect(inline_sql: str, dialect_name: str) -> str:
     return f"SELECT * FROM ({base}) AS ffengine_inline_sql LIMIT 0"
 
 
+def _normalize_mssql_system_type(
+    *,
+    system_type_name: Any,
+    max_length: Any,
+    precision: Any,
+    scale: Any,
+    column_name: str,
+) -> str:
+    base, params = parse_type(str(system_type_name or ""))
+    if not base:
+        raise ValueError(
+            f"SQL metadata extraction failed: '{column_name}' column type is empty."
+        )
+
+    if base in LENGTH_BEARING_TYPES:
+        if params:
+            normalized_param = str(params).strip().upper()
+            if normalized_param == "MAX":
+                return base
+            parsed_len = _as_positive_int(normalized_param)
+            if parsed_len is not None:
+                return f"{base}({parsed_len})"
+        length = _as_positive_int(max_length) or _as_positive_int(precision)
+        if length is not None:
+            return f"{base}({length})"
+        raise ValueError(
+            f"SQL metadata extraction failed: '{column_name}' length could not be resolved."
+        )
+
+    if base in NUMERIC_PARAM_TYPES:
+        if params:
+            p, s = _parse_param_pair(params)
+            if p is not None:
+                if s is not None:
+                    return f"{base}({p},{s})"
+                return f"{base}({p})"
+        p = _as_positive_int(precision)
+        s = _as_non_negative_int(scale)
+        if p is not None:
+            if s is not None:
+                return f"{base}({p},{s})"
+            return f"{base}({p})"
+        raise ValueError(
+            f"SQL metadata extraction failed: '{column_name}' precision could not be resolved."
+        )
+
+    return base
+
+
+def _extract_sql_select_columns_mssql(
+    src_session: DBSession, inline_sql: str
+) -> list[dict[str, Any]]:
+    cursor = src_session.cursor(server_side=False)
+    query = """
+        SELECT column_ordinal,
+               name,
+               system_type_name,
+               is_nullable,
+               max_length,
+               precision,
+               scale,
+               error_number,
+               error_message
+        FROM sys.dm_exec_describe_first_result_set(?, NULL, 0)
+        ORDER BY column_ordinal
+    """
+    try:
+        cursor.execute(query, (inline_sql,))
+        rows = list(cursor.fetchall() or [])
+    except Exception as exc:
+        raise ValueError(f"SQL metadata extraction failed: {exc}") from exc
+    finally:
+        cursor.close()
+
+    if not rows:
+        raise ValueError("No columns found during SQL metadata extraction.")
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        error_number = row[7] if len(row) > 7 else None
+        error_message = row[8] if len(row) > 8 else None
+        if error_number not in (None, 0):
+            raise ValueError(
+                "SQL metadata extraction failed: "
+                f"{error_message or f'error_number={error_number}'}"
+            )
+
+        name = str(row[1] if len(row) > 1 else "").strip()
+        if not name:
+            continue
+        source_type = _normalize_mssql_system_type(
+            system_type_name=(row[2] if len(row) > 2 else None),
+            max_length=(row[4] if len(row) > 4 else None),
+            precision=(row[5] if len(row) > 5 else None),
+            scale=(row[6] if len(row) > 6 else None),
+            column_name=name,
+        )
+        out.append(
+            {
+                "name": name,
+                "source_type": source_type,
+                "nullable": bool(row[3]) if len(row) > 3 else True,
+                "source_length": _as_positive_int(row[4] if len(row) > 4 else None),
+                "source_precision": _as_positive_int(row[5] if len(row) > 5 else None),
+                "source_scale": _as_non_negative_int(row[6] if len(row) > 6 else None),
+            }
+        )
+
+    if not out:
+        raise ValueError("No columns found during SQL metadata extraction.")
+    return out
+
+
 def extract_sql_select_columns(
     src_session: DBSession, src_dialect, inline_sql: str
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Extract column names and normalized type names from SQL query metadata."""
     dialect_name = _dialect_name(src_dialect)
+    if dialect_name == "mssql":
+        return _extract_sql_select_columns_mssql(src_session, inline_sql)
+
     query = _wrap_zero_row_sql_for_dialect(inline_sql, dialect_name)
     cursor = src_session.cursor(server_side=False)
     try:
@@ -1025,12 +1306,58 @@ def extract_sql_select_columns(
         cursor.close()
     cols: list[dict[str, str]] = []
     for col in desc:
-        name = str(col[0] if len(col) > 0 else "").strip()
+        name = str(_description_value(col, "name", 0) or "").strip()
         if not name:
             continue
-        type_code = col[1] if len(col) > 1 else None
+        type_code = _description_value(col, "type_code", 1)
+        type_display = getattr(col, "type_display", None)
+        source_type = _normalize_description_type(type_code, type_display)
+        source_precision = _as_positive_int(_description_value(col, "precision", 4))
+        source_scale = _as_non_negative_int(_description_value(col, "scale", 5))
+        source_length = _as_positive_int(_description_value(col, "display_size", 2))
+
+        if source_type in {"STR", "STRING", "UNICODE"}:
+            if source_length is None:
+                raise ValueError(
+                    f"SQL metadata extraction failed: '{name}' length could not be resolved."
+                )
+            source_type = f"VARCHAR({source_length})"
+        elif source_type in {"BYTES", "BYTEARRAY", "MEMORYVIEW"}:
+            if source_length is None:
+                raise ValueError(
+                    f"SQL metadata extraction failed: '{name}' length could not be resolved."
+                )
+            source_type = f"VARBINARY({source_length})"
+        elif source_type in NUMERIC_PARAM_TYPES:
+            if source_precision is None:
+                raise ValueError(
+                    "SQL metadata extraction failed: "
+                    f"'{name}' precision could not be resolved. "
+                    "Cast numeric SQL expressions with explicit precision/scale, "
+                    "for example ::numeric(8,0)."
+                )
+            if source_scale is None:
+                source_type = f"{source_type}({source_precision})"
+            else:
+                source_type = f"{source_type}({source_precision},{source_scale})"
+        elif source_type in LENGTH_BEARING_TYPES:
+            if source_length is None:
+                raise ValueError(
+                    f"SQL metadata extraction failed: '{name}' length could not be resolved."
+                )
+            source_type = f"{source_type}({source_length})"
+        elif source_type == "INT":
+            source_type = "INTEGER"
+
         cols.append(
-            {"name": name, "source_type": _normalize_description_type(type_code)}
+            {
+                "name": name,
+                "source_type": source_type,
+                "nullable": True,
+                "source_length": source_length,
+                "source_precision": source_precision,
+                "source_scale": source_scale,
+            }
         )
     if not cols:
         raise ValueError("No columns found during SQL metadata extraction.")
@@ -1074,7 +1401,7 @@ def _collect_existing_auto_mapping_paths(
 
 def _build_mapping_from_columns(
     *,
-    columns: list[dict[str, str]],
+    columns: list[dict[str, Any]],
     src_dialect_name: str,
     tgt_dialect_name: str,
     version: str = "v1",
@@ -1086,39 +1413,56 @@ def _build_mapping_from_columns(
         )
     warnings: list[str] = []
     rows: list[dict[str, Any]] = []
-    fallback_target = TypeMapper.map_type("TEXT", src_dialect_name, tgt_dialect_name)
     for col in columns:
         src_name = str(col.get("name") or "").strip()
-        src_type = str(col.get("source_type") or "TEXT").strip().upper() or "TEXT"
+        src_type = str(col.get("source_type") or "").strip().upper()
         if not src_name:
             continue
+        if not src_type:
+            raise ValueError(
+                "SQL metadata extraction failed: "
+                f"column '{src_name}' has empty source_type."
+            )
         try:
             tgt_type = TypeMapper.map_type(src_type, src_dialect_name, tgt_dialect_name)
-        except UnsupportedTypeError:
-            tgt_type = fallback_target
-            warnings.append(
-                f"{src_name}: source_type={src_type!r} could not be resolved, target_type={tgt_type!r} fallback applied."
-            )
+        except UnsupportedTypeError as exc:
+            raise ValueError(
+                "Mapping generation failed: "
+                f"column '{src_name}' source_type '{src_type}' cannot be mapped "
+                f"from '{src_dialect_name}' to '{tgt_dialect_name}'. "
+                "Regenerate mapping with explicit source metadata."
+            ) from exc
+        tgt_type = _normalize_target_type_for_strict(
+            target_type=tgt_type,
+            source_type=src_type,
+            source_meta=col,
+            target_dialect=tgt_dialect_name,
+            column_name=src_name,
+        )
         rows.append(
             {
                 "source_name": src_name,
                 "target_name": src_name,
                 "source_type": src_type,
                 "target_type": tgt_type,
-                "nullable": True,
+                "nullable": bool(col.get("nullable", True)),
             }
         )
     if not rows:
         raise ValueError("No usable columns found for mapping generation.")
-    return (
-        {
-            "version": version,
-            "source_dialect": src_dialect_name,
-            "target_dialect": tgt_dialect_name,
-            "columns": rows,
-        },
-        warnings,
+    mapping_obj = {
+        "version": version,
+        "source_dialect": src_dialect_name,
+        "target_dialect": tgt_dialect_name,
+        "columns": rows,
+    }
+    validate_mapping_object_strict(
+        mapping_obj,
+        valid_versions=VALID_MAPPING_VERSIONS,
+        error_cls=ValueError,
+        context="mapping/generate",
     )
+    return mapping_obj, warnings
 
 
 def _mapping_dump_text(mapping_obj: dict[str, Any]) -> str:
@@ -1615,6 +1959,10 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                     ).strip()
                     or "create_if_not_exists_or_truncate"
                 ),
+                "upsert_match_columns": _normalize_upsert_match_columns(
+                    task.get("upsert_match_columns")
+                )
+                or None,
                 "column_mapping_mode": (
                     str(task.get("column_mapping_mode") or "source").strip() or "source"
                 ),
@@ -1668,6 +2016,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "target_schema": first_task["target_schema"],
         "target_table": first_task["target_table"],
         "load_method": first_task["load_method"],
+        "upsert_match_columns": first_task["upsert_match_columns"],
         "column_mapping_mode": first_task["column_mapping_mode"],
         "mapping_file": first_task["mapping_file"],
         "mapping_content": first_task["mapping_content"],
@@ -2364,6 +2713,9 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
     target_schema = str(payload.get("target_schema") or "").strip()
     target_table = str(payload.get("target_table") or "").strip()
     load_method = payload.get("load_method", "create_if_not_exists_or_truncate")
+    upsert_match_columns = _normalize_upsert_match_columns(
+        payload.get("upsert_match_columns")
+    )
     normalized_source_schema = str(source_schema or "").strip() or (
         "sql" if source_type == "sql" else ""
     )
@@ -2426,6 +2778,14 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
         and payload.get("column_mapping_mode") == "mapping_file"
     ):
         task["mapping_file"] = _auto_mapping_relative_file(1, str(task_group_id))
+    if upsert_match_columns:
+        task["upsert_match_columns"] = upsert_match_columns
+    if task_type != STUDIO_TASK_TYPE_SOURCE_TARGET and str(load_method) == "upsert":
+        raise ValueError("load_method='upsert' is only valid for source_target tasks.")
+    if task_type != STUDIO_TASK_TYPE_SOURCE_TARGET and upsert_match_columns:
+        raise ValueError(
+            "upsert_match_columns is only supported when task_type='source_target'."
+        )
     return task
 
 
@@ -2449,6 +2809,9 @@ def build_task_dict_for_validation_from_task(
             task_payload.get("load_method") or "create_if_not_exists_or_truncate"
         ).strip()
         or "create_if_not_exists_or_truncate"
+    )
+    upsert_match_columns = _normalize_upsert_match_columns(
+        task_payload.get("upsert_match_columns")
     )
     task_group_id = str(
         task_payload.get("task_group_id") or ""
@@ -2513,11 +2876,21 @@ def build_task_dict_for_validation_from_task(
         and task["column_mapping_mode"] == "mapping_file"
     ):
         task["mapping_file"] = _auto_mapping_relative_file(task_index, task_group_id)
+    if upsert_match_columns:
+        task["upsert_match_columns"] = upsert_match_columns
+    if task_type != STUDIO_TASK_TYPE_SOURCE_TARGET and load_method == "upsert":
+        raise ValueError("load_method='upsert' is only valid for source_target tasks.")
+    if task_type != STUDIO_TASK_TYPE_SOURCE_TARGET and upsert_match_columns:
+        raise ValueError(
+            "upsert_match_columns is only supported when task_type='source_target'."
+        )
     return task
 
 
 def _validate_non_source_target_task(task: dict[str, Any]) -> None:
     task_type = str(task.get("task_type") or STUDIO_TASK_TYPE_SOURCE_TARGET).strip()
+    if str(task.get("load_method") or "").strip() == "upsert":
+        raise ValueError("load_method='upsert' is only valid for source_target tasks.")
     if task_type == STUDIO_TASK_TYPE_SCRIPT_RUN:
         environment = str(task.get("script_run_environment") or "").strip()
         if environment not in STUDIO_VALID_SCRIPT_RUN_ENVIRONMENTS:
@@ -3313,6 +3686,9 @@ def create_or_update_dag(
                 ).strip()
                 or "create_if_not_exists_or_truncate"
             )
+            upsert_match_columns = _normalize_upsert_match_columns(
+                item.get("upsert_match_columns")
+            )
             script_run_environment = (
                 str(item.get("script_run_environment") or "").strip().lower()
             )
@@ -3420,8 +3796,26 @@ def create_or_update_dag(
             bindings = _normalize_bindings(item.get("bindings"))
             if bindings:
                 task_cfg["bindings"] = bindings
+            if upsert_match_columns:
+                task_cfg["upsert_match_columns"] = upsert_match_columns
             mode = task_cfg["column_mapping_mode"]
             mapping_content = str(item.get("mapping_content") or "")
+            if task_type != STUDIO_TASK_TYPE_SOURCE_TARGET and load_method == "upsert":
+                raise ValueError(
+                    "load_method='upsert' is only valid for source_target tasks."
+                )
+            if task_type != STUDIO_TASK_TYPE_SOURCE_TARGET and upsert_match_columns:
+                raise ValueError(
+                    "upsert_match_columns is only supported when task_type='source_target'."
+                )
+            if (
+                task_type == STUDIO_TASK_TYPE_SOURCE_TARGET
+                and load_method == "upsert"
+                and not upsert_match_columns
+            ):
+                raise ValueError(
+                    "upsert_match_columns is required when load_method='upsert'."
+                )
             if (
                 task_type == STUDIO_TASK_TYPE_SOURCE_TARGET
                 and source_type == "sql"

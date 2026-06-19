@@ -69,6 +69,17 @@ class BaseDialect(ABC):
         ...
 
     @abstractmethod
+    def generate_upsert_query(
+        self,
+        table: str,
+        columns: list[str],
+        match_columns: list[str],
+        update_columns: list[str],
+    ) -> str:
+        """Generate a parameterized UPSERT statement for bulk loading."""
+        ...
+
+    @abstractmethod
     def get_pagination_query(self, query: str, limit: int, offset: int) -> str:
         """Wrap a query with dialect-specific pagination."""
         ...

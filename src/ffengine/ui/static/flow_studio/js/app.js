@@ -1309,7 +1309,10 @@ async function studioFetch(path, options) {
 
     function apiErrorMessage(data, fallbackMessage) {
       const normalized = normalizeApiDetail(data && data.detail);
-      return normalized || fallbackMessage;
+      if (normalized) return normalized;
+      const message = normalizeApiDetail(data && (data.message || data.msg));
+      if (message) return message;
+      return fallbackMessage;
     }
 
     function setOperationBusy(active, label) {
@@ -3319,8 +3322,15 @@ async function studioFetch(path, options) {
           setMappingStatus(card, "Mapping uretildi.", false);
         }
         syncMappingState(card);
-      } catch (_err) {
-        setMappingStatus(card, "Error occurred while generating mapping.", true);
+      } catch (err) {
+        const message = apiErrorMessage(err, "Error occurred while generating mapping.");
+        const visibleMessage = sourceType === "sql" ? `SQL Query mapping failed: ${message}` : message;
+        setMappingStatus(
+          card,
+          visibleMessage,
+          true,
+        );
+        pushToast(visibleMessage, "error", true);
       }
     }
 
@@ -3685,7 +3695,13 @@ async function studioFetch(path, options) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await r.json();
+      const data = await parseJsonSafe(r);
+      if (!r.ok && !data.detail && !data.message) {
+        data.detail = `${r.status} ${r.statusText || "HTTP error"}`.trim();
+      }
+      if (data.ok == null && !r.ok) {
+        data.ok = false;
+      }
       logDebug("POST response", { url, status_code: r.status, ...data });
       return data;
     }

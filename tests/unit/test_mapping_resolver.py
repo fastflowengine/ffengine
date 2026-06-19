@@ -1,28 +1,18 @@
-"""
-C09 — MappingResolver birim testleri.
+"""Unit tests for MappingResolver."""
 
-Kapsam: source modu, mapping_file modu, dispatch, hata senaryoları.
-"""
+from __future__ import annotations
 
 import textwrap
-import pytest
 from unittest.mock import MagicMock
 
-from ffengine.mapping.resolver import MappingResolver, MappingResult, _dialect_name
+import pytest
+
 from ffengine.dialects.base import ColumnInfo
 from ffengine.errors.exceptions import MappingError
-
-# ---------------------------------------------------------------------------
-# Yardımcılar
-# ---------------------------------------------------------------------------
+from ffengine.mapping.resolver import MappingResolver, MappingResult, _dialect_name
 
 
 def _make_dialect(class_name: str, cols: list[ColumnInfo] | None = None):
-    """
-    type(dialect).__name__ == class_name olan minimal bir dialect nesnesi döndürür.
-    MagicMock yerine gerçek bir sınıf kullanılır çünkü _dialect_name() type()'a bakar.
-    """
-
     class _D:
         pass
 
@@ -31,12 +21,11 @@ def _make_dialect(class_name: str, cols: list[ColumnInfo] | None = None):
     return _D()
 
 
-def _src_dialect(cols: list[ColumnInfo], dialect_class="PostgresDialect"):
-    d = _make_dialect(dialect_class, cols)
-    return d
+def _src_dialect(cols: list[ColumnInfo], dialect_class: str = "PostgresDialect"):
+    return _make_dialect(dialect_class, cols)
 
 
-def _tgt_dialect(dialect_class="PostgresDialect"):
+def _tgt_dialect(dialect_class: str = "PostgresDialect"):
     return _make_dialect(dialect_class)
 
 
@@ -54,11 +43,6 @@ def _task(**overrides) -> dict:
     }
     base.update(overrides)
     return base
-
-
-# ---------------------------------------------------------------------------
-# _dialect_name() yardımcısı
-# ---------------------------------------------------------------------------
 
 
 class TestDialectNameHelper:
@@ -87,11 +71,6 @@ class TestDialectNameHelper:
         assert _dialect_name(FooBar()) == "foobar"
 
 
-# ---------------------------------------------------------------------------
-# source modu
-# ---------------------------------------------------------------------------
-
-
 class TestMappingResolverSourceMode:
     def test_passthrough_full_returns_all_columns(self):
         cols = [
@@ -99,8 +78,8 @@ class TestMappingResolverSourceMode:
             ColumnInfo("name", "VARCHAR"),
             ColumnInfo("age", "SMALLINT"),
         ]
-        src = _src_dialect(cols)  # PostgresDialect
-        tgt = _tgt_dialect()  # PostgresDialect
+        src = _src_dialect(cols)
+        tgt = _tgt_dialect()
         result = MappingResolver().resolve(_task(), _conn(), src, tgt)
         assert isinstance(result, MappingResult)
         assert result.source_columns == ["id", "name", "age"]
@@ -108,7 +87,6 @@ class TestMappingResolverSourceMode:
         assert len(result.target_columns_meta) == 3
 
     def test_passthrough_full_translates_types(self):
-        # Oracle NUMBER → Postgres NUMERIC
         cols = [ColumnInfo("amount", "NUMBER", precision=10, scale=2)]
         src = _src_dialect(cols, "OracleDialect")
         tgt = _tgt_dialect("PostgresDialect")
@@ -142,6 +120,36 @@ class TestMappingResolverSourceMode:
         with pytest.raises(MappingError, match="precision limiti"):
             MappingResolver().resolve(_task(), _conn(), src, tgt)
 
+    def test_mssql_to_oracle_varchar_char_length_preserved(self):
+        cols = [
+            ColumnInfo("city", "NVARCHAR", True, 120, None),
+            ColumnInfo("code", "CHAR", False, 3, None),
+        ]
+        src = _src_dialect(cols, "MSSQLDialect")
+        tgt = _tgt_dialect("OracleDialect")
+        result = MappingResolver().resolve(_task(), _conn(), src, tgt)
+        assert result.target_columns_meta[0].data_type == "VARCHAR2"
+        assert result.target_columns_meta[0].precision == 120
+        assert result.target_columns_meta[0].scale is None
+        assert result.target_columns_meta[1].data_type == "CHAR"
+        assert result.target_columns_meta[1].precision == 3
+        assert result.target_columns_meta[1].scale is None
+
+    def test_mssql_to_oracle_invalid_length_falls_back_to_none(self):
+        cols = [
+            ColumnInfo("free_text", "NVARCHAR", True, -1, None),
+            ColumnInfo("blob_hint", "VARCHAR", True, 0, None),
+        ]
+        src = _src_dialect(cols, "MSSQLDialect")
+        tgt = _tgt_dialect("OracleDialect")
+        result = MappingResolver().resolve(_task(), _conn(), src, tgt)
+        assert result.target_columns_meta[0].data_type == "VARCHAR2"
+        assert result.target_columns_meta[0].precision is None
+        assert result.target_columns_meta[0].scale is None
+        assert result.target_columns_meta[1].data_type == "VARCHAR2"
+        assert result.target_columns_meta[1].precision is None
+        assert result.target_columns_meta[1].scale is None
+
     def test_passthrough_partial_filters_columns(self):
         cols = [
             ColumnInfo("id", "INTEGER"),
@@ -164,7 +172,7 @@ class TestMappingResolverSourceMode:
             MappingResolver().resolve(task, _conn(), src, tgt)
 
     def test_unsupported_type_raises_mapping_error(self):
-        cols = [ColumnInfo("col1", "XMLTYPE")]  # XMLTYPE desteklenmiyor
+        cols = [ColumnInfo("col1", "XMLTYPE")]
         src = _src_dialect(cols, "OracleDialect")
         tgt = _tgt_dialect("PostgresDialect")
         with pytest.raises(MappingError, match="col1"):
@@ -172,18 +180,20 @@ class TestMappingResolverSourceMode:
 
     def test_get_table_schema_exception_raises_mapping_error(self):
         src = MagicMock()
-        src.get_table_schema.side_effect = Exception("DB bağlantı hatası")
+        src.get_table_schema.side_effect = Exception("db baglanti hatasi")
         tgt = _tgt_dialect()
-        with pytest.raises(MappingError, match="şema"):
+        with pytest.raises(MappingError, match="semasi"):
+            MappingResolver().resolve(_task(), _conn(), src, tgt)
+
+    def test_empty_source_metadata_raises_mapping_error(self):
+        src = _src_dialect([])
+        tgt = _tgt_dialect()
+        with pytest.raises(MappingError, match="semasi bos"):
             MappingResolver().resolve(_task(), _conn(), src, tgt)
 
 
-# ---------------------------------------------------------------------------
-# mapping_file modu
-# ---------------------------------------------------------------------------
-
-
-_VALID_MAPPING_YAML = textwrap.dedent("""\
+_VALID_MAPPING_YAML = textwrap.dedent(
+    """\
     version: "v1"
     source_dialect: oracle
     target_dialect: postgres
@@ -198,13 +208,14 @@ _VALID_MAPPING_YAML = textwrap.dedent("""\
         source_type: "NUMBER(18,4)"
         target_type: "NUMERIC(18,4)"
         nullable: true
-""")
+"""
+)
 
 
 class TestMappingResolverMappingFileMode:
     def test_loads_columns_correctly(self, tmp_path):
         p = tmp_path / "mapping.yaml"
-        p.write_text(_VALID_MAPPING_YAML)
+        p.write_text(_VALID_MAPPING_YAML, encoding="utf-8")
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
         result = MappingResolver().resolve(
             task, _conn(), _src_dialect([]), _tgt_dialect()
@@ -214,7 +225,7 @@ class TestMappingResolverMappingFileMode:
 
     def test_column_rename_reflected(self, tmp_path):
         p = tmp_path / "m.yaml"
-        p.write_text(_VALID_MAPPING_YAML)
+        p.write_text(_VALID_MAPPING_YAML, encoding="utf-8")
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
         result = MappingResolver().resolve(
             task, _conn(), _src_dialect([]), _tgt_dialect()
@@ -224,7 +235,7 @@ class TestMappingResolverMappingFileMode:
 
     def test_target_type_from_file(self, tmp_path):
         p = tmp_path / "m.yaml"
-        p.write_text(_VALID_MAPPING_YAML)
+        p.write_text(_VALID_MAPPING_YAML, encoding="utf-8")
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
         result = MappingResolver().resolve(
             task, _conn(), _src_dialect([]), _tgt_dialect()
@@ -234,7 +245,7 @@ class TestMappingResolverMappingFileMode:
 
     def test_nullable_false_preserved(self, tmp_path):
         p = tmp_path / "m.yaml"
-        p.write_text(_VALID_MAPPING_YAML)
+        p.write_text(_VALID_MAPPING_YAML, encoding="utf-8")
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
         result = MappingResolver().resolve(
             task, _conn(), _src_dialect([]), _tgt_dialect()
@@ -242,15 +253,18 @@ class TestMappingResolverMappingFileMode:
         assert result.target_columns_meta[0].nullable is False
 
     def test_nullable_defaults_to_true(self, tmp_path):
-        yaml_no_nullable = textwrap.dedent("""\
+        yaml_no_nullable = textwrap.dedent(
+            """\
             version: "v1"
             columns:
               - source_name: col1
                 target_name: col1
+                source_type: INTEGER
                 target_type: INTEGER
-        """)
+        """
+        )
         p = tmp_path / "m.yaml"
-        p.write_text(yaml_no_nullable)
+        p.write_text(yaml_no_nullable, encoding="utf-8")
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
         result = MappingResolver().resolve(
             task, _conn(), _src_dialect([]), _tgt_dialect()
@@ -261,34 +275,69 @@ class TestMappingResolverMappingFileMode:
         task = _task(
             column_mapping_mode="mapping_file", mapping_file=str(tmp_path / "nope.yaml")
         )
-        with pytest.raises(MappingError, match="bulunamadı"):
+        with pytest.raises(MappingError, match="bulunamadi"):
             MappingResolver().resolve(task, _conn(), _src_dialect([]), _tgt_dialect())
 
     def test_invalid_yaml_raises_mapping_error(self, tmp_path):
         p = tmp_path / "bad.yaml"
-        p.write_text(": bad\n  broken:")
+        p.write_text(": bad\n  broken:", encoding="utf-8")
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
         with pytest.raises(MappingError, match="YAML"):
             MappingResolver().resolve(task, _conn(), _src_dialect([]), _tgt_dialect())
 
     def test_missing_version_raises_mapping_error(self, tmp_path):
         p = tmp_path / "m.yaml"
-        p.write_text("columns: []\n")
+        p.write_text("columns: []\n", encoding="utf-8")
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
-        with pytest.raises(MappingError, match="versiyon"):
+        with pytest.raises(MappingError, match="version"):
             MappingResolver().resolve(task, _conn(), _src_dialect([]), _tgt_dialect())
 
     def test_unknown_version_raises_mapping_error(self, tmp_path):
         p = tmp_path / "m.yaml"
-        p.write_text("version: v99\ncolumns: []\n")
+        p.write_text("version: v99\ncolumns: []\n", encoding="utf-8")
         task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
-        with pytest.raises(MappingError, match="versiyon"):
+        with pytest.raises(MappingError, match="version"):
             MappingResolver().resolve(task, _conn(), _src_dialect([]), _tgt_dialect())
 
+    def test_mapping_file_rejects_paramless_length_target_type(self, tmp_path):
+        p = tmp_path / "m.yaml"
+        p.write_text(
+            textwrap.dedent(
+                """\
+                version: "v1"
+                columns:
+                  - source_name: IATA_CODE
+                    target_name: IATA_CODE
+                    source_type: CHAR(3)
+                    target_type: CHAR
+                    nullable: false
+                """
+            ),
+            encoding="utf-8",
+        )
+        task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
+        with pytest.raises(MappingError, match="requires explicit length"):
+            MappingResolver().resolve(task, _conn(), _src_dialect([]), _tgt_dialect())
 
-# ---------------------------------------------------------------------------
-# Dispatch
-# ---------------------------------------------------------------------------
+    def test_mapping_file_rejects_paramless_numeric_target_type(self, tmp_path):
+        p = tmp_path / "m.yaml"
+        p.write_text(
+            textwrap.dedent(
+                """\
+                version: "v1"
+                columns:
+                  - source_name: AMOUNT
+                    target_name: AMOUNT
+                    source_type: NUMERIC(18,4)
+                    target_type: NUMBER
+                    nullable: true
+                """
+            ),
+            encoding="utf-8",
+        )
+        task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
+        with pytest.raises(MappingError, match="requires explicit precision/scale"):
+            MappingResolver().resolve(task, _conn(), _src_dialect([]), _tgt_dialect())
 
 
 class TestMappingResolverDispatch:

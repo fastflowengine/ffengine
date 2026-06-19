@@ -69,9 +69,9 @@ def test_get_table_schema(dialect):
     mock_cursor = MagicMock()
     mock_conn.cursor.return_value = mock_cursor
     mock_cursor.fetchall.return_value = [
-        ("id", "integer", "NO", None, None),
-        ("amount", "numeric", "YES", 38, 10),
-        ("name", "character varying", "YES", None, None),
+        ("id", "integer", "NO", None, None, None),
+        ("amount", "numeric", "YES", 38, 10, None),
+        ("name", "character varying", "YES", None, None, 120),
     ]
 
     columns = dialect.get_table_schema(mock_conn, "public", "orders")
@@ -79,8 +79,31 @@ def test_get_table_schema(dialect):
     assert len(columns) == 3
     assert columns[0] == ColumnInfo("id", "INTEGER", False, None, None)
     assert columns[1] == ColumnInfo("amount", "NUMERIC", True, 38, 10)
-    assert columns[2] == ColumnInfo("name", "CHARACTER VARYING", True, None, None)
+    assert columns[2] == ColumnInfo("name", "CHARACTER VARYING", True, 120, None)
     mock_cursor.close.assert_called_once()
+
+
+def test_get_table_schema_falls_back_to_pg_catalog_for_materialized_view(dialect):
+    mock_conn = MagicMock()
+    info_cursor = MagicMock()
+    catalog_cursor = MagicMock()
+    mock_conn.cursor.side_effect = [info_cursor, catalog_cursor]
+    info_cursor.fetchall.return_value = []
+    catalog_cursor.fetchall.return_value = [
+        ("guid", "numeric(16,0)", True),
+        ("sce_id", "character varying(8)", True),
+        ("description", "text", False),
+    ]
+
+    columns = dialect.get_table_schema(mock_conn, "ocn_cat", "cat_scenario_def")
+
+    assert columns == [
+        ColumnInfo("guid", "NUMERIC", False, 16, 0),
+        ColumnInfo("sce_id", "CHARACTER VARYING", False, 8, None),
+        ColumnInfo("description", "TEXT", True, None, None),
+    ]
+    info_cursor.close.assert_called_once()
+    catalog_cursor.close.assert_called_once()
 
 
 def test_list_schemas(dialect):
@@ -140,6 +163,28 @@ def test_generate_ddl_deterministic(dialect):
 def test_generate_bulk_insert_query(dialect):
     query = dialect.generate_bulk_insert_query("orders", ["id", "amount", "name"])
     assert query == ('INSERT INTO orders ("id", "amount", "name") VALUES (%s, %s, %s)')
+
+
+def test_generate_upsert_query_with_update_columns(dialect):
+    query = dialect.generate_upsert_query(
+        "orders",
+        ["id", "name", "amount"],
+        ["id"],
+        ["name", "amount"],
+    )
+    assert 'ON CONFLICT ("id") DO UPDATE SET' in query
+    assert '"name" = EXCLUDED."name"' in query
+    assert '"amount" = EXCLUDED."amount"' in query
+
+
+def test_generate_upsert_query_without_update_columns(dialect):
+    query = dialect.generate_upsert_query(
+        "orders",
+        ["id", "name"],
+        ["id"],
+        [],
+    )
+    assert 'ON CONFLICT ("id") DO NOTHING' in query
 
 
 def test_get_pagination_query(dialect):

@@ -505,6 +505,40 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
     assert task["partitioning"]["ranges"] == ["id < 100", "id >= 100"]
 
 
+def test_create_dag_persists_upsert_match_columns_and_roundtrips(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "load_method": "upsert",
+            "upsert_match_columns": [" id ", "id", "name"],
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+
+    flow = Path(r.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
+    )
+    task = cfg["flow_tasks"][0]
+    assert task["load_method"] == "upsert"
+    assert task["upsert_match_columns"] == ["id", "name"]
+
+    dag_id = Path(r.json()["dag_path"]).stem
+    cfg_resp = client.get(f"/api/dag-config?dag_id={dag_id}")
+    assert cfg_resp.status_code == 200, cfg_resp.text
+    task_preload = (cfg_resp.json().get("payload") or {}).get("flow_tasks", [])[0]
+    assert task_preload["upsert_match_columns"] == ["id", "name"]
+
+
+def test_create_dag_rejects_upsert_without_match_columns(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["load_method"] = "upsert"
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "upsert_match_columns" in r.text
+
+
 def test_create_dag_mapping_file_requires_content_when_file_missing(
     client, studio_paths
 ):
@@ -2539,6 +2573,46 @@ def test_dag_payload_invalid_source_type():
             target_schema="t",
             target_table="x",
             source_type="not_a_type",
+        )
+
+
+def test_dag_payload_upsert_requires_match_columns():
+    with pytest.raises(ValidationError):
+        DagUpsertPayload(
+            project="p",
+            domain="d",
+            level="level1",
+            flow="src_to_stg",
+            source_conn_id="a",
+            target_conn_id="b",
+            source_schema="s",
+            source_table="tbl",
+            target_schema="t",
+            target_table="x",
+            source_type="table",
+            load_method="upsert",
+        )
+
+
+def test_dag_payload_rejects_upsert_for_script_task():
+    with pytest.raises(ValidationError):
+        DagUpsertPayload(
+            project="p",
+            domain="d",
+            level="level1",
+            flow="src_to_stg",
+            source_conn_id="a",
+            target_conn_id="b",
+            source_schema="s",
+            source_table="tbl",
+            target_schema="t",
+            target_table="x",
+            source_type="table",
+            task_type="script_run",
+            script_run_environment="target",
+            script_sql="EXEC x",
+            load_method="upsert",
+            upsert_match_columns=["id"],
         )
 
 

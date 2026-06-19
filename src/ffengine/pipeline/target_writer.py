@@ -57,6 +57,7 @@ class TargetWriter:
         qualified = self._qualify(schema, table)
 
         if load_method == "create_if_not_exists_or_truncate":
+            self._require_columns_meta(columns, qualified)
             self._ddl(self.dialect.generate_ddl(qualified, columns))
             self._exec(f"TRUNCATE TABLE {qualified}")
 
@@ -64,10 +65,12 @@ class TargetWriter:
             pass
 
         elif load_method in ("replace", "drop_if_exists_and_create"):
+            self._require_columns_meta(columns, qualified)
             self._drop_if_exists(qualified)
             self._ddl(self.dialect.generate_ddl(qualified, columns))
 
         elif load_method == "upsert":
+            self._require_columns_meta(columns, qualified)
             self._ddl(self.dialect.generate_ddl(qualified, columns))
 
         elif load_method == "script":
@@ -91,6 +94,12 @@ class TargetWriter:
         columns = task_config.get("target_columns", [])
         qualified = self._qualify(schema, table)
         load_method = task_config.get("load_method", "append")
+
+        if not columns:
+            raise ValidationError(
+                f"target_columns bos olamaz: {qualified}. "
+                "Column mapping/source metadata en az bir kolon uretmeli."
+            )
 
         if load_method == "upsert":
             match_columns, update_columns = self._resolve_upsert_columns(
@@ -163,6 +172,13 @@ class TargetWriter:
             )
         return self.dialect.quote_identifier(table)
 
+    def _require_columns_meta(self, columns: list, qualified: str) -> None:
+        if not columns:
+            raise ValidationError(
+                f"target_columns_meta bos olamaz: {qualified}. "
+                "Prepare phase icin column mapping/source metadata en az bir kolon uretmeli."
+            )
+
     def _exec(self, sql: str) -> None:
         cursor = self.session.cursor(server_side=False)
         try:
@@ -193,10 +209,24 @@ class TargetWriter:
     def _drop_if_exists(self, qualified: str) -> None:
         cursor = self.session.cursor(server_side=False)
         try:
-            cursor.execute(f"DROP TABLE IF EXISTS {qualified}")
+            dialect_name = type(self.dialect).__name__.lower()
+            if "oracle" in dialect_name:
+                cursor.execute(
+                    f"BEGIN EXECUTE IMMEDIATE 'DROP TABLE {qualified}'; "
+                    f"EXCEPTION WHEN OTHERS THEN "
+                    f"IF SQLCODE != -942 THEN RAISE; END IF; "
+                    f"END;"
+                )
+            else:
+                cursor.execute(f"DROP TABLE IF EXISTS {qualified}")
             self.session.conn.commit()
-        except Exception:
+        except Exception as exc:
             self.session.conn.rollback()
+            raise ConnectionError.wrap(
+                exc,
+                f"Hedef tablo drop islemi basarisiz: {qualified}",
+                details={"target": qualified, "operation": "drop_if_exists"},
+            ) from exc
         finally:
             cursor.close()
 
