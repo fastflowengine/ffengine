@@ -1191,12 +1191,13 @@ async function studioFetch(path, options) {
         opt.textContent = `${dagId} (${item.level || "-"} / ${item.flow || "-"})`;
         selectNode.appendChild(opt);
       }
-      if (preferred && options.some((item) => String(item && item.dag_id || "").trim() === preferred)) {
+      const hasPreferred = preferred && options.some((item) => String(item && item.dag_id || "").trim() === preferred);
+      if (hasPreferred) {
         selectNode.value = preferred;
+        delete card.dataset.pendingDagTaskDagId;
       } else {
         selectNode.value = "";
       }
-      delete card.dataset.pendingDagTaskDagId;
     }
 
     function refreshAllDagTaskOptions() {
