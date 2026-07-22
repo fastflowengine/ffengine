@@ -413,6 +413,7 @@ async function studioFetch(path, options) {
       SOURCE_TARGET: "source_target",
       SCRIPT_RUN: "script_run",
       DAG: "dag",
+      BINDING: "binding",
     });
     const PARTITION_MODE_HINTS = Object.freeze({
       auto_numeric: "MIN/MAX based numeric partitioning. Best for integer/decimal columns.",
@@ -437,9 +438,12 @@ async function studioFetch(path, options) {
       "distinct",
     ]);
     const UPSERT_MATCH_MAX_COUNT = 32;
+    const FOLDER_PATH_PROMPT = "Select a project and DAG path";
     let customTagsState = [];
     let schedulerModeState = "manual";
     let schedulerAppliedState = null;
+    let dagParamsAppliedState = null;
+    let dagParamsDraftState = null;
     let dagDepsAppliedState = null;
     let dagDepsDraftState = null;
     let dagDepsOptionsState = [];
@@ -454,6 +458,116 @@ async function studioFetch(path, options) {
         return;
       }
       console.debug(`[flow-studio] ${message}`, payload);
+    }
+
+    function defaultDagParams() {
+      return [{
+        name: "log_level",
+        type: "string",
+        default: "default",
+        enum: ["default", "DEBUG"],
+        description: "FFEngine run log detail",
+      }];
+    }
+
+    function normalizeDagParams(rawParams) {
+      const items = Array.isArray(rawParams) ? rawParams : [];
+      const custom = items
+        .filter((item) => String(item && item.name || "").trim() !== "log_level")
+        .map((item) => ({
+          name: String(item.name || "").trim(),
+          type: String(item.type || "string").trim(),
+          description: String(item.description || "").trim() || undefined,
+        }));
+      const logItem = items.find((item) => String(item && item.name || "").trim() === "log_level") || {};
+      return [{
+        name: "log_level",
+        type: "string",
+        default: ["default", "DEBUG"].includes(logItem.default) ? logItem.default : "default",
+        enum: ["default", "DEBUG"],
+        description: "FFEngine run log detail",
+      }, ...custom];
+    }
+
+    function renderAdvancedSummary() {
+      const summary = el("advanced_compact_summary");
+      if (!summary) return;
+      const params = normalizeDagParams(dagParamsAppliedState || defaultDagParams());
+      const logLevel = String(params[0].default || "default");
+      summary.textContent = `Log level: ${logLevel === "default" ? "Default" : logLevel} • ${Math.max(0, params.length - 1)} parameters`;
+    }
+
+    function createAdvancedParamRow(value = {}) {
+      const row = document.createElement("div");
+      row.className = "dag-param-row";
+      row.innerHTML = `
+        <input class="dag-param-name" placeholder="parameter_name">
+        <select class="dag-param-type">
+          <option value="string">String</option>
+          <option value="integer">Integer</option>
+          <option value="number">Number</option>
+          <option value="boolean">Boolean</option>
+        </select>
+        <input class="dag-param-description" placeholder="Description">
+        <button class="btn btn-danger dag-param-remove" type="button">x</button>`;
+      row.querySelector(".dag-param-name").value = value.name || "";
+      row.querySelector(".dag-param-type").value = value.type || "string";
+      row.querySelector(".dag-param-description").value = value.description || "";
+      row.querySelector(".dag-param-remove").onclick = () => row.remove();
+      el("advanced_params_list").appendChild(row);
+    }
+
+    function renderAdvancedModal() {
+      const params = normalizeDagParams(dagParamsDraftState || defaultDagParams());
+      el("advanced_log_level").value = params[0].default || "default";
+      const list = el("advanced_params_list");
+      list.innerHTML = "";
+      for (const item of params.slice(1)) createAdvancedParamRow(item);
+    }
+
+    function collectAdvancedModalParams() {
+      const params = defaultDagParams();
+      params[0].default = el("advanced_log_level").value || "default";
+      const seen = new Set(["log_level"]);
+      for (const row of el("advanced_params_list").querySelectorAll(".dag-param-row")) {
+        const name = row.querySelector(".dag-param-name").value.trim();
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || seen.has(name)) {
+          throw new Error(`Invalid or duplicate DAG parameter: ${name || "(empty)"}`);
+        }
+        seen.add(name);
+        const type = row.querySelector(".dag-param-type").value;
+        params.push({
+          name,
+          type,
+          description: row.querySelector(".dag-param-description").value.trim() || undefined,
+        });
+      }
+      return params;
+    }
+
+    function openAdvancedModal() {
+      if (isBusy) return;
+      dagParamsDraftState = normalizeDagParams(dagParamsAppliedState || defaultDagParams());
+      renderAdvancedModal();
+      el("advanced_modal").classList.add("open");
+      el("advanced_modal").setAttribute("aria-hidden", "false");
+    }
+
+    function closeAdvancedModal() {
+      el("advanced_modal").classList.remove("open");
+      el("advanced_modal").setAttribute("aria-hidden", "true");
+      dagParamsDraftState = null;
+    }
+
+    function applyAdvancedModal() {
+      try {
+        dagParamsAppliedState = collectAdvancedModalParams();
+        refreshDagParameterBindingControls();
+        renderAdvancedSummary();
+        closeAdvancedModal();
+      } catch (err) {
+        pushToast(err.message || String(err), "error", true);
+      }
     }
 
     function normalizeCustomTag(rawValue) {
@@ -1327,7 +1441,7 @@ async function studioFetch(path, options) {
       if (progressLabel) {
         progressLabel.textContent = active ? (label || "Operation in progress") : "";
       }
-      for (const btn of document.querySelectorAll(".btn-create-dag, #btn_update_top, #btn_promote_revision, #btn_add_task, #btn_refresh_revisions, #btn_delete_dag, #btn_cancel_delete_dag, #btn_confirm_delete_dag, #btn_cancel_scheduler_modal, #btn_apply_scheduler_modal, #btn_cancel_dag_deps_modal, #btn_apply_dag_deps_modal, #btn_add_dag_dependency, #btn_cancel_task_delete, #btn_confirm_task_delete, .btn-delete-task, .task-type-chip")) {
+      for (const btn of document.querySelectorAll(".btn-create-dag, #btn_update_top, #btn_promote_revision, #btn_add_task, #btn_refresh_revisions, #btn_delete_dag, #btn_cancel_delete_dag, #btn_confirm_delete_dag, #btn_cancel_scheduler_modal, #btn_apply_scheduler_modal, #btn_cancel_advanced_modal, #btn_apply_advanced_modal, #btn_add_dag_param, #btn_cancel_task_delete, #btn_confirm_task_delete, .btn-delete-task, .task-type-chip")) {
         btn.disabled = !!active;
       }
       const schedulerCompactPanel = el("scheduler_compact_panel");
@@ -1335,10 +1449,10 @@ async function studioFetch(path, options) {
         schedulerCompactPanel.classList.toggle("disabled", !!active);
         schedulerCompactPanel.setAttribute("aria-disabled", active ? "true" : "false");
       }
-      const dagDepsCompactPanel = el("dag_deps_compact_panel");
-      if (dagDepsCompactPanel) {
-        dagDepsCompactPanel.classList.toggle("disabled", !!active);
-        dagDepsCompactPanel.setAttribute("aria-disabled", active ? "true" : "false");
+      const advancedCompactPanel = el("advanced_compact_panel");
+      if (advancedCompactPanel) {
+        advancedCompactPanel.classList.toggle("disabled", !!active);
+        advancedCompactPanel.setAttribute("aria-disabled", active ? "true" : "false");
       }
       const customTagInput = el("custom_tags_input");
       if (customTagInput) {
@@ -1359,7 +1473,7 @@ async function studioFetch(path, options) {
       }
       syncDeleteDagConfirmState();
       syncTaskDeleteConfirmState();
-      renderDagDepsModal();
+      if (el("advanced_modal")?.classList.contains("open")) renderAdvancedModal();
     }
 
     function beginOperation(label) {
@@ -1399,7 +1513,7 @@ async function studioFetch(path, options) {
         revisionPanel.classList.add("hidden");
         if (deleteButton) deleteButton.classList.add("hidden");
         closeDeleteDagModal();
-        closeDagDepsModal();
+        closeAdvancedModal();
         closeTaskDeleteModal();
         currentUpdateDagId = "";
         currentActiveRevisionId = "";
@@ -1414,12 +1528,10 @@ async function studioFetch(path, options) {
     function resetStudioAfterDelete() {
       currentUpdateDagId = "";
       setCustomTags([]);
-      dagDepsAppliedState = {
-        upstream_dag_ids: [],
-      };
-      dagDepsDraftState = null;
+      dagParamsAppliedState = defaultDagParams();
+      dagParamsDraftState = null;
       dagDepsReferencedByState = [];
-      renderDagDepsCompactSummary();
+      renderAdvancedSummary();
       setSchedulerAppliedState({
         cron_expression: null,
         timezone: resolveBrowserTimezone() || SCHEDULER_DEFAULT_TIMEZONE,
@@ -1825,8 +1937,8 @@ async function studioFetch(path, options) {
       const placeholder = document.createElement("option");
       placeholder.value = "";
       placeholder.textContent = selectId === "source_conn_id"
-        ? "Select Source DB Connection"
-        : "Select Target DB Connection";
+        ? "Select Source Connection"
+        : "Select Target Connection";
       select.appendChild(placeholder);
       for (const item of items) {
         const opt = document.createElement("option");
@@ -1867,32 +1979,33 @@ async function studioFetch(path, options) {
     }
 
     let airflowVariableKeys = [];
+    let airflowVariableQuery = "";
 
-    function setAirflowVariableOptions(items) {
-      airflowVariableKeys = Array.from(new Set((items || []).map((x) => String(x || "").trim()).filter(Boolean))).sort();
-      fillOptions("airflow_variable_options", airflowVariableKeys);
+    function normalizeAirflowVariableKeys(items) {
+      return Array.from(
+        new Set((items || []).map((x) => String(x || "").trim()).filter(Boolean))
+      ).sort().slice(0, 50);
+    }
+
+    async function fetchAirflowVariableKeys(search = "", exact = false, limit = 50) {
+      const query = String(search || "").trim();
+      const params = new URLSearchParams({ limit: String(Math.min(50, Math.max(1, limit))) });
+      if (query) params.set("q", query);
+      if (exact) params.set("exact", "true");
+      const r = await studioFetch(`/api/airflow-variables?${params.toString()}`);
+      const data = await parseJsonSafe(r);
+      if (!r.ok || !data.ok) {
+        throw new Error("Airflow Variable service is unavailable.");
+      }
+      return normalizeAirflowVariableKeys(data.items || []);
     }
 
     async function loadAirflowVariables(search = "") {
-      try {
-        const query = (search || "").trim();
-        const path = query
-          ? `/api/airflow-variables?q=${encodeURIComponent(query)}&limit=500`
-          : "/api/airflow-variables?limit=500";
-        const r = await studioFetch(path);
-        const data = await parseJsonSafe(r);
-        if (!r.ok || !data.ok) {
-          // Airflow Variable list is only used for the optional field in Bindings.
-          // Therefore, we do not pollute the main UI error area here.
-          console.warn("Airflow variables could not be loaded.", r.status, data);
-          setAirflowVariableOptions([]);
-          return;
-        }
-        setAirflowVariableOptions(data.items || []);
-      } catch (err) {
-        console.warn("Airflow variables could not be loaded.", err);
-        setAirflowVariableOptions([]);
-      }
+      const query = String(search || "").trim();
+      const items = await fetchAirflowVariableKeys(query, false, 50);
+      airflowVariableQuery = query;
+      airflowVariableKeys = items;
+      return items;
     }
 
     let sourceSchemaTimer = null;
@@ -2075,7 +2188,32 @@ async function studioFetch(path, options) {
         (values.level || "").trim(),
         (values.flow || "").trim(),
       ].filter(Boolean);
-      return parts.length ? parts.join("/") : "-";
+      return parts.length ? parts.join("/") : "";
+    }
+
+    function requireFolderSelection() {
+      const values = {
+        project: el("project").value.trim(),
+        domain: el("domain").value.trim(),
+        level: el("level").value.trim(),
+        flow: el("flow").value.trim(),
+      };
+      if (!Object.values(values).every(Boolean)) {
+        throw new Error(`${FOLDER_PATH_PROMPT}.`);
+      }
+      return values;
+    }
+
+    function validateFolderSelectionBeforeSubmit() {
+      try {
+        requireFolderSelection();
+        return true;
+      } catch (err) {
+        const message = String(err && err.message ? err.message : FOLDER_PATH_PROMPT);
+        setUpdateModeStatus(message, "warn");
+        pushToast(message, "error", true);
+        return false;
+      }
     }
 
     function syncFolderPathDisplay() {
@@ -2087,7 +2225,7 @@ async function studioFetch(path, options) {
       });
       const folderPathInput = el("folder_path_display");
       folderPathInput.value = folderPathValue;
-      folderPathInput.title = folderPathValue === "-" ? "Flow path (project/domain/level/flow)" : folderPathValue;
+      folderPathInput.title = folderPathValue || FOLDER_PATH_PROMPT;
       for (const card of getTaskCards()) {
         syncMappingState(card);
       }
@@ -2120,7 +2258,7 @@ async function studioFetch(path, options) {
     }
 
     function updatePickerSummary() {
-      el("folder_picker_summary").textContent = getFolderPathText(pickerDraft);
+      el("folder_picker_summary").textContent = getFolderPathText(pickerDraft) || "-";
     }
 
     function isFolderSelectionComplete() {
@@ -2437,28 +2575,426 @@ async function studioFetch(path, options) {
       list.classList.toggle("hidden", !hasRows);
     }
 
+    function customDagParameterNames() {
+      return normalizeDagParams(dagParamsAppliedState || defaultDagParams())
+        .map((item) => String(item.name || "").trim())
+        .filter((name) => name && name !== "log_level");
+    }
+
+    function selectedDagBindingNames(card, excludedRow) {
+      const selected = new Set();
+      for (const row of getBindingRows(card)) {
+        if (row === excludedRow) continue;
+        const name = String(
+          row.querySelector(".binding-variable-name-select")?.value || ""
+        ).trim();
+        if (name) selected.add(name);
+      }
+      return selected;
+    }
+
+    function refreshBindingVariableControl(row) {
+      const card = row.closest(".task-card");
+      const isDagBinding = card?.querySelector(".task-type")?.value === TASK_TYPES.BINDING;
+      const input = row.querySelector(".binding-variable-name");
+      const select = row.querySelector(".binding-variable-name-select");
+      const current = String(select.value || input.value || "").trim();
+      input.classList.toggle("hidden", isDagBinding);
+      input.disabled = isDagBinding;
+      select.classList.toggle("hidden", !isDagBinding);
+      select.disabled = !isDagBinding;
+      if (!isDagBinding) return;
+
+      const selectedByOtherRows = selectedDagBindingNames(card, row);
+      select.replaceChildren();
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Select DAG parameter";
+      select.appendChild(placeholder);
+      for (const name of customDagParameterNames()) {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        option.disabled = selectedByOtherRows.has(name);
+        select.appendChild(option);
+      }
+      if (current && !customDagParameterNames().includes(current)) {
+        const legacy = document.createElement("option");
+        legacy.value = current;
+        legacy.textContent = `${current} (not declared)`;
+        select.appendChild(legacy);
+      }
+      select.value = current;
+    }
+
+    function refreshBindingVariableControls(card) {
+      for (const row of getBindingRows(card)) {
+        refreshBindingVariableControl(row);
+      }
+    }
+
+    function refreshDagParameterBindingControls() {
+      for (const card of getTaskCards()) {
+        const isDagBinding = card.querySelector(".task-type")?.value === TASK_TYPES.BINDING;
+        const title = card.querySelector(".bindings-title");
+        if (title) title.textContent = isDagBinding ? "DAG Parameter Bindings" : "Bindings";
+        refreshBindingVariableControls(card);
+        for (const row of getBindingRows(card)) {
+          syncBindingRowState(row);
+        }
+      }
+    }
+
+    function setAirflowVariableValidation(row, state = "", message = "") {
+      const input = row.querySelector(".binding-airflow-variable-key");
+      const note = row.querySelector(".binding-airflow-validation");
+      row.dataset.airflowVariableValidation = state;
+      input.setAttribute("aria-invalid", state === "invalid" || state === "unavailable" ? "true" : "false");
+      note.textContent = message;
+      note.classList.toggle("hidden", !message);
+      note.classList.toggle("warn", state === "invalid" || state === "unavailable");
+    }
+
+    function closeAirflowVariableSelector(row) {
+      const input = row.querySelector(".binding-airflow-variable-key");
+      const options = row.querySelector(".binding-airflow-options");
+      options.classList.add("hidden");
+      input.setAttribute("aria-expanded", "false");
+      row.dataset.airflowVariableActiveIndex = "-1";
+    }
+
+    function setAirflowVariableActiveOption(row, index) {
+      const options = Array.from(row.querySelectorAll(".binding-airflow-option"));
+      if (!options.length) return;
+      const safeIndex = ((index % options.length) + options.length) % options.length;
+      options.forEach((option, optionIndex) => {
+        const active = optionIndex === safeIndex;
+        option.classList.toggle("active", active);
+        option.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      options[safeIndex].scrollIntoView({ block: "nearest" });
+      row.dataset.airflowVariableActiveIndex = String(safeIndex);
+    }
+
+    function selectAirflowVariableOption(row, key) {
+      const input = row.querySelector(".binding-airflow-variable-key");
+      input.value = String(key || "");
+      setAirflowVariableValidation(row, "valid", "");
+      closeAirflowVariableSelector(row);
+    }
+
+    function renderAirflowVariableOptions(row, items) {
+      const options = row.querySelector(".binding-airflow-options");
+      options.replaceChildren();
+      const keys = normalizeAirflowVariableKeys(items);
+      if (!keys.length) {
+        const empty = document.createElement("div");
+        empty.className = "binding-airflow-empty muted-note";
+        empty.textContent = "No matching Airflow Variable key.";
+        options.appendChild(empty);
+      } else {
+        keys.forEach((key) => {
+          const option = document.createElement("button");
+          option.type = "button";
+          option.className = "binding-airflow-option";
+          option.setAttribute("role", "option");
+          option.setAttribute("aria-selected", "false");
+          option.textContent = key;
+          option.addEventListener("mousedown", (event) => event.preventDefault());
+          option.addEventListener("click", () => selectAirflowVariableOption(row, key));
+          options.appendChild(option);
+        });
+      }
+      options.classList.remove("hidden");
+      row.querySelector(".binding-airflow-variable-key").setAttribute("aria-expanded", "true");
+      row.dataset.airflowVariableActiveIndex = "-1";
+    }
+
+    async function openAirflowVariableSelector(row) {
+      const input = row.querySelector(".binding-airflow-variable-key");
+      const query = String(input.value || "").trim();
+      try {
+        const items = query === airflowVariableQuery
+          ? airflowVariableKeys
+          : await loadAirflowVariables(query);
+        renderAirflowVariableOptions(row, items);
+      } catch (_err) {
+        setAirflowVariableValidation(
+          row,
+          "unavailable",
+          "Airflow Variable service is unavailable; this binding cannot be saved."
+        );
+        closeAirflowVariableSelector(row);
+      }
+    }
+
+    async function validateAirflowVariableKey(row) {
+      const source = row.querySelector(".binding-source").value;
+      if (source !== "airflow_variable") return true;
+      const input = row.querySelector(".binding-airflow-variable-key");
+      const key = String(input.value || "").trim();
+      input.value = key;
+      if (!key) {
+        setAirflowVariableValidation(row, "invalid", "Enter an existing Airflow Variable key.");
+        return false;
+      }
+
+      const requestId = Number(row.dataset.airflowVariableValidationRequest || "0") + 1;
+      row.dataset.airflowVariableValidationRequest = String(requestId);
+      setAirflowVariableValidation(row, "pending", "Validating Airflow Variable key...");
+      try {
+        const items = await fetchAirflowVariableKeys(key, true, 1);
+        if (Number(row.dataset.airflowVariableValidationRequest) !== requestId) return false;
+        if (items.includes(key)) {
+          setAirflowVariableValidation(row, "valid", "");
+          return true;
+        }
+        setAirflowVariableValidation(
+          row,
+          "invalid",
+          `Airflow Variable '${key}' no longer exists.`
+        );
+      } catch (_err) {
+        if (Number(row.dataset.airflowVariableValidationRequest) !== requestId) return false;
+        setAirflowVariableValidation(
+          row,
+          "unavailable",
+          "Airflow Variable service is unavailable; this binding cannot be saved."
+        );
+      }
+      return false;
+    }
+
+    async function validateAllAirflowVariableBindings() {
+      const rows = Array.from(document.querySelectorAll(".binding-item")).filter(
+        (row) => row.querySelector(".binding-source")?.value === "airflow_variable"
+      );
+      for (const row of rows) {
+        if (!(await validateAirflowVariableKey(row))) {
+          row.querySelector(".binding-airflow-variable-key")?.focus();
+          const note = row.querySelector(".binding-airflow-validation")?.textContent;
+          throw new Error(note || "Airflow Variable key validation failed.");
+        }
+      }
+    }
+
+    function expressionNamespaceRefs(expression) {
+      const text = String(expression || "");
+      const dag = Array.from(text.matchAll(/\{\{\s*dag\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g), (match) => match[1]);
+      const airflow = Array.from(text.matchAll(/\{\{\s*airflow\.([^\s{}]+)\s*\}\}/g), (match) => match[1]);
+      const local = Array.from(text.matchAll(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g), (match) => match[1]);
+      const legacyAirflow = Array.from(text.matchAll(/\{\{\s*airflow_var\.([^\s{}]+)\s*\}\}/g), (match) => match[1]);
+      return {
+        dag: new Set(dag),
+        airflow: new Set(airflow),
+        local: new Set(local),
+        legacyAirflow: new Set(legacyAirflow),
+      };
+    }
+
+    async function validateAirflowNamespaceKeys() {
+      const keys = new Set();
+      for (const card of getTaskCards()) {
+        const taskType = card.querySelector(".task-type")?.value;
+        const expression = taskType === TASK_TYPES.SCRIPT_RUN
+          ? card.querySelector(".script-sql")?.value
+          : card.querySelector(".where")?.value;
+        for (const key of expressionNamespaceRefs(expression).airflow) keys.add(key);
+      }
+      for (const key of keys) {
+        let items;
+        try {
+          items = await fetchAirflowVariableKeys(key, true, 1);
+        } catch (_err) {
+          throw new Error(
+            `Airflow Variable service is unavailable; '${key}' cannot be validated.`
+          );
+        }
+        if (!items.includes(key)) {
+          throw new Error(`Airflow Variable '${key}' no longer exists.`);
+        }
+      }
+    }
+
+    function compileDagParameterFlow(payload, customNames) {
+      const triggerSource = "__dag_run_conf__";
+      const ambiguousSource = "__ambiguous__";
+      const tasks = Array.isArray(payload.flow_tasks) ? payload.flow_tasks : [];
+      const taskById = new Map(tasks.map((task) => [task.task_group_id, task]));
+      if (taskById.size !== tasks.length || taskById.has("")) {
+        throw new Error("Task IDs must be non-empty and unique.");
+      }
+      const parents = new Map();
+      const children = new Map(tasks.map((task) => [task.task_group_id, []]));
+      const remaining = new Map();
+      for (const task of tasks) {
+        const upstream = Array.from(new Set(task.depends_on || []));
+        for (const parentId of upstream) {
+          if (!taskById.has(parentId) || parentId === task.task_group_id) {
+            throw new Error(`Invalid task dependency: ${parentId}.`);
+          }
+          children.get(parentId).push(task.task_group_id);
+        }
+        parents.set(task.task_group_id, upstream);
+        remaining.set(task.task_group_id, upstream.length);
+      }
+      const ready = tasks
+        .map((task) => task.task_group_id)
+        .filter((taskId) => remaining.get(taskId) === 0);
+      const ordered = [];
+      while (ready.length) {
+        const taskId = ready.shift();
+        ordered.push(taskId);
+        for (const childId of children.get(taskId)) {
+          remaining.set(childId, remaining.get(childId) - 1);
+          if (remaining.get(childId) === 0) ready.push(childId);
+        }
+      }
+      if (ordered.length !== tasks.length) throw new Error("Task dependencies contain a cycle.");
+
+      const outputs = new Map();
+      for (const taskId of ordered) {
+        const task = taskById.get(taskId);
+        const upstream = parents.get(taskId);
+        const incoming = new Map();
+        for (const name of customNames) {
+          if (!upstream.length) {
+            incoming.set(name, triggerSource);
+            continue;
+          }
+          const sources = new Set(upstream.map((parentId) => outputs.get(parentId).get(name)));
+          incoming.set(name, sources.size === 1 ? Array.from(sources)[0] : ambiguousSource);
+        }
+        if (task.task_type !== TASK_TYPES.BINDING) {
+          const expression = task.task_type === TASK_TYPES.SCRIPT_RUN ? task.script_sql : task.where;
+          const ambiguous = Array.from(expressionNamespaceRefs(expression).dag)
+            .filter((name) => incoming.get(name) === ambiguousSource);
+          if (ambiguous.length) {
+            throw new Error(`Ambiguous DAG parameter source at task '${taskId}': ${ambiguous.join(", ")}.`);
+          }
+        }
+        const outgoing = new Map(incoming);
+        if (task.task_type === TASK_TYPES.BINDING) {
+          for (const binding of task.bindings || []) {
+            outgoing.set(String(binding.variable_name || "").trim(), taskId);
+          }
+        }
+        outputs.set(taskId, outgoing);
+      }
+    }
+
+    function validateUniqueTaskBindingNames(tasks) {
+      for (const task of tasks) {
+        const names = new Set();
+        const taskId = String(task.task_group_id || "(unnamed)").trim();
+        for (const binding of task.bindings || []) {
+          const name = String(binding.variable_name || "").trim();
+          if (!name) continue;
+          if (names.has(name)) {
+            throw new Error(
+              `Binding '${name}' is defined more than once in task '${taskId}'.`
+            );
+          }
+          names.add(name);
+        }
+      }
+    }
+
+    function validateDagParameterPayload(payload) {
+      validateUniqueTaskBindingNames(payload.flow_tasks || []);
+      const params = Array.isArray(payload.dag_params) ? payload.dag_params : [];
+      const customNames = new Set(
+        params.map((item) => String(item.name || "").trim()).filter((name) => name && name !== "log_level")
+      );
+      const paramTypes = new Map(
+        params.map((item) => [String(item.name || "").trim(), String(item.type || "string")])
+      );
+      for (const task of payload.flow_tasks || []) {
+        if (task.task_type !== TASK_TYPES.BINDING) continue;
+        for (const binding of task.bindings || []) {
+          const name = String(binding.variable_name || "").trim();
+          if (!["source", "target", "default"].includes(binding.binding_source)) {
+            throw new Error("DAG Parameter Bindings support Source, Target, or Default.");
+          }
+          if (!customNames.has(name)) {
+            throw new Error(`Binding target is not a declared custom DAG parameter: ${name || "(empty)"}.`);
+          }
+          if (binding.binding_source === "default") {
+            const value = String(binding.default_value || "").trim();
+            const type = paramTypes.get(name) || "string";
+            const valid = type === "string"
+              ? !!value
+              : (type === "integer"
+                ? /^-?\d+$/.test(value)
+                : (type === "number"
+                  ? value !== "" && Number.isFinite(Number(value))
+                  : ["true", "false"].includes(value.toLowerCase())));
+            if (!valid) throw new Error(`Default binding for '${name}' does not match type ${type}.`);
+          }
+        }
+      }
+      for (const task of payload.flow_tasks || []) {
+        if (task.task_type === TASK_TYPES.BINDING) continue;
+        const expression = task.task_type === TASK_TYPES.SCRIPT_RUN ? task.script_sql : task.where;
+        const refs = expressionNamespaceRefs(expression);
+        if (refs.legacyAirflow.size) {
+          const key = Array.from(refs.legacyAirflow)[0];
+          throw new Error(`Replace {{ airflow_var.${key} }} with {{ airflow.${key} }}.`);
+        }
+        const localNames = new Set((task.bindings || []).map((item) => item.variable_name));
+        for (const name of refs.local) {
+          if (!localNames.has(name) && !customNames.has(name)) {
+            throw new Error(`Task-local binding '${name}' is not defined.`);
+          }
+          if (!localNames.has(name) && customNames.has(name)) {
+            throw new Error(`Replace legacy {{ ${name} }} with {{ dag.${name} }}.`);
+          }
+        }
+        for (const name of refs.dag) {
+          if (!customNames.has(name)) throw new Error(`DAG parameter '${name}' is not declared.`);
+        }
+      }
+      compileDagParameterFlow(payload, customNames);
+    }
+
     function syncBindingRowState(row) {
       const sourceSelect = row.querySelector(".binding-source");
+      const bindingRow = row.querySelector(".binding-row");
+      const defaultWrap = row.querySelector(".binding-default-wrap");
       const defaultInput = row.querySelector(".binding-default-value");
       const sqlWrap = row.querySelector(".binding-sql-wrap");
       const sqlInput = row.querySelector(".binding-sql");
       const airflowWrap = row.querySelector(".binding-airflow-wrap");
       const airflowInput = row.querySelector(".binding-airflow-variable-key");
+      const card = row.closest(".task-card");
+      const isDagBinding = card?.querySelector(".task-type")?.value === TASK_TYPES.BINDING;
+      const airflowOption = sourceSelect.querySelector('option[value="airflow_variable"]');
       const source = sourceSelect.value;
 
       const isDefault = source === "default";
       const isSqlSource = source === "source" || source === "target";
       const isAirflowVariable = source === "airflow_variable";
 
+      if (airflowOption) {
+        airflowOption.hidden = isDagBinding;
+        airflowOption.disabled = isDagBinding && !isAirflowVariable;
+      }
+
       defaultInput.disabled = !isDefault;
       sqlInput.disabled = !isSqlSource;
       airflowInput.disabled = !isAirflowVariable;
+      bindingRow.classList.toggle("has-default-value", isDefault);
+      defaultWrap.classList.toggle("hidden", !isDefault);
       sqlWrap.classList.toggle("hidden", !isSqlSource);
       airflowWrap.classList.toggle("hidden", !isAirflowVariable);
 
       if (!isDefault) defaultInput.value = "";
       if (!isSqlSource) sqlInput.value = "";
-      if (!isAirflowVariable) airflowInput.value = "";
+      if (!isAirflowVariable) {
+        airflowInput.value = "";
+        setAirflowVariableValidation(row, "", "");
+        closeAirflowVariableSelector(row);
+      }
     }
 
     function createBindingRow(card, values = {}) {
@@ -2468,13 +3004,16 @@ async function studioFetch(path, options) {
       row.innerHTML = `
         <div class="binding-row">
           <input class="binding-variable-name" placeholder="variable_name">
+          <select class="binding-variable-name-select hidden" aria-label="DAG parameter"></select>
           <select class="binding-source">
             <option value="target">Target</option>
             <option value="source">Source</option>
             <option value="default">Default</option>
             <option value="airflow_variable">Airflow Variable</option>
           </select>
-          <input class="binding-default-value" placeholder="Default">
+          <div class="binding-default-wrap hidden">
+            <input class="binding-default-value" placeholder="Default">
+          </div>
           <button class="btn btn-danger binding-remove" type="button">x</button>
         </div>
         <label class="binding-sql-wrap hidden">
@@ -2483,32 +3022,92 @@ async function studioFetch(path, options) {
         </label>
         <label class="binding-airflow-wrap hidden">
           Airflow Variable
-          <input class="binding-airflow-variable-key" list="airflow_variable_options" placeholder="Select variable key">
+          <div class="binding-airflow-selector">
+            <input class="binding-airflow-variable-key" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="" autocomplete="off" placeholder="Select or enter variable key">
+            <div class="binding-airflow-options hidden" role="listbox"></div>
+          </div>
+          <div class="binding-airflow-validation muted-note hidden" role="status"></div>
         </label>
       `;
       row.querySelector(".binding-variable-name").value = values.variable_name || "";
+      const variableSelect = row.querySelector(".binding-variable-name-select");
+      variableSelect.dataset.initialValue = values.variable_name || "";
       row.querySelector(".binding-source").value = values.binding_source || "target";
       row.querySelector(".binding-default-value").value = values.default_value || "";
       row.querySelector(".binding-sql").value = values.sql || "";
       row.querySelector(".binding-airflow-variable-key").value = values.airflow_variable_key || "";
 
+      const airflowInput = row.querySelector(".binding-airflow-variable-key");
+      const optionsId = `binding_airflow_options_${Math.random().toString(36).slice(2)}`;
+      row.querySelector(".binding-airflow-options").id = optionsId;
+      airflowInput.setAttribute("aria-controls", optionsId);
+
       row.querySelector(".binding-source").addEventListener("change", () => {
         syncBindingRowState(row);
+        if (row.querySelector(".binding-source").value === "airflow_variable") {
+          if (document.activeElement === airflowInput) {
+            openAirflowVariableSelector(row);
+          } else {
+            airflowInput.focus();
+          }
+        }
+      });
+      variableSelect.addEventListener("change", () => {
+        refreshBindingVariableControls(card);
       });
       row.querySelector(".binding-remove").addEventListener("click", () => {
         row.remove();
+        refreshBindingVariableControls(card);
         updateBindingsVisibility(card);
       });
-      row.querySelector(".binding-airflow-variable-key").addEventListener("input", (ev) => {
-        const q = (ev.target.value || "").trim();
-        if (q.length >= 2) {
-          loadAirflowVariables(q);
+      airflowInput.addEventListener("focus", () => openAirflowVariableSelector(row));
+      airflowInput.addEventListener("input", () => {
+        row.dataset.airflowVariableValidationRequest = String(
+          Number(row.dataset.airflowVariableValidationRequest || "0") + 1
+        );
+        setAirflowVariableValidation(row, "", "");
+        clearTimeout(row.airflowVariableSearchTimer);
+        row.airflowVariableSearchTimer = setTimeout(() => openAirflowVariableSelector(row), 180);
+      });
+      airflowInput.addEventListener("blur", () => {
+        clearTimeout(row.airflowVariableSearchTimer);
+        setTimeout(() => closeAirflowVariableSelector(row), 120);
+        validateAirflowVariableKey(row);
+      });
+      airflowInput.addEventListener("keydown", (event) => {
+        const options = Array.from(row.querySelectorAll(".binding-airflow-option"));
+        const current = Number(row.dataset.airflowVariableActiveIndex || "-1");
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          if (row.querySelector(".binding-airflow-options").classList.contains("hidden")) {
+            openAirflowVariableSelector(row);
+            return;
+          }
+          setAirflowVariableActiveOption(row, current + (event.key === "ArrowDown" ? 1 : -1));
+        } else if (event.key === "Enter" && current >= 0 && options[current]) {
+          event.preventDefault();
+          selectAirflowVariableOption(row, options[current].textContent);
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          closeAirflowVariableSelector(row);
         }
       });
 
-      syncBindingRowState(row);
       list.appendChild(row);
+      variableSelect.value = values.variable_name || "";
+      refreshBindingVariableControls(card);
+      syncBindingRowState(row);
       updateBindingsVisibility(card);
+      if (row.querySelector(".binding-source").value === "airflow_variable") {
+        validateAirflowVariableKey(row);
+      }
+    }
+
+    function ensureBindingRowForBindingTask(card) {
+      const taskType = String(card.querySelector(".task-type")?.value || "").trim();
+      if (taskType === TASK_TYPES.BINDING && !getBindingRows(card).length) {
+        createBindingRow(card, {});
+      }
     }
 
     function setBindingsFromValues(card, bindings) {
@@ -2518,6 +3117,7 @@ async function studioFetch(path, options) {
       for (const binding of items) {
         createBindingRow(card, binding || {});
       }
+      refreshBindingVariableControls(card);
       updateBindingsVisibility(card);
     }
 
@@ -2742,38 +3342,56 @@ async function studioFetch(path, options) {
       const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim() || TASK_TYPES.SOURCE_TARGET;
       syncTaskTypeSegment(card);
       card.classList.toggle("single-pane-task", taskType !== TASK_TYPES.SOURCE_TARGET);
+      card.classList.toggle("binding-task", taskType === TASK_TYPES.BINDING);
       const sourceTargetFields = card.querySelector(".source-target-fields");
       const scriptRunFields = card.querySelector(".script-run-fields");
       const dagTaskFields = card.querySelector(".dag-task-fields");
+      const sourceCard = card.querySelector(".source-card");
       const targetCard = card.querySelector(".target-card");
       const whereClauseWrap = card.querySelector(".where-clause-wrap");
       const whereInput = card.querySelector(".where");
+      const filterTabButton = card.querySelector(".filter-tab-button");
 
       sourceTargetFields?.classList.toggle("hidden", taskType !== TASK_TYPES.SOURCE_TARGET);
       scriptRunFields?.classList.toggle("hidden", taskType !== TASK_TYPES.SCRIPT_RUN);
       dagTaskFields?.classList.toggle("hidden", taskType !== TASK_TYPES.DAG);
+      sourceCard?.classList.toggle("hidden", taskType === TASK_TYPES.BINDING);
       targetCard?.classList.toggle("hidden", taskType !== TASK_TYPES.SOURCE_TARGET);
       whereClauseWrap?.classList.toggle("hidden", taskType !== TASK_TYPES.SOURCE_TARGET);
       if (whereInput) whereInput.disabled = taskType !== TASK_TYPES.SOURCE_TARGET;
+      if (filterTabButton) {
+        filterTabButton.textContent = taskType === TASK_TYPES.BINDING ? "Parameters" : "Filter & Bindings";
+      }
+      const bindingsTitle = card.querySelector(".bindings-title");
+      if (bindingsTitle) {
+        bindingsTitle.textContent = taskType === TASK_TYPES.BINDING
+          ? "DAG Parameter Bindings"
+          : "Bindings";
+      }
+      refreshBindingVariableControls(card);
+      for (const row of getBindingRows(card)) {
+        syncBindingRowState(row);
+      }
 
       const modeSelect = card.querySelector(".dependency-mode");
       const tabButtons = Array.from(card.querySelectorAll(".tab-btn"));
       const panels = Array.from(card.querySelectorAll(".tab-panel"));
       const allowAllTabs = taskType === TASK_TYPES.SOURCE_TARGET;
       const allowScriptFilterTab = taskType === TASK_TYPES.SCRIPT_RUN;
+      const allowBindingFilterTab = taskType === TASK_TYPES.BINDING;
       for (const btn of tabButtons) {
         const tabId = String(btn.getAttribute("data-tab") || "");
-        const keep = allowAllTabs || tabId === "dependencies" || (allowScriptFilterTab && tabId === "filter");
+        const keep = allowAllTabs || tabId === "dependencies" || ((allowScriptFilterTab || allowBindingFilterTab) && tabId === "filter");
         btn.classList.toggle("hidden", !keep);
       }
       for (const panel of panels) {
         const panelId = String(panel.getAttribute("data-tab-panel") || "");
-        const keep = allowAllTabs || panelId === "dependencies" || (allowScriptFilterTab && panelId === "filter");
+        const keep = allowAllTabs || panelId === "dependencies" || ((allowScriptFilterTab || allowBindingFilterTab) && panelId === "filter");
         panel.classList.toggle("hidden", !keep);
       }
 
       if (!allowAllTabs) {
-        const fallbackTab = allowScriptFilterTab ? "filter" : "dependencies";
+        const fallbackTab = (allowScriptFilterTab || allowBindingFilterTab) ? "filter" : "dependencies";
         const depBtn = tabButtons.find((btn) => String(btn.getAttribute("data-tab") || "") === fallbackTab);
         const depPanel = panels.find((panel) => String(panel.getAttribute("data-tab-panel") || "") === fallbackTab);
         for (const btn of tabButtons) btn.classList.remove("active");
@@ -2867,6 +3485,7 @@ async function studioFetch(path, options) {
       );
       card.querySelector(".partitioning-ranges").value = rangesToMultilineText(values.partitioning_ranges || []);
       setBindingsFromValues(card, values.bindings || []);
+      ensureBindingRowForBindingTask(card);
       syncTaskTypeState(card);
       toggleSourceMode(card);
       if (loadedTaskGroupId) {
@@ -2913,13 +3532,17 @@ async function studioFetch(path, options) {
       const dagTaskDagId = (card.querySelector(".dag-task-dag-id")?.value || "").trim();
       const taskGroupSourceSchema = taskType === TASK_TYPES.SCRIPT_RUN
         ? "script"
-        : (taskType === TASK_TYPES.DAG ? "dag" : (sourceType === "sql" ? "sql" : sourceSchemaVal));
+        : (taskType === TASK_TYPES.DAG
+          ? "dag"
+          : (taskType === TASK_TYPES.BINDING ? "binding" : (sourceType === "sql" ? "sql" : sourceSchemaVal)));
       const taskGroupSourceTable = taskType === TASK_TYPES.SCRIPT_RUN
         ? (scriptEnvVal || "source")
-        : (taskType === TASK_TYPES.DAG ? (dagTaskDagId || "dag") : (sourceType === "sql" ? "query" : sourceTableVal));
+        : (taskType === TASK_TYPES.DAG
+          ? (dagTaskDagId || "dag")
+          : (taskType === TASK_TYPES.BINDING ? `parameters_${fallbackIndex}` : (sourceType === "sql" ? "query" : sourceTableVal)));
       const taskGroupLoadMethod = taskType === TASK_TYPES.SCRIPT_RUN
         ? "script"
-        : (taskType === TASK_TYPES.DAG ? "dag" : loadMethodVal);
+        : (taskType === TASK_TYPES.DAG ? "dag" : (taskType === TASK_TYPES.BINDING ? "binding" : loadMethodVal));
       return [
         String(fallbackIndex),
         slugify(sourceDbVal, "source"),
@@ -3275,14 +3898,20 @@ async function studioFetch(path, options) {
         setMappingStatus(card, "Mapping is available only for Source Target tasks.", true);
         return;
       }
+      let folderSelection;
+      try {
+        folderSelection = requireFolderSelection();
+      } catch (err) {
+        const message = String(err && err.message ? err.message : FOLDER_PATH_PROMPT);
+        setMappingStatus(card, message, true);
+        pushToast(message, "error", true);
+        return;
+      }
       const sourceType = card.querySelector(".source-type").value;
       const taskNo = Math.max(1, getTaskCards().indexOf(card) + 1);
       const taskIdentity = resolveTaskIdentity(card, taskNo);
       const payload = {
-        project: (el("project").value || "").trim() || "webhook",
-        domain: (el("domain").value || "").trim() || "default_domain",
-        level: (el("level").value || "").trim() || "level1",
-        flow: (el("flow").value || "").trim() || "src_to_stg",
+        ...folderSelection,
         source_conn_id: (el("source_conn_id").value || "").trim(),
         target_conn_id: (el("target_conn_id").value || "").trim(),
         source_type: sourceType,
@@ -3457,6 +4086,7 @@ async function studioFetch(path, options) {
 
       taskTypeSelect.addEventListener("change", () => {
         syncTaskTypeState(card);
+        ensureBindingRowForBindingTask(card);
         syncPartitionState(card);
         syncMappingState(card);
         syncUpsertMatchState(card);
@@ -3623,11 +4253,9 @@ async function studioFetch(path, options) {
       el("flow").value = payload.flow || "";
       setCustomTags(payload.custom_tags || []);
       setSchedulerAppliedState(payload.scheduler || null);
-      const rawDagDeps = payload && typeof payload === "object" ? payload.dag_dependencies : null;
-      const dagDepsUpstream = rawDagDeps && typeof rawDagDeps === "object"
-        ? rawDagDeps.upstream_dag_ids
-        : [];
-      setDagDepsAppliedStateFromUpstreamIds(dagDepsUpstream || []);
+      const loadedDagParams = Array.isArray(payload.dag_params) ? payload.dag_params : [];
+      dagParamsAppliedState = normalizeDagParams(loadedDagParams || defaultDagParams());
+      renderAdvancedSummary();
       setSchedulerFormFromState(schedulerAppliedState);
       syncFolderPathDisplay();
       setConnectionValue("source_conn_id", payload.source_conn_id || "");
@@ -3721,14 +4349,19 @@ async function studioFetch(path, options) {
         pushToast("dag_id is required for update mode. Preload a DAG first.", "error", true);
         return;
       }
+      if (!validateFolderSelectionBeforeSubmit()) return;
 
       if (!beginOperation("Updating configuration...")) {
         return;
       }
       try {
+        await validateAllAirflowVariableBindings();
+        await validateAirflowNamespaceKeys();
+        const payload = collectPayload();
+        validateDagParameterPayload(payload);
         const data = await postJson(
           studioUrl(`/api/update-dag?dag_id=${encodeURIComponent(dagId)}`),
-          collectPayload()
+          payload
         );
         if (!data || !data.ok) {
           setUpdateModeStatus("Update failed.", "warn");
@@ -3759,11 +4392,16 @@ async function studioFetch(path, options) {
     }
 
     async function submitCreate() {
+      if (!validateFolderSelectionBeforeSubmit()) return;
       if (!beginOperation("Creating DAG...")) {
         return;
       }
       try {
-        const data = await postJson(studioUrl("/api/create-dag"), collectPayload());
+        await validateAllAirflowVariableBindings();
+        await validateAirflowNamespaceKeys();
+        const payload = collectPayload();
+        validateDagParameterPayload(payload);
+        const data = await postJson(studioUrl("/api/create-dag"), payload);
         if (!data || !data.ok) {
           pushToast(apiErrorMessage(data, "Create failed."), "error", true);
           return;
@@ -3857,10 +4495,10 @@ async function studioFetch(path, options) {
       const normalizedSourceTable = taskType === TASK_TYPES.SOURCE_TARGET && sourceType !== "sql" ? sourceTableVal : undefined;
       const normalizedTargetSchema = taskType === TASK_TYPES.SOURCE_TARGET
         ? (targetSchemaVal || undefined)
-        : (targetSchemaVal || "script_tgt");
+        : (taskType === TASK_TYPES.SCRIPT_RUN ? (targetSchemaVal || "script_tgt") : undefined);
       const normalizedTargetTable = taskType === TASK_TYPES.SOURCE_TARGET
         ? (targetTableVal || undefined)
-        : (targetTableVal || "script_task");
+        : (taskType === TASK_TYPES.SCRIPT_RUN ? (targetTableVal || "script_task") : undefined);
       const loadMethod = card.querySelector(".load-method").value;
       const upsertMatchColumns = getUpsertMatchState(card);
       if (
@@ -3874,8 +4512,11 @@ async function studioFetch(path, options) {
       const bindings = getBindingRows(card)
         .map((row) => {
           const bindingSource = row.querySelector(".binding-source").value;
+          const variableName = taskType === TASK_TYPES.BINDING
+            ? row.querySelector(".binding-variable-name-select").value.trim()
+            : row.querySelector(".binding-variable-name").value.trim();
           const item = {
-            variable_name: row.querySelector(".binding-variable-name").value.trim(),
+            variable_name: variableName,
             binding_source: bindingSource,
           };
           if (bindingSource === "default") {
@@ -3925,22 +4566,16 @@ async function studioFetch(path, options) {
     }
 
     function collectPayload() {
-      const projectVal = el("project").value.trim() || "webhook";
-      const domainVal = el("domain").value.trim() || "default_domain";
-      const levelVal = el("level").value.trim() || "level1";
-      const flowVal = el("flow").value.trim() || "src_to_stg";
+      const folderSelection = requireFolderSelection();
       const cards = getTaskCards();
       const taskIds = cards.map((card, idx) => resolveTaskIdentity(card, idx + 1).task_group_id);
       const flowTasks = cards.map((card, idx) => collectTaskPayload(card, idx + 1, taskIds));
       const firstTask = flowTasks[0] || {};
       const payload = {
-        project: projectVal,
-        domain: domainVal,
-        level: levelVal,
-        flow: flowVal,
+        ...folderSelection,
         custom_tags: customTagsState.slice(),
         scheduler: cloneSchedulerState(schedulerAppliedState || collectSchedulerFormPayload()),
-        dag_dependencies: collectDagDependenciesPayload(),
+        dag_params: normalizeDagParams(dagParamsAppliedState || defaultDagParams()),
         source_conn_id: el("source_conn_id").value,
         target_conn_id: el("target_conn_id").value,
         task_group_id: firstTask.task_group_id,
@@ -3994,41 +4629,23 @@ async function studioFetch(path, options) {
         }
       });
     }
-    const dagDepsCompactPanel = el("dag_deps_compact_panel");
-    if (dagDepsCompactPanel) {
-      dagDepsCompactPanel.addEventListener("click", () => openDagDepsModal());
-      dagDepsCompactPanel.addEventListener("keydown", (evt) => {
+    const advancedCompactPanel = el("advanced_compact_panel");
+    if (advancedCompactPanel) {
+      advancedCompactPanel.addEventListener("click", () => openAdvancedModal());
+      advancedCompactPanel.addEventListener("keydown", (evt) => {
         if (evt.key === "Enter" || evt.key === " ") {
           evt.preventDefault();
-          openDagDepsModal();
+          openAdvancedModal();
         }
       });
     }
     el("btn_cancel_scheduler_modal").onclick = () => closeSchedulerModal();
     el("btn_apply_scheduler_modal").onclick = () => applySchedulerModal();
     el("scheduler_modal_backdrop").onclick = () => closeSchedulerModal();
-    el("btn_cancel_dag_deps_modal").onclick = () => closeDagDepsModal();
-    el("btn_apply_dag_deps_modal").onclick = () => applyDagDepsModal();
-    el("dag_deps_modal_backdrop").onclick = () => closeDagDepsModal();
-    const dagDepsCustomSelect = el("dag_deps_custom_select");
-    const addDagDep = () => {
-      const selectNode = el("dag_deps_custom_select");
-      if (!selectNode) return;
-      const selectedDagId = String(selectNode.value || "").trim();
-      if (!selectedDagId) return;
-      const draft = cloneDagDepsState(dagDepsDraftState || dagDepsAppliedState || {});
-      draft.upstream_dag_ids = normalizeDagDependencyIds([
-        ...draft.upstream_dag_ids,
-        selectedDagId,
-      ]);
-      dagDepsDraftState = draft;
-      renderDagDepsModal();
-    };
-    el("btn_add_dag_dependency").onclick = () => addDagDep();
-    if (dagDepsCustomSelect) {
-      dagDepsCustomSelect.addEventListener("change", () => addDagDep());
-      dagDepsCustomSelect.addEventListener("dblclick", () => addDagDep());
-    }
+    el("btn_cancel_advanced_modal").onclick = () => closeAdvancedModal();
+    el("btn_apply_advanced_modal").onclick = () => applyAdvancedModal();
+    el("advanced_modal_backdrop").onclick = () => closeAdvancedModal();
+    el("btn_add_dag_param").onclick = () => createAdvancedParamRow({});
     el("delete_dag_confirm_input").addEventListener("input", () => syncDeleteDagConfirmState());
     el("delete_dag_backdrop").onclick = () => closeDeleteDagModal();
     el("delete_task_backdrop").onclick = () => closeTaskDeleteModal();
@@ -4074,8 +4691,8 @@ async function studioFetch(path, options) {
         closeSchedulerModal();
         return;
       }
-      if (el("dag_deps_modal").classList.contains("open")) {
-        closeDagDepsModal();
+      if (el("advanced_modal").classList.contains("open")) {
+        closeAdvancedModal();
         return;
       }
       if (el("folder_picker_modal").classList.contains("open")) {
@@ -4096,13 +4713,11 @@ async function studioFetch(path, options) {
       bindSchedulerControls();
       setUpdateMode(false);
       setCustomTags([]);
-      dagDepsAppliedState = {
-        upstream_dag_ids: [],
-      };
-      dagDepsDraftState = null;
+      dagParamsAppliedState = defaultDagParams();
+      dagParamsDraftState = null;
       dagDepsOptionsState = [];
       dagDepsReferencedByState = [];
-      renderDagDepsCompactSummary();
+      renderAdvancedSummary();
       await initializeSchedulerDefaultsForCreate();
       syncFolderPathDisplay();
       clearAndLoadTasks([{}]);
@@ -4130,4 +4745,3 @@ async function studioFetch(path, options) {
     }
 
     initPage();
-

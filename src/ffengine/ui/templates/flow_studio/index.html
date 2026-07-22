@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flow Studio</title>
-  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=45">
+  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=49">
 </head>
 <body class="flow-studio-root" data-ui-variant="current">
   <div id="operation_progress" class="operation-progress hidden" role="status" aria-live="polite" aria-busy="false">
@@ -33,20 +33,20 @@
         <label>
           <span class="global-control-label">Folder Path</span>
           <div class="path-picker-row">
-            <input id="folder_path_display" value="webhook/whk/level1/src_to_stg" readonly title="Flow path (project/domain/level/flow)">
+            <input id="folder_path_display" value="" placeholder="Select a project and DAG path" readonly title="Select a project and DAG path">
             <button class="btn btn-secondary btn-folder-picker" id="btn_open_folder_picker" type="button" title="Select or create project/domain/level/flow path">Select / Create Folder</button>
           </div>
         </label>
         <label>
-          <span class="global-control-label">Source DB Connection</span>
-          <select id="source_conn_id" title="Choose the source database connection">
-            <option value="">Select Source DB Connection</option>
+          <span class="global-control-label">Source Connection</span>
+          <select id="source_conn_id" title="Choose the source connection">
+            <option value="">Select Source Connection</option>
           </select>
         </label>
         <label>
-          <span class="global-control-label">Target DB Connection</span>
-          <select id="target_conn_id" title="Choose the target database connection">
-            <option value="">Select Target DB Connection</option>
+          <span class="global-control-label">Target Connection</span>
+          <select id="target_conn_id" title="Choose the target connection">
+            <option value="">Select Target Connection</option>
           </select>
         </label>
       </div>
@@ -78,24 +78,24 @@
             <div id="scheduler_compact_summary" class="muted-note">Manual run only</div>
           </div>
         </div>
-        <div class="global-control dag-deps-control-wrap">
-          <div class="global-control-label">DAG Dependencies</div>
+        <div class="global-control advanced-control-wrap">
+          <div class="global-control-label">Advanced</div>
           <div
             class="dag-deps-compact"
-            id="dag_deps_compact_panel"
+            id="advanced_compact_panel"
             role="button"
             tabindex="0"
-            aria-label="Configure DAG Dependencies"
-            title="Open DAG Dependencies Configuration"
+            aria-label="Configure Advanced DAG Parameters"
+            title="Open Advanced Configuration"
           >
-            <div id="dag_deps_compact_summary" class="muted-note">Parallel (no upstream DAG)</div>
+            <div id="advanced_compact_summary" class="muted-note">Log level: Default</div>
           </div>
         </div>
       </div>
-      <input id="project" value="webhook" class="hidden">
-      <input id="domain" value="whk" class="hidden">
-      <input id="level" value="level1" class="hidden">
-      <input id="flow" value="src_to_stg" class="hidden">
+      <input id="project" value="" class="hidden">
+      <input id="domain" value="" class="hidden">
+      <input id="level" value="" class="hidden">
+      <input id="flow" value="" class="hidden">
     </section>
 
     <div id="folder_picker_modal" class="folder-picker-modal" aria-hidden="true">
@@ -159,7 +159,6 @@
         <datalist id="source_table_options"></datalist>
         <datalist id="target_schema_options"></datalist>
         <datalist id="target_table_options"></datalist>
-        <datalist id="airflow_variable_options"></datalist>
 
         <div class="actions actions-inline" id="bottom_actions_row">
           <div id="task_actions_shared">
@@ -187,10 +186,12 @@
               <button class="task-type-chip active" type="button" data-task-type="source_target" aria-pressed="true">Source Target</button>
               <button class="task-type-chip" type="button" data-task-type="script_run" aria-pressed="false">Script</button>
               <button class="task-type-chip" type="button" data-task-type="dag" aria-pressed="false">DAG</button>
+              <button class="task-type-chip" type="button" data-task-type="binding" aria-pressed="false">Binding</button>
               <select class="task-type task-type-native" title="Choose task behavior type.">
                 <option value="source_target">Source Target</option>
                 <option value="script_run">Script</option>
                 <option value="dag">DAG</option>
+                <option value="binding">Binding</option>
               </select>
             </div>
             <button class="btn btn-danger btn-delete-task" type="button">Delete</button>
@@ -293,7 +294,7 @@
             </div>
             <div class="sub-card advanced-card">
             <div class="tabs" role="tablist">
-              <button class="tab-btn active" data-tab="filter" type="button">Filter & Bindings</button>
+              <button class="tab-btn filter-tab-button active" data-tab="filter" type="button">Filter & Bindings</button>
               <button class="tab-btn" data-tab="partitioning" type="button">Partitioning</button>
               <button class="tab-btn" data-tab="performance" type="button">Performance</button>
               <button class="tab-btn" data-tab="mapping" type="button">Mapping</button>
@@ -302,7 +303,7 @@
             <div class="tab-panel active" data-tab-panel="filter">
               <label class="where-clause-wrap">
                 Where Clause
-                <textarea class="where" rows="4" placeholder="example: updated_at >= :last_sync"></textarea>
+                <textarea class="where" rows="4" placeholder="example: updated_at >= {{ last_sync }}"></textarea>
               </label>
               <div class="bindings-block">
                 <div class="bindings-head">
@@ -589,27 +590,38 @@
     </div>
   </div>
 
-  <div id="dag_deps_modal" class="scheduler-modal" aria-hidden="true">
-    <div class="scheduler-backdrop" id="dag_deps_modal_backdrop"></div>
-    <div class="scheduler-dialog dag-deps-dialog" role="dialog" aria-modal="true" aria-labelledby="dag_deps_modal_title">
+  <div id="advanced_modal" class="scheduler-modal" aria-hidden="true">
+    <div class="scheduler-backdrop" id="advanced_modal_backdrop"></div>
+    <div class="scheduler-dialog dag-deps-dialog" role="dialog" aria-modal="true" aria-labelledby="advanced_modal_title">
       <div class="scheduler-dialog-head">
-        <h3 id="dag_deps_modal_title">Configure DAG Dependencies</h3>
+        <h3 id="advanced_modal_title">Advanced DAG Parameters</h3>
       </div>
       <div class="scheduler-dialog-body">
         <div class="scheduler-control">
-          <div id="dag_deps_custom_wrap" class="dependency-custom-wrap">
-            <div class="dependency-custom-actions">
-              <select id="dag_deps_custom_select" class="scheduler-control-input" title="Select upstream DAG"></select>
-              <button class="btn btn-secondary btn-add-dependency" id="btn_add_dag_dependency" type="button">Add Upstream</button>
-            </div>
-            <div id="dag_deps_custom_chips" class="dependency-chips"></div>
+          <label>
+            Log Level
+            <select id="advanced_log_level" class="scheduler-control-input">
+              <option value="default">Default</option>
+              <option value="DEBUG">DEBUG</option>
+            </select>
+          </label>
+          <div class="bindings-head">
+            <span class="bindings-title">DAG Parameters</span>
+            <button class="btn btn-success" id="btn_add_dag_param" type="button">+Add</button>
           </div>
-          <div id="dag_deps_summary" class="muted-note"></div>
+          <div class="dag-param-column-labels" aria-hidden="true">
+            <span>Parameter Name</span>
+            <span>Parameter Type</span>
+            <span>Description</span>
+            <span></span>
+          </div>
+          <div id="advanced_params_list" class="advanced-params-list"></div>
+          <div class="muted-note">Parameters are non-secret and appear automatically in Airflow Trigger DAG. Use them as {{ dag.parameter_name }}.</div>
         </div>
       </div>
       <div class="scheduler-dialog-actions">
-        <button class="btn btn-secondary" id="btn_cancel_dag_deps_modal" type="button" title="Close without saving DAG dependencies">Cancel</button>
-        <button class="btn btn-primary" id="btn_apply_dag_deps_modal" type="button" title="Apply DAG dependency settings to form">Apply</button>
+        <button class="btn btn-secondary" id="btn_cancel_advanced_modal" type="button">Cancel</button>
+        <button class="btn btn-primary" id="btn_apply_advanced_modal" type="button">Apply</button>
       </div>
     </div>
   </div>
@@ -630,6 +642,6 @@
     </div>
   </div>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=65"></script>
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=77"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from ffengine.config.dag_param_flow import (
+    compile_dag_parameter_flow,
+    validate_binding_target_is_custom,
+)
 from ffengine.config.schema import (
     VALID_COLUMN_MAPPING_MODES,
     VALID_LOAD_METHODS,
@@ -41,6 +46,15 @@ from ffengine.ui.studio_service import (
     resolve_dag_config_for_update,
 )
 
+_FOLDER_PATH_REQUIRED_MESSAGE = "Select a project and DAG path."
+
+
+def _validate_folder_path_segment(value: Any) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(_FOLDER_PATH_REQUIRED_MESSAGE)
+    return normalized
+
 
 def _raise_http_from_exception(exc: Exception) -> None:
     """C10: domain exception normalize edip tutarlÄ± HTTP yanÄ±tÄ± Ã¼retir."""
@@ -69,14 +83,33 @@ def _optional_api_key_dep(
 
 
 _BINDING_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_BINDING_PARAM_RE = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+_BINDING_PARAM_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+_DAG_PARAM_RE = re.compile(r"\{\{\s*dag\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+_AIRFLOW_PARAM_RE = re.compile(r"\{\{\s*airflow\.([^\s{}]+)\s*\}\}")
+_OBSOLETE_BINDING_PARAM_RE = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
 _CUSTOM_TAG_MAX_COUNT = 10
-_VALID_TASK_TYPES = {"source_target", "script_run", "dag"}
+_VALID_TASK_TYPES = {"source_target", "script_run", "dag", "binding"}
 _VALID_SCRIPT_RUN_ENVIRONMENTS = {"source", "target"}
+_VALID_DAG_PARAM_TYPES = {"string", "integer", "number", "boolean"}
 
 
 def _extract_binding_params(expression: str | None) -> set[str]:
-    return set(_BINDING_PARAM_RE.findall(str(expression or "")))
+    text = str(expression or "")
+    obsolete = _OBSOLETE_BINDING_PARAM_RE.search(text)
+    if obsolete:
+        name = obsolete.group(1)
+        raise ValueError(
+            f"Obsolete parameter syntax; replace :{name} with {{{{ {name} }}}}."
+        )
+    return set(_BINDING_PARAM_RE.findall(text))
+
+
+def _extract_dag_params(expression: str | None) -> set[str]:
+    return set(_DAG_PARAM_RE.findall(str(expression or "")))
+
+
+def _extract_airflow_variable_keys(expression: str | None) -> set[str]:
+    return set(_AIRFLOW_PARAM_RE.findall(str(expression or "")))
 
 
 def _normalize_upsert_match_columns(raw: Any) -> list[str]:
@@ -103,26 +136,91 @@ def _validate_bindings_expression_contract(
 ) -> None:
     expression_params = _extract_binding_params(expression)
     items = list(bindings or [])
-    if expression_params and not items:
-        raise ValueError(
-            f"{expression_label} contains parameter(s) without binding definition: "
-            + ", ".join(sorted(expression_params))
-        )
     if not items:
         return
     binding_names = {item.variable_name for item in items}
-    missing = sorted(expression_params - binding_names)
     unused = sorted(binding_names - expression_params)
-    if missing:
-        raise ValueError(
-            f"{expression_label} contains parameter(s) without binding definition: "
-            + ", ".join(missing)
-        )
     if unused:
         raise ValueError(
             f"Binding definition exists but parameter(s) are unused in {expression_label}: "
             + ", ".join(unused)
         )
+
+
+def _dag_param_value_matches(value: Any, param_type: str) -> bool:
+    if value is None:
+        return True
+    if param_type == "string":
+        return isinstance(value, str)
+    if param_type == "boolean":
+        return isinstance(value, bool)
+    if param_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _binding_default_matches(value: str | None, param_type: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if param_type == "string":
+        return True
+    if param_type == "integer":
+        return bool(re.fullmatch(r"-?\d+", text))
+    if param_type == "boolean":
+        return text.lower() in {"true", "false"}
+    try:
+        number = float(text)
+    except ValueError:
+        return False
+    return math.isfinite(number)
+
+
+class DagParamPayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: str = Field(..., min_length=1)
+    type: str = "string"
+    default: Any = None
+    required: bool = False
+    description: str | None = None
+    enum: list[Any] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _v_name(cls, value: str) -> str:
+        name = str(value or "").strip()
+        if not _BINDING_VAR_RE.fullmatch(name):
+            raise ValueError("Invalid DAG parameter name format.")
+        return name
+
+    @field_validator("type")
+    @classmethod
+    def _v_type(cls, value: str) -> str:
+        param_type = str(value or "").strip().lower()
+        if param_type not in _VALID_DAG_PARAM_TYPES:
+            raise ValueError("DAG parameter type must be string/integer/number/boolean.")
+        return param_type
+
+    @model_validator(mode="after")
+    def _v_contract(self) -> "DagParamPayload":
+        provided = set(self.model_fields_set)
+        if self.name != "log_level" and provided & {"default", "required", "enum"}:
+            raise ValueError(
+                "custom DAG parameters do not support default or required; "
+                "assign values with a Binding task."
+            )
+        if not _dag_param_value_matches(self.default, self.type):
+            raise ValueError(f"DAG parameter '{self.name}' default does not match type.")
+        values = list(self.enum or [])
+        if values and any(not _dag_param_value_matches(v, self.type) for v in values):
+            raise ValueError(f"DAG parameter '{self.name}' enum does not match type.")
+        if values and self.default is not None and self.default not in values:
+            raise ValueError(f"DAG parameter '{self.name}' default must be in enum.")
+        if self.name == "log_level":
+            if self.type != "string" or self.default not in {"default", "DEBUG"}:
+                raise ValueError("log_level must be string with default default or DEBUG.")
+        return self
 
 
 class BindingPayload(BaseModel):
@@ -226,7 +324,7 @@ class FlowTaskPayload(BaseModel):
         value = str(v or "").strip()
         if value not in _VALID_TASK_TYPES:
             raise ValueError(
-                "task_type must be one of: 'source_target', 'script_run', or 'dag'."
+                "task_type must be source_target, script_run, dag, or binding."
             )
         return value
 
@@ -310,6 +408,12 @@ class FlowTaskPayload(BaseModel):
             for dep in list(self.depends_on or []):
                 if dep == task_group_id:
                     raise ValueError("depends_on cannot include task_group_id itself.")
+        if self.task_type == "binding":
+            if not items:
+                raise ValueError("bindings is required when task_type='binding'.")
+            if self.where or self.script_sql or self.dag_task_dag_id:
+                raise ValueError("binding tasks only support bindings and depends_on.")
+            return self
         binding_expression = self.where
         binding_expression_label = "Where Clause"
         if self.task_type == "script_run":
@@ -362,6 +466,102 @@ class DagDependenciesPayload(BaseModel):
         return normalized
 
 
+def _validate_dag_params_and_binding_tasks(
+    params: list[DagParamPayload],
+    tasks: list[FlowTaskPayload],
+    scheduler: SchedulerPayload | None,
+) -> None:
+    names = [item.name for item in params]
+    if len(names) != len(set(names)):
+        raise ValueError("dag_params.name must be unique.")
+    if params and "log_level" not in names:
+        raise ValueError("dag_params must include the built-in log_level parameter.")
+    declared = set(names)
+    declarations = {item.name: item for item in params}
+    for task in tasks:
+        if task.task_type == "binding":
+            items = list(task.bindings or [])
+            invalid_sources = sorted(
+                {
+                    item.binding_source
+                    for item in items
+                    if item.binding_source not in {"source", "target", "default"}
+                }
+            )
+            if invalid_sources:
+                raise ValueError(
+                    "Binding tasks support source, target, or default binding sources."
+                )
+            local = {item.variable_name for item in items}
+            for name in local:
+                validate_binding_target_is_custom(name)
+            undeclared = sorted(local - declared)
+            if undeclared:
+                raise ValueError(
+                    "Binding target must be a declared DAG parameter: "
+                    + ", ".join(undeclared)
+                )
+            invalid_defaults = sorted(
+                item.variable_name
+                for item in items
+                if item.binding_source == "default"
+                and not _binding_default_matches(
+                    item.default_value,
+                    declarations[item.variable_name].type,
+                )
+            )
+            if invalid_defaults:
+                raise ValueError(
+                    "Binding default does not match DAG parameter type: "
+                    + ", ".join(invalid_defaults)
+                )
+            continue
+
+    for task in tasks:
+        if task.task_type == "binding":
+            continue
+        local = {item.variable_name for item in list(task.bindings or [])}
+        expression = task.script_sql if task.task_type == "script_run" else task.where
+        simple_refs = _extract_binding_params(expression)
+        legacy_dag_refs = (simple_refs - local) & declared
+        missing = sorted(simple_refs - local - declared)
+        if missing:
+            raise ValueError(
+                "Expression parameter must have a local binding or declared DAG parameter: "
+                + ", ".join(missing)
+            )
+        dag_refs = _extract_dag_params(expression) | legacy_dag_refs
+        undeclared = sorted(dag_refs - declared)
+        if undeclared:
+            raise ValueError(
+                "DAG parameter reference is not declared: " + ", ".join(undeclared)
+            )
+        # Parse keys here so malformed namespace use cannot silently pass through.
+        _extract_airflow_variable_keys(expression)
+
+    task_defs = [item.model_dump(exclude_none=True) for item in tasks]
+    if all(str(item.get("task_group_id") or "").strip() for item in task_defs):
+        compile_dag_parameter_flow(
+            [item.model_dump(exclude_none=True) for item in params],
+            task_defs,
+        )
+
+
+def _validate_single_task_params(
+    expression: str | None,
+    bindings: list[BindingPayload],
+    params: list[DagParamPayload],
+) -> None:
+    local = {item.variable_name for item in bindings}
+    declared = {item.name for item in params}
+    missing = sorted(_extract_binding_params(expression) - local - declared)
+    if missing:
+        raise ValueError(
+            "Expression parameter must have a local binding or declared DAG parameter: "
+            + ", ".join(missing)
+        )
+
+
 class DagUpsertPayload(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -400,6 +600,12 @@ class DagUpsertPayload(BaseModel):
     custom_tags: list[str] | None = None
     scheduler: SchedulerPayload | None = None
     dag_dependencies: DagDependenciesPayload | None = None
+    dag_params: list[DagParamPayload] | None = None
+
+    @field_validator("project", "domain", "level", "flow", mode="before")
+    @classmethod
+    def _v_folder_path_segment(cls, v: Any) -> str:
+        return _validate_folder_path_segment(v)
 
     @field_validator("source_type")
     @classmethod
@@ -416,7 +622,7 @@ class DagUpsertPayload(BaseModel):
         value = str(v or "").strip()
         if value not in _VALID_TASK_TYPES:
             raise ValueError(
-                "task_type must be one of: 'source_target', 'script_run', or 'dag'."
+                "task_type must be source_target, script_run, dag, or binding."
             )
         return value
 
@@ -456,6 +662,11 @@ class DagUpsertPayload(BaseModel):
     def _v_mapping(self) -> DagUpsertPayload:
         has_task_list = isinstance(self.flow_tasks, list) and len(self.flow_tasks) > 0
         if has_task_list:
+            _validate_dag_params_and_binding_tasks(
+                list(self.dag_params or []),
+                list(self.flow_tasks or []),
+                self.scheduler,
+            )
             return self
         normalized_upsert_match_columns = _normalize_upsert_match_columns(
             self.upsert_match_columns
@@ -496,6 +707,9 @@ class DagUpsertPayload(BaseModel):
                 items,
                 expression_label="Script SQL / Stored Procedure",
             )
+            _validate_single_task_params(
+                self.script_sql, items, list(self.dag_params or [])
+            )
             return self
 
         if parsed_task_type == "dag":
@@ -509,6 +723,9 @@ class DagUpsertPayload(BaseModel):
                 self.where,
                 items,
                 expression_label="Where Clause",
+            )
+            _validate_single_task_params(
+                self.where, items, list(self.dag_params or [])
             )
             return self
 
@@ -543,6 +760,9 @@ class DagUpsertPayload(BaseModel):
             items,
             expression_label="Where Clause",
         )
+        _validate_single_task_params(
+            self.where, items, list(self.dag_params or [])
+        )
         return self
 
 
@@ -562,6 +782,11 @@ class MappingGeneratePayload(BaseModel):
     task_group_id: str | None = Field(default=None, min_length=1)
     task_no: int = Field(1, ge=1)
     version: str = "v1"
+
+    @field_validator("project", "domain", "level", "flow", mode="before")
+    @classmethod
+    def _v_folder_path_segment(cls, v: Any) -> str:
+        return _validate_folder_path_segment(v)
 
     @field_validator("source_type")
     @classmethod
@@ -661,10 +886,13 @@ def api_connections() -> dict[str, Any]:
 def api_airflow_variables(
     q: str | None = Query(None),
     limit: int = Query(200, ge=1, le=1000),
+    exact: bool = Query(False),
 ) -> dict[str, Any]:
     try:
         items = discover_airflow_variables(
-            search=(q or "").strip() or None, limit=limit
+            search=(q or "").strip() or None,
+            limit=limit,
+            exact=exact,
         )
         return {"ok": True, "items": items, "count": len(items)}
     except Exception as exc:
@@ -769,7 +997,17 @@ def api_columns(
 
 def _payload_to_service_dict(payload: DagUpsertPayload) -> dict[str, Any]:
     """Convert Pydantic model to service-layer dict."""
-    return payload.model_dump(exclude_none=True)
+    data = payload.model_dump(exclude_none=True)
+    if payload.dag_params is not None:
+        normalized_params: list[dict[str, Any]] = []
+        for item in payload.dag_params:
+            value = item.model_dump(exclude_none=True)
+            if item.name != "log_level":
+                for field in ("default", "required", "enum"):
+                    value.pop(field, None)
+            normalized_params.append(value)
+        data["dag_params"] = normalized_params
+    return data
 
 
 @flow_studio_app.post("/api/create-dag", status_code=201)

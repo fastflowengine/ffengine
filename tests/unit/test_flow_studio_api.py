@@ -60,6 +60,46 @@ def _minimal_table_payload():
     }
 
 
+def _auto_id_ambiguous_param_payload():
+    payload = _minimal_table_payload()
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"},
+        {"name": "run_date", "type": "string"},
+    ]
+    payload["flow_tasks"] = [
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_left",
+            "bindings": [{
+                "variable_name": "run_date",
+                "binding_source": "default",
+                "default_value": "2026-01-01",
+            }],
+            "depends_on": [],
+        },
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_right",
+            "bindings": [{
+                "variable_name": "run_date",
+                "binding_source": "default",
+                "default_value": "2026-01-02",
+            }],
+            "depends_on": [],
+        },
+        {
+            "task_type": "source_target",
+            "source_schema": "public",
+            "source_table": "orders",
+            "target_schema": "dwh",
+            "target_table": "orders_stg",
+            "where": "business_date = {{ dag.run_date }}",
+            "depends_on": ["bind_left", "bind_right"],
+        },
+    ]
+    return payload
+
+
 def _sql_mapping_yaml(columns: list[str]) -> str:
     lines = [
         "version: v1",
@@ -102,8 +142,18 @@ def test_index_html_ok(client):
     assert "Load DAG Context" not in r.text
     assert "folder_path_display" in r.text
     assert "Select / Create Folder" in r.text
-    assert "Select Source DB Connection" in r.text
-    assert "Select Target DB Connection" in r.text
+    assert 'placeholder="Select a project and DAG path"' in r.text
+    assert 'id="folder_path_display" value=""' in r.text
+    assert 'id="project" value=""' in r.text
+    assert 'id="domain" value=""' in r.text
+    assert 'id="level" value=""' in r.text
+    assert 'id="flow" value=""' in r.text
+    assert "Source Connection" in r.text
+    assert "Select Source Connection" in r.text
+    assert "Target Connection" in r.text
+    assert "Select Target Connection" in r.text
+    assert "Source DB Connection" not in r.text
+    assert "Target DB Connection" not in r.text
     assert "folder_picker_modal" in r.text
     assert "Group No" not in r.text
     assert "Source Target" in r.text
@@ -123,9 +173,12 @@ def test_index_html_ok(client):
     assert "scheduler_timezone_options" in r.text
     assert "scheduler_modal" in r.text
     assert "scheduler_compact_summary" in r.text
-    assert "DAG Dependencies" in r.text
-    assert "dag_deps_modal" in r.text
-    assert "dag_deps_compact_summary" in r.text
+    assert "DAG Dependencies" not in r.text
+    assert "dag_deps_modal" not in r.text
+    assert "Advanced" in r.text
+    assert "advanced_modal" in r.text
+    assert "advanced_compact_summary" in r.text
+    assert 'data-task-type="binding"' in r.text
     assert "Delete DAG" in r.text
     assert "delete_dag_modal" in r.text
     assert "delete_task_modal" in r.text
@@ -134,6 +187,152 @@ def test_index_html_ok(client):
     assert "Timeline DAG ID (optional)" not in r.text
     assert "Timeline State (optional)" not in r.text
     assert "Timeline Limit" not in r.text
+
+
+def test_binding_task_selection_auto_creates_first_parameter_row():
+    app_js = (
+        Path(api_app_module.__file__).parent
+        / "static"
+        / "flow_studio"
+        / "js"
+        / "app.js"
+    ).read_text(encoding="utf-8")
+    assert "function ensureBindingRowForBindingTask(card)" in app_js
+    assert "!getBindingRows(card).length" in app_js
+    assert "ensureBindingRowForBindingTask(card);" in app_js
+
+
+def test_binding_task_hides_empty_source_card_and_uses_advanced_only_layout():
+    ui_root = Path(api_app_module.__file__).parent
+    app_js = (
+        ui_root / "static" / "flow_studio" / "js" / "app.js"
+    ).read_text(encoding="utf-8")
+    style_css = (
+        ui_root / "static" / "flow_studio" / "css" / "style.css"
+    ).read_text(encoding="utf-8")
+    index_html = (
+        ui_root / "templates" / "flow_studio" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'const sourceCard = card.querySelector(".source-card");' in app_js
+    assert (
+        'card.classList.toggle("binding-task", taskType === TASK_TYPES.BINDING);'
+        in app_js
+    )
+    assert (
+        'sourceCard?.classList.toggle("hidden", taskType === TASK_TYPES.BINDING);'
+        in app_js
+    )
+    assert ".task-card.binding-task .task-layout" in style_css
+    assert 'grid-template-areas: "advanced";' in style_css
+    assert "app.js?v=77" in index_html
+
+
+def test_advanced_dag_parameter_uses_parameter_type_label():
+    index_html = (
+        Path(api_app_module.__file__).parent
+        / "templates"
+        / "flow_studio"
+        / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert "Parameter Type" in index_html
+    assert "Data Type" not in index_html
+    assert "style.css?v=49" in index_html
+
+
+def test_connection_selector_uses_generic_source_and_target_labels():
+    ui_root = Path(api_app_module.__file__).parent
+    app_js = (
+        ui_root / "static" / "flow_studio" / "js" / "app.js"
+    ).read_text(encoding="utf-8")
+    index_html = (
+        ui_root / "templates" / "flow_studio" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert "Select Source Connection" in app_js
+    assert "Select Target Connection" in app_js
+    assert "DB Connection" not in app_js
+    assert "database connection" not in index_html
+    assert "app.js?v=77" in index_html
+
+
+def test_binding_ui_has_conditional_default_and_searchable_variable_selector():
+    app_js = (
+        Path(api_app_module.__file__).parent
+        / "static"
+        / "flow_studio"
+        / "js"
+        / "app.js"
+    ).read_text(encoding="utf-8")
+    assert "binding-default-wrap hidden" in app_js
+    assert 'role="combobox"' in app_js
+    assert 'role="listbox"' in app_js
+    assert "limit=50" in app_js
+    assert "validateAirflowVariableKey" in app_js
+    assert "validateAllAirflowVariableBindings" in app_js
+
+
+def test_dag_parameter_ui_uses_namespaced_binding_contract():
+    app_js = (
+        Path(api_app_module.__file__).parent
+        / "static"
+        / "flow_studio"
+        / "js"
+        / "app.js"
+    ).read_text(encoding="utf-8")
+    assert "dag-param-default" not in app_js
+    assert "dag-param-required" not in app_js
+    assert "DAG Parameter Bindings" in app_js
+    assert "binding-variable-name-select" in app_js
+    assert "validateAirflowNamespaceKeys" in app_js
+    assert "legacyDagParamMigrationPending" not in app_js
+    assert "Legacy custom DAG parameter default/required fields detected" not in app_js
+    assert "compileDagParameterFlow" in app_js
+    assert "require at least one Binding task assignment" not in app_js
+    assert "must directly depend on the Binding task" not in app_js
+    assert "Ambiguous DAG parameter source" in app_js
+    assert "must be assigned exactly once" not in app_js
+
+
+def test_binding_ui_prevents_duplicate_names_within_each_task():
+    app_js = (
+        Path(api_app_module.__file__).parent
+        / "static"
+        / "flow_studio"
+        / "js"
+        / "app.js"
+    ).read_text(encoding="utf-8")
+
+    assert "function selectedDagBindingNames" in app_js
+    assert "option.disabled = selectedByOtherRows.has(name);" in app_js
+    assert 'variableSelect.addEventListener("change"' in app_js
+    assert "function validateUniqueTaskBindingNames" in app_js
+    assert "validateUniqueTaskBindingNames(payload.flow_tasks || []);" in app_js
+    assert "is defined more than once in task" in app_js
+
+
+def test_folder_path_ui_requires_explicit_selection():
+    ui_root = Path(api_app_module.__file__).parent
+    app_js = (
+        ui_root / "static" / "flow_studio" / "js" / "app.js"
+    ).read_text(encoding="utf-8")
+    index_html = (
+        ui_root / "templates" / "flow_studio" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'const FOLDER_PATH_PROMPT = "Select a project and DAG path";' in app_js
+    assert "requireFolderSelection" in app_js
+    assert app_js.count("if (!validateFolderSelectionBeforeSubmit()) return;") == 2
+    assert 'el("project").value.trim() || "webhook"' not in app_js
+    assert '(el("project").value || "").trim() || "webhook"' not in app_js
+    assert 'el("domain").value.trim() || "default_domain"' not in app_js
+    assert '(el("domain").value || "").trim() || "default_domain"' not in app_js
+    assert 'el("level").value.trim() || "level1"' not in app_js
+    assert '(el("level").value || "").trim() || "level1"' not in app_js
+    assert 'el("flow").value.trim() || "src_to_stg"' not in app_js
+    assert '(el("flow").value || "").trim() || "src_to_stg"' not in app_js
+    assert "app.js?v=77" in index_html
 
 
 def test_dag_explorer_html_ok(client):
@@ -307,6 +506,26 @@ def test_mapping_generate_mocked(client):
     fn.assert_called_once()
 
 
+def test_mapping_generate_rejects_unselected_folder_path(client):
+    payload = {
+        "project": "   ",
+        "domain": "whk",
+        "level": "level1",
+        "flow": "src_to_stg",
+        "source_conn_id": "src_c",
+        "target_conn_id": "tgt_c",
+        "source_type": "table",
+        "source_schema": "public",
+        "source_table": "orders",
+    }
+    with patch.object(api_app_module, "generate_mapping_preview") as fn:
+        response = client.post("/api/mapping/generate", json=payload)
+
+    assert response.status_code == 422
+    assert "Select a project and DAG path" in response.text
+    fn.assert_not_called()
+
+
 def test_connections_mocked(client):
     conns = [
         {"conn_id": "ffengine_source", "conn_type": "postgres"},
@@ -331,7 +550,23 @@ def test_airflow_variables_mocked(client):
     assert body["ok"] is True
     assert body["count"] == 2
     assert body["items"] == ["k1", "k2"]
-    mocked.assert_called_once_with(search="k", limit=50)
+    mocked.assert_called_once_with(search="k", limit=50, exact=False)
+
+
+def test_airflow_variables_exact_lookup_is_case_sensitive(client):
+    with patch.object(
+        api_app_module,
+        "discover_airflow_variables",
+        return_value=["ETL.BusinessDate"],
+    ) as mocked:
+        r = client.get(
+            "/api/airflow-variables?q=ETL.BusinessDate&limit=1&exact=true"
+        )
+    assert r.status_code == 200
+    assert r.json()["items"] == ["ETL.BusinessDate"]
+    mocked.assert_called_once_with(
+        search="ETL.BusinessDate", limit=1, exact=True
+    )
 
 
 def test_timezones_mocked(client):
@@ -447,6 +682,33 @@ def test_create_dag_writes_files(client, studio_paths):
     assert "yaml.safe_load(" not in dag_source
     assert "CONFIG_PATH.read_text(" not in dag_source
     assert yaml_name in dag_source
+
+
+@pytest.mark.parametrize("field", ["project", "domain", "level", "flow"])
+@pytest.mark.parametrize("value", ["", "   "])
+def test_create_dag_rejects_unselected_folder_path(client, field, value):
+    payload = _minimal_table_payload()
+    payload[field] = value
+
+    response = client.post("/api/create-dag", json=payload)
+
+    assert response.status_code == 422
+    assert "Select a project and DAG path" in response.text
+
+
+@pytest.mark.parametrize("field", ["project", "domain", "level", "flow"])
+def test_service_rejects_unselected_folder_path_without_writes(
+    studio_paths, field
+):
+    projects_root, dag_root = studio_paths
+    payload = _minimal_table_payload()
+    payload[field] = "   "
+
+    with pytest.raises(ValueError, match="Select a project and DAG path"):
+        ss.create_or_update_dag(payload)
+
+    assert list(projects_root.iterdir()) == []
+    assert list(dag_root.iterdir()) == []
 
 
 def test_create_dag_response_includes_revision_metadata(client, studio_paths):
@@ -789,7 +1051,7 @@ def test_create_dag_with_bindings_persists_yaml(client, studio_paths):
     payload = _minimal_table_payload()
     payload.update(
         {
-            "where": "updated_at >= :last_sync",
+            "where": "updated_at >= {{ last_sync }}",
             "bindings": [
                 {
                     "variable_name": "last_sync",
@@ -807,23 +1069,426 @@ def test_create_dag_with_bindings_persists_yaml(client, studio_paths):
         (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
     )
     task = cfg["flow_tasks"][0]
-    assert task["where"] == "updated_at >= :last_sync"
+    assert task["where"] == "updated_at >= {{ last_sync }}"
     assert task["bindings"][0]["variable_name"] == "last_sync"
     assert task["bindings"][0]["binding_source"] == "airflow_variable"
     assert task["bindings"][0]["airflow_variable_key"] == "etl.last_sync"
+
+
+def test_create_dag_persists_dag_params_and_binding_task(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["dag_params"] = [
+        {
+            "name": "log_level",
+            "type": "string",
+            "default": "default",
+            "enum": ["default", "DEBUG"],
+        },
+        {"name": "run_date", "type": "string", "description": "Run date"},
+    ]
+    payload["flow_tasks"] = [
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_run_date",
+            "bindings": [
+                {
+                    "variable_name": "run_date",
+                    "binding_source": "target",
+                    "sql": "SELECT MAX(business_date) FROM control.calendar",
+                }
+            ],
+            "depends_on": [],
+        },
+        {
+            "task_type": "source_target",
+            "task_group_id": "load_orders",
+            "source_schema": "public",
+            "source_table": "orders",
+            "target_schema": "dwh",
+            "target_table": "orders_stg",
+            "where": "business_date = {{ dag.run_date }}",
+            "depends_on": ["bind_run_date"],
+        },
+    ]
+
+    response = client.post("/api/create-dag", json=payload)
+    assert response.status_code == 201, response.text
+    flow = Path(response.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert cfg["dag_params"][1]["name"] == "run_date"
+    assert "default" not in cfg["dag_params"][1]
+    assert "required" not in cfg["dag_params"][1]
+    assert cfg["flow_tasks"][0]["task_type"] == "binding"
+    assert cfg["flow_tasks"][0]["bindings"][0]["binding_source"] == "target"
+
+
+def test_create_dag_rejects_binding_target_not_declared_as_dag_param(client):
+    payload = _minimal_table_payload()
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"}
+    ]
+    payload["flow_tasks"] = [
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_run_date",
+            "bindings": [
+                {
+                    "variable_name": "run_date",
+                    "binding_source": "default",
+                    "default_value": "2026-01-01",
+                }
+            ],
+            "depends_on": [],
+        }
+    ]
+    response = client.post("/api/create-dag", json=payload)
+    assert response.status_code == 422
+    assert "declared DAG parameter" in response.text
+
+
+def test_create_dag_rejects_builtin_log_level_binding_target(client):
+    payload = _minimal_table_payload()
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"}
+    ]
+    payload["flow_tasks"] = [
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_log_level",
+            "bindings": [{
+                "variable_name": "log_level",
+                "binding_source": "default",
+                "default_value": "DEBUG",
+            }],
+            "depends_on": [],
+        }
+    ]
+
+    response = client.post("/api/create-dag", json=payload)
+
+    assert response.status_code == 422
+    assert "Built-in DAG parameter 'log_level' cannot be assigned" in response.text
+
+
+def test_service_rejects_builtin_log_level_binding_without_writes(studio_paths):
+    projects_root, dag_root = studio_paths
+    payload = _minimal_table_payload()
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"}
+    ]
+    payload["flow_tasks"] = [
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_log_level",
+            "bindings": [{
+                "variable_name": "log_level",
+                "binding_source": "default",
+                "default_value": "DEBUG",
+            }],
+            "depends_on": [],
+        }
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="Built-in DAG parameter 'log_level' cannot be assigned",
+    ):
+        ss.create_or_update_dag(payload)
+
+    assert list(projects_root.iterdir()) == []
+    assert list(dag_root.iterdir()) == []
+
+
+def test_create_dag_rejects_custom_param_default_and_required(client):
+    payload = _minimal_table_payload()
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"},
+        {
+            "name": "run_date",
+            "type": "string",
+            "default": "2026-01-01",
+            "required": True,
+        },
+    ]
+    response = client.post("/api/create-dag", json=payload)
+    assert response.status_code == 422
+    assert "custom DAG parameters do not support default or required" in response.text
+
+
+def test_create_dag_allows_custom_param_with_trigger_value_only(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"},
+        {"name": "run_date", "type": "string"},
+    ]
+    response = client.post("/api/create-dag", json=payload)
+    assert response.status_code == 201, response.text
+
+
+def test_create_dag_allows_parameter_reassignment_across_binding_tasks(
+    client, studio_paths
+):
+    payload = _minimal_table_payload()
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"},
+        {"name": "run_date", "type": "string"},
+    ]
+    payload["flow_tasks"] = [
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_initial_date",
+            "bindings": [
+                {
+                    "variable_name": "run_date",
+                    "binding_source": "default",
+                    "default_value": "2026-01-01",
+                }
+            ],
+            "depends_on": [],
+        },
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_updated_date",
+            "bindings": [
+                {
+                    "variable_name": "run_date",
+                    "binding_source": "default",
+                    "default_value": "2026-01-02",
+                }
+            ],
+            "depends_on": ["bind_initial_date"],
+        },
+        {
+            "task_type": "source_target",
+            "task_group_id": "load_orders",
+            "source_schema": "public",
+            "source_table": "orders",
+            "target_schema": "dwh",
+            "target_table": "orders_stg",
+            "where": "business_date = {{ dag.run_date }}",
+            "depends_on": ["bind_updated_date"],
+        },
+    ]
+
+    response = client.post("/api/create-dag", json=payload)
+
+    assert response.status_code == 201, response.text
+    flow = Path(response.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assignments = [
+        task["bindings"][0]["default_value"]
+        for task in cfg["flow_tasks"]
+        if task["task_type"] == "binding"
+    ]
+    assert assignments == ["2026-01-01", "2026-01-02"]
+
+
+def test_create_dag_rejects_ambiguous_parameter_sources_at_branch_merge(client):
+    payload = _minimal_table_payload()
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"},
+        {"name": "run_date", "type": "string"},
+    ]
+    payload["flow_tasks"] = [
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_date_a",
+            "bindings": [
+                {
+                    "variable_name": "run_date",
+                    "binding_source": "default",
+                    "default_value": "2026-01-01",
+                }
+            ],
+            "depends_on": [],
+        },
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_date_b",
+            "bindings": [
+                {
+                    "variable_name": "run_date",
+                    "binding_source": "default",
+                    "default_value": "2026-01-02",
+                }
+            ],
+            "depends_on": [],
+        },
+        {
+            "task_type": "source_target",
+            "task_group_id": "load_orders",
+            "source_schema": "public",
+            "source_table": "orders",
+            "target_schema": "dwh",
+            "target_table": "orders_stg",
+            "where": "business_date = {{ dag.run_date }}",
+            "depends_on": ["bind_date_a", "bind_date_b"],
+        },
+    ]
+
+    response = client.post("/api/create-dag", json=payload)
+
+    assert response.status_code == 422
+    assert "Ambiguous DAG parameter source" in response.text
+
+
+def test_create_dag_rejects_ambiguous_final_graph_with_auto_task_id(
+    client, studio_paths
+):
+    projects_root, dag_root = studio_paths
+
+    response = client.post(
+        "/api/create-dag",
+        json=_auto_id_ambiguous_param_payload(),
+    )
+
+    assert response.status_code == 422
+    assert "Ambiguous DAG parameter source" in response.text
+    assert list(projects_root.rglob("*.yaml")) == []
+    assert list(dag_root.rglob("*.py")) == []
+    assert list(projects_root.rglob(".flow_studio_history")) == []
+
+
+def test_service_rejects_ambiguous_final_auto_id_graph_before_writes(
+    studio_paths,
+):
+    projects_root, dag_root = studio_paths
+
+    with pytest.raises(ValueError, match="Ambiguous DAG parameter source"):
+        ss.create_or_update_dag(_auto_id_ambiguous_param_payload())
+
+    assert list(projects_root.rglob("*.yaml")) == []
+    assert list(dag_root.rglob("*.py")) == []
+    assert list(projects_root.rglob(".flow_studio_history")) == []
+
+
+def test_create_dag_allows_transitive_binding_parameter_flow(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"},
+        {"name": "run_date", "type": "string"},
+    ]
+    payload["flow_tasks"] = [
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_run_date",
+            "bindings": [
+                {
+                    "variable_name": "run_date",
+                    "binding_source": "default",
+                    "default_value": "2026-01-01",
+                }
+            ],
+            "depends_on": [],
+        },
+        {
+            "task_type": "source_target",
+            "task_group_id": "bridge",
+            "source_schema": "public",
+            "source_table": "orders",
+            "target_schema": "dwh",
+            "target_table": "orders_bridge",
+            "depends_on": ["bind_run_date"],
+        },
+        {
+            "task_type": "source_target",
+            "task_group_id": "load_orders",
+            "source_schema": "public",
+            "source_table": "orders",
+            "target_schema": "dwh",
+            "target_table": "orders_stg",
+            "where": "business_date = {{ dag.run_date }}",
+            "depends_on": ["bridge"],
+        },
+    ]
+    response = client.post("/api/create-dag", json=payload)
+    assert response.status_code == 201, response.text
+
+
+def test_create_dag_rejects_airflow_variable_source_for_binding_task(client):
+    payload = _minimal_table_payload()
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"},
+        {"name": "run_date", "type": "string"},
+    ]
+    payload["flow_tasks"] = [
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_run_date",
+            "bindings": [
+                {
+                    "variable_name": "run_date",
+                    "binding_source": "airflow_variable",
+                    "airflow_variable_key": "etl.run_date",
+                }
+            ],
+            "depends_on": [],
+        }
+    ]
+    response = client.post("/api/create-dag", json=payload)
+    assert response.status_code == 422
+    assert "Binding tasks support source, target, or default" in response.text
+
+
+def test_create_dag_rejects_binding_default_that_does_not_match_param_type(client):
+    payload = _minimal_table_payload()
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"},
+        {"name": "batch_limit", "type": "integer"},
+    ]
+    payload["flow_tasks"] = [
+        {
+            "task_type": "binding",
+            "task_group_id": "bind_limit",
+            "bindings": [
+                {
+                    "variable_name": "batch_limit",
+                    "binding_source": "default",
+                    "default_value": "not-an-integer",
+                }
+            ],
+            "depends_on": [],
+        }
+    ]
+    response = client.post("/api/create-dag", json=payload)
+    assert response.status_code == 422
+    assert "does not match DAG parameter type" in response.text
+
+
+def test_create_dag_rejects_obsolete_colon_parameter(client):
+    payload = _minimal_table_payload()
+    payload["where"] = "updated_at >= :last_sync"
+    payload["bindings"] = [
+        {
+            "variable_name": "last_sync",
+            "binding_source": "default",
+            "default_value": "2026-01-01",
+        }
+    ]
+    response = client.post("/api/create-dag", json=payload)
+    assert response.status_code == 422
+    assert "replace :last_sync with {{ last_sync }}" in response.text
 
 
 def test_create_dag_rejects_missing_binding_for_where_param(client, studio_paths):
     payload = _minimal_table_payload()
     payload.update(
         {
-            "where": "updated_at >= :last_sync",
+            "where": "updated_at >= {{ last_sync }}",
             "bindings": [],
         }
     )
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 422
-    assert "without binding definition" in r.text
+    assert "declared DAG parameter" in r.text
 
 
 def test_create_dag_rejects_unused_binding(client, studio_paths):
@@ -851,7 +1516,7 @@ def test_create_dag_script_run_with_bindings_persists_yaml(client, studio_paths)
         {
             "task_type": "script_run",
             "script_run_environment": "target",
-            "script_sql": "DELETE FROM dwh.orders_stg WHERE updated_at >= :last_sync",
+            "script_sql": "DELETE FROM dwh.orders_stg WHERE updated_at >= {{ last_sync }}",
             "bindings": [
                 {
                     "variable_name": "last_sync",
@@ -872,7 +1537,7 @@ def test_create_dag_script_run_with_bindings_persists_yaml(client, studio_paths)
     assert task["task_type"] == "script_run"
     assert (
         task["script_sql"]
-        == "DELETE FROM dwh.orders_stg WHERE updated_at >= :last_sync"
+        == "DELETE FROM dwh.orders_stg WHERE updated_at >= {{ last_sync }}"
     )
     assert task["bindings"][0]["variable_name"] == "last_sync"
 
@@ -893,13 +1558,13 @@ def test_create_dag_script_run_rejects_missing_binding_for_script_param(
         {
             "task_type": "script_run",
             "script_run_environment": "target",
-            "script_sql": "DELETE FROM dwh.orders_stg WHERE updated_at >= :last_sync",
+            "script_sql": "DELETE FROM dwh.orders_stg WHERE updated_at >= {{ last_sync }}",
             "bindings": [],
         }
     )
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 422
-    assert "without binding definition" in r.text
+    assert "declared DAG parameter" in r.text
 
 
 def test_create_dag_script_run_rejects_unused_binding(client, studio_paths):
@@ -2470,7 +3135,7 @@ def test_resolve_dag_config_for_update_roundtrip_bindings(client, studio_paths):
     payload = _minimal_table_payload()
     payload.update(
         {
-            "where": "id > :min_id",
+            "where": "id > {{ min_id }}",
             "bindings": [
                 {
                     "variable_name": "min_id",

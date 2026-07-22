@@ -6,6 +6,7 @@ FFEngineOperator, Airflow ortamında FFEngine Flow pipeline'ını orkestre eder:
 """
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,6 +25,7 @@ except Exception:  # pragma: no cover - airflow olmayan ortamlarda import fallba
 
 
 from ffengine.core.base_engine import FlowResult
+from ffengine.config.dag_param_flow import BUILTIN_DAG_PARAM_BINDING_ERROR
 from ffengine.errors import error_payload, normalize_exception
 from ffengine.errors.exceptions import ConfigError
 
@@ -167,9 +169,9 @@ class _AirflowVarProxy(dict):
         try:
             from airflow.models import Variable
 
-            Variable.get(key)
+            self[key] = Variable.get(key)
             return True
-        except Exception:
+        except KeyError:
             return False
 
     def __getitem__(self, key):
@@ -185,6 +187,129 @@ class _AirflowVarProxy(dict):
 def build_airflow_variable_context() -> dict:
     """Airflow Variable'larından BindingResolver context'i oluşturur."""
     return _AirflowVarProxy()
+
+
+def _extract_dag_run_conf(context: dict[str, Any]) -> dict[str, Any]:
+    dag_run = context.get("dag_run")
+    conf = getattr(dag_run, "conf", None) if dag_run is not None else None
+    return dict(conf) if isinstance(conf, dict) else {}
+
+
+def coerce_dag_param_value(value: Any, param_type: str) -> Any:
+    """Convert an accepted Trigger/Binding representation to its declared type."""
+    if not isinstance(value, str):
+        return value
+    if param_type == "integer" and re.fullmatch(r"-?\d+", value):
+        return int(value)
+    if param_type == "number" and re.fullmatch(
+        r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", value
+    ):
+        return float(value)
+    if param_type == "boolean" and value in {"true", "false"}:
+        return value == "true"
+    return value
+
+
+def _dag_param_type(context: dict[str, Any], name: str) -> str | None:
+    params = getattr(context.get("dag"), "params", None)
+    get_param = getattr(params, "get_param", None)
+    if not callable(get_param):
+        return None
+    try:
+        schema = getattr(get_param(name), "schema", {})
+    except KeyError:
+        return None
+    param_type = schema.get("x-ffengine-type") if isinstance(schema, dict) else None
+    return param_type if param_type in {"string", "integer", "number", "boolean"} else None
+
+
+def _normalize_dag_run_conf(
+    context: dict[str, Any], dag_run_conf: dict[str, Any]
+) -> dict[str, Any]:
+    from airflow.sdk import Param
+
+    normalized: dict[str, Any] = {}
+    for name, original in dag_run_conf.items():
+        param_type = _dag_param_type(context, name)
+        if param_type is None:
+            normalized[name] = original
+            continue
+        if original is None:
+            continue
+        value = coerce_dag_param_value(original, param_type)
+        try:
+            normalized[name] = Param(type=param_type).resolve(value)
+        except Exception as exc:
+            raise ConfigError(
+                f"DAG parameter '{name}' cannot be normalized as {param_type}."
+            ) from exc
+    return normalized
+
+
+def build_runtime_binding_context(
+    context: dict | None = None,
+    *,
+    airflow_variables: dict | None = None,
+    binding_task_ids: list[str] | None = None,
+    binding_sources: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    ctx = dict(context or {})
+    runtime_keys = {"airflow_variables", "binding_values", "dag_run_conf"}
+    if runtime_keys <= set(ctx):
+        return ctx
+    variables = (
+        airflow_variables
+        if airflow_variables is not None
+        else build_airflow_variable_context()
+    )
+    ti = ctx.get("ti")
+    if binding_sources is not None:
+        binding_values = _select_compiled_binding_values(ti, binding_sources)
+    else:
+        binding_values = _merge_legacy_binding_values(ti, binding_task_ids)
+    return {
+        "airflow_variables": variables,
+        "airflow_params": dict(ctx.get("params") or {}),
+        "binding_values": binding_values,
+        "dag_run_conf": _normalize_dag_run_conf(ctx, _extract_dag_run_conf(ctx)),
+    }
+
+
+def _select_compiled_binding_values(ti, binding_sources: dict[str, str]) -> dict:
+    parameters_by_task: dict[str, list[str]] = {}
+    for name, task_id in sorted(binding_sources.items()):
+        parameters_by_task.setdefault(task_id, []).append(name)
+    if parameters_by_task and ti is None:
+        raise ConfigError("Task instance is required to read compiled Binding XCom.")
+    selected: dict[str, Any] = {}
+    for task_id, names in parameters_by_task.items():
+        value = ti.xcom_pull(task_ids=task_id, key="return_value")
+        if not isinstance(value, dict):
+            raise ConfigError(f"Binding XCom is unavailable for task '{task_id}'.")
+        missing = [name for name in names if name not in value]
+        if missing:
+            raise ConfigError(
+                f"DAG parameter '{missing[0]}' is missing from Binding XCom "
+                f"task '{task_id}'."
+            )
+        selected.update({name: value[name] for name in names})
+    return selected
+
+
+def _merge_legacy_binding_values(ti, binding_task_ids: list[str] | None) -> dict:
+    merged: dict[str, Any] = {}
+    for task_id in list(binding_task_ids or []):
+        value = ti.xcom_pull(task_ids=task_id, key="return_value") if ti else None
+        if not isinstance(value, dict):
+            continue
+        duplicate = sorted(set(merged) & set(value))
+        if duplicate:
+            raise ConfigError(
+                "Conflicting compiled Binding XCom values for DAG parameter(s): "
+                + ", ".join(duplicate)
+            )
+        merged.update(value)
+    return merged
 
 
 def _resolve_task_runtime(
@@ -206,7 +331,7 @@ def _resolve_task_runtime(
     src_dialect = resolve_dialect(src_params["conn_type"])
     tgt_dialect = resolve_dialect(tgt_params["conn_type"])
 
-    airflow_ctx = airflow_context or build_airflow_variable_context()
+    airflow_ctx = build_runtime_binding_context(airflow_context)
     resolver = BindingResolver()
     task_config = resolver.resolve(task_config, airflow_ctx)
     return (
@@ -229,7 +354,7 @@ def _resolve_sql_bindings_if_needed(
     target_session: Any,
     source_dialect: Any,
 ) -> dict[str, Any]:
-    if not task_config.get("bindings"):
+    if not task_config.get("bindings") and not task_config.get("where"):
         return task_config
     return resolver.resolve_sql_bindings(
         task_config,
@@ -511,6 +636,8 @@ class FFEngineOperator(BaseOperator):
         target_conn_id: str,
         engine: str = "auto",
         airflow_context: dict | None = None,
+        binding_task_ids: list[str] | None = None,
+        binding_sources: dict[str, str] | None = None,
         task_id: str = "ffengine_etl",
         **kwargs,
     ):
@@ -522,6 +649,9 @@ class FFEngineOperator(BaseOperator):
         self.target_conn_id = target_conn_id
         self.engine = engine
         self._airflow_context = airflow_context
+        self.binding_sources = dict(binding_sources or {})
+        source_task_ids = dict.fromkeys(self.binding_sources.values())
+        self.binding_task_ids = list(binding_task_ids or source_task_ids)
 
     def execute(self, context: dict | None = None) -> dict:
         """
@@ -541,12 +671,40 @@ class FFEngineOperator(BaseOperator):
         from ffengine.core.flow_manager import FlowManager
 
         context = context or {}
+        airflow_ctx = build_runtime_binding_context(
+            context,
+            airflow_variables=self._airflow_context,
+            binding_task_ids=self.binding_task_ids,
+            binding_sources=self.binding_sources or None,
+        )
+        if "log_level" in airflow_ctx["binding_values"]:
+            raise ConfigError(BUILTIN_DAG_PARAM_BINDING_ERROR)
+        log_level = (
+            airflow_ctx["dag_run_conf"].get("log_level")
+            or airflow_ctx["airflow_params"].get("log_level")
+            or "default"
+        )
+        if log_level not in {"default", "DEBUG"}:
+            raise ConfigError("log_level must be default or DEBUG.")
+        previous_log_level = _log.level
+        if log_level == "DEBUG":
+            _log.setLevel(logging.DEBUG)
 
         retry_telemetry = self._retry_telemetry(context)
         ti = context.get("ti")
         source_db = "unknown"
         target_db = "unknown"
         try:
+            _log_structured(
+                level=logging.DEBUG,
+                stage="airflow",
+                message="Runtime parameters prepared.",
+                task_group_id=self.task_group_id,
+                source_db=source_db,
+                target_db=target_db,
+                parameter_count=len(airflow_ctx["airflow_params"]),
+                binding_parameter_count=len(airflow_ctx["binding_values"]),
+            )
             # ---- Phase 1: PLAN ----
             _log_structured(
                 level=logging.INFO,
@@ -576,14 +734,13 @@ class FFEngineOperator(BaseOperator):
             target_db = tgt_params.get("conn_type", "unknown")
 
             # 4. Binding çöz
-            airflow_ctx = self._airflow_context or build_airflow_variable_context()
             resolver = BindingResolver()
             task_config = resolver.resolve(task_config, airflow_ctx)
 
             # 5. Session'lar aç, mapping çöz, partition planla, çalıştır
             with DBSession(src_params, src_dialect) as src_session:
                 with DBSession(tgt_params, tgt_dialect) as tgt_session:
-                    if task_config.get("bindings"):
+                    if task_config.get("bindings") or task_config.get("where"):
                         task_config = resolver.resolve_sql_bindings(
                             task_config,
                             context=airflow_ctx,
@@ -708,6 +865,8 @@ class FFEngineOperator(BaseOperator):
                 ti.xcom_push(key="error_summary", value=payload)
                 ti.xcom_push(key="retry_telemetry", value=retry_telemetry)
             raise norm from exc
+        finally:
+            _log.setLevel(previous_log_level)
 
     def _retry_telemetry(self, context: dict) -> dict:
         """Task retry bilgilerini context'ten normalize eder."""

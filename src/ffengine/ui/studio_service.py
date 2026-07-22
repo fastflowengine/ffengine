@@ -25,6 +25,10 @@ from zoneinfo import ZoneInfo, available_timezones
 import yaml
 
 from ffengine.airflow.operator import resolve_dialect
+from ffengine.config.dag_param_flow import (
+    compile_dag_parameter_flow,
+    validate_binding_target_is_custom,
+)
 from ffengine.config.validator import ConfigValidator
 from ffengine.db.airflow_adapter import AirflowConnectionAdapter
 from ffengine.db.session import DBSession
@@ -47,18 +51,22 @@ STUDIO_CUSTOM_TAG_MAX_LENGTH = 32
 STUDIO_DAG_DEPENDENCY_MAX_COUNT = 200
 STUDIO_DEFAULT_START_DATE = "2023-01-01T00:00:00"
 STUDIO_DEFAULT_ACTIVE = True
+STUDIO_FOLDER_PATH_REQUIRED_MESSAGE = "Select a project and DAG path."
 REVISION_SOURCE_CREATE_INITIAL = "create_initial"
 REVISION_SOURCE_UPDATE = "update"
 STUDIO_TASK_TYPE_SOURCE_TARGET = "source_target"
 STUDIO_TASK_TYPE_SCRIPT_RUN = "script_run"
 STUDIO_TASK_TYPE_DAG = "dag"
+STUDIO_TASK_TYPE_BINDING = "binding"
 STUDIO_VALID_TASK_TYPES = {
     STUDIO_TASK_TYPE_SOURCE_TARGET,
     STUDIO_TASK_TYPE_SCRIPT_RUN,
     STUDIO_TASK_TYPE_DAG,
+    STUDIO_TASK_TYPE_BINDING,
 }
 STUDIO_VALID_SCRIPT_RUN_ENVIRONMENTS = {"source", "target"}
-_BINDING_PARAM_RE = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+_BINDING_PARAM_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+_OBSOLETE_BINDING_PARAM_RE = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
 
 _REVISION_DIR_RE = re.compile(r"^rev_(\d{6})$")
 _DAG_LOCKS: dict[str, threading.Lock] = {}
@@ -69,6 +77,16 @@ def _slugify(value: str, default: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9_]+", "_", (value or "").strip())
     cleaned = cleaned.strip("_").lower()
     return cleaned or default
+
+
+def _require_folder_scope(payload: dict[str, Any]) -> dict[str, str]:
+    scope = {
+        name: str(payload.get(name) or "").strip()
+        for name in ("project", "domain", "level", "flow")
+    }
+    if not all(scope.values()):
+        raise ValueError(STUDIO_FOLDER_PATH_REQUIRED_MESSAGE)
+    return scope
 
 
 def _auto_task_group_id(
@@ -107,6 +125,29 @@ def _normalize_bindings(raw_bindings: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _normalize_dag_params(raw_params: Any) -> list[dict[str, Any]]:
+    if raw_params is None:
+        return []
+    if not isinstance(raw_params, list):
+        raise ValueError("dag_params must be a list.")
+    normalized: list[dict[str, Any]] = []
+    for item in raw_params:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if name != "log_level" and {"default", "required", "enum"} & set(item):
+            raise ValueError(
+                "Custom DAG parameters must not define default, required, or enum."
+            )
+        fields = (
+            ("name", "type", "default", "required", "description", "enum")
+            if name == "log_level"
+            else ("name", "type", "description")
+        )
+        normalized.append({key: item[key] for key in fields if key in item})
+    return normalized
+
+
 def _normalize_upsert_match_columns(raw_columns: Any) -> list[str]:
     if raw_columns is None:
         return []
@@ -127,13 +168,20 @@ def _normalize_task_type(raw_task_type: Any) -> str:
     task_type = str(raw_task_type or STUDIO_TASK_TYPE_SOURCE_TARGET).strip().lower()
     if task_type not in STUDIO_VALID_TASK_TYPES:
         raise ValueError(
-            "task_type must be one of: 'source_target', 'script_run', or 'dag'."
+            "task_type must be source_target, script_run, dag, or binding."
         )
     return task_type
 
 
 def _extract_binding_params(expression: Any) -> set[str]:
-    return set(_BINDING_PARAM_RE.findall(str(expression or "")))
+    text = str(expression or "")
+    obsolete = _OBSOLETE_BINDING_PARAM_RE.search(text)
+    if obsolete:
+        name = obsolete.group(1)
+        raise ValueError(
+            f"Obsolete parameter syntax; replace :{name} with {{{{ {name} }}}}."
+        )
+    return set(_BINDING_PARAM_RE.findall(text))
 
 
 def _validate_binding_contract(
@@ -144,11 +192,6 @@ def _validate_binding_contract(
 ) -> None:
     params = _extract_binding_params(expression)
     items = list(bindings or [])
-    if params and not items:
-        raise ValueError(
-            f"{expression_label} contains parameter(s) without binding definition: "
-            + ", ".join(sorted(params))
-        )
     if not items:
         return
     binding_names = {
@@ -156,13 +199,7 @@ def _validate_binding_contract(
         for item in items
         if isinstance(item, dict) and str(item.get("variable_name") or "").strip()
     }
-    missing = sorted(params - binding_names)
     unused = sorted(binding_names - params)
-    if missing:
-        raise ValueError(
-            f"{expression_label} contains parameter(s) without binding definition: "
-            + ", ".join(missing)
-        )
     if unused:
         raise ValueError(
             f"Binding definition exists but parameter(s) are unused in {expression_label}: "
@@ -1992,6 +2029,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
     custom_tags = _normalize_custom_tags(raw.get("custom_tags"))
     scheduler = normalize_scheduler(raw.get("scheduler"))
     dag_dependencies = _normalize_dag_dependencies(raw.get("dag_dependencies"))
+    dag_params = _normalize_dag_params(raw.get("dag_params"))
 
     payload = {
         "project": project,
@@ -2001,6 +2039,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "custom_tags": custom_tags,
         "scheduler": scheduler,
         "dag_dependencies": dag_dependencies,
+        "dag_params": dag_params,
         "group_no": _extract_group_no(did, config_path),
         "task_group_id": first_task["task_group_id"],
         "task_type": first_task["task_type"],
@@ -2911,7 +2950,35 @@ def _validate_non_source_target_task(task: dict[str, Any]) -> None:
         if not dag_task_dag_id:
             raise ValueError("dag_task_dag_id is required when task_type='dag'.")
         return
+    if task_type == STUDIO_TASK_TYPE_BINDING:
+        if not _normalize_bindings(task.get("bindings")):
+            raise ValueError("bindings is required when task_type='binding'.")
+        return
     raise ValueError(f"Unsupported task_type: {task_type}")
+
+
+def _validate_binding_task_targets(
+    payload: dict[str, Any], tasks: list[dict[str, Any]]
+) -> None:
+    declared = {
+        str(item.get("name") or "").strip()
+        for item in _normalize_dag_params(payload.get("dag_params"))
+    }
+    for task in tasks:
+        if task.get("task_type") != STUDIO_TASK_TYPE_BINDING:
+            continue
+        targets = {
+            str(item.get("variable_name") or "").strip()
+            for item in _normalize_bindings(task.get("bindings"))
+        }
+        for name in targets:
+            validate_binding_target_is_custom(name)
+        missing = sorted(targets - declared)
+        if missing:
+            raise ValueError(
+                "Binding target must be a declared DAG parameter: "
+                + ", ".join(missing)
+            )
 
 
 def validate_pipeline_payload(payload: dict[str, Any]) -> None:
@@ -2938,6 +3005,7 @@ def validate_pipeline_payload(payload: dict[str, Any]) -> None:
                 _validate_non_source_target_task(task)
             normalized_tasks.append(task)
         resolve_task_dependencies(normalized_tasks)
+        _validate_binding_task_targets(payload, normalized_tasks)
         return
 
     task = build_task_dict_for_validation(payload)
@@ -2949,6 +3017,7 @@ def validate_pipeline_payload(payload: dict[str, Any]) -> None:
     else:
         _validate_non_source_target_task(task)
     resolve_task_dependencies([task])
+    _validate_binding_task_targets(payload, [task])
 
 
 def fetch_timeline_runs(
@@ -3263,21 +3332,28 @@ def discover_connections() -> list[dict[str, str]]:
 def discover_airflow_variables(
     search: str | None = None,
     limit: int = 200,
+    exact: bool = False,
 ) -> list[str]:
     """Returns the Variable key list from Airflow metadata."""
     from airflow.models import Variable
     from airflow.utils.session import create_session
 
     safe_limit = max(1, min(int(limit or 200), 1000))
-    search_val = (search or "").strip().lower()
+    search_val = (search or "").strip()
 
     with create_session() as session:
         q = session.query(Variable.key).order_by(Variable.key.asc())
-        if search_val:
-            q = q.filter(Variable.key.ilike(f"%{search_val}%"))
+        if exact and search_val:
+            q = q.filter(Variable.key == search_val)
+        elif exact:
+            return []
+        elif search_val:
+            q = q.filter(Variable.key.ilike(f"%{search_val.lower()}%"))
         rows = q.limit(safe_limit).all()
 
     keys = [str(row[0] or "") for row in rows if str(row[0] or "").strip()]
+    if exact:
+        keys = [key for key in keys if key == search_val]
     return sorted(set(keys))
 
 
@@ -3562,13 +3638,14 @@ def create_or_update_dag(
     update: bool = False,
     dag_id: str | None = None,
 ) -> dict[str, Any]:
+    folder_scope = _require_folder_scope(payload)
     _bulk_backfill_legacy_task_types_once()
     validate_pipeline_payload(payload)
 
-    project = _slugify(payload["project"], "default_project")
-    domain = _slugify(payload["domain"], "default_domain")
-    level = _slugify(payload["level"], "level1")
-    flow = _slugify(payload["flow"], "src_to_stg")
+    project = _slugify(folder_scope["project"], "default_project")
+    domain = _slugify(folder_scope["domain"], "default_domain")
+    level = _slugify(folder_scope["level"], "level1")
+    flow = _slugify(folder_scope["flow"], "src_to_stg")
 
     task_payloads = payload.get("flow_tasks")
     if isinstance(task_payloads, list) and task_payloads:
@@ -3646,8 +3723,12 @@ def create_or_update_dag(
         user_tags = _normalize_custom_tags(payload.get("custom_tags"))
         tags = _merge_tags(auto_tags, user_tags)
         scheduler = normalize_scheduler(payload.get("scheduler"))
+        existing_cfg = _load_yaml_root(config_path) if update else {}
+        if update and "dag_params" not in payload:
+            dag_params = _normalize_dag_params(existing_cfg.get("dag_params"))
+        else:
+            dag_params = _normalize_dag_params(payload.get("dag_params"))
         if update and "dag_dependencies" not in payload:
-            existing_cfg = _load_yaml_root(config_path)
             dag_dependencies = _normalize_dag_dependencies(
                 existing_cfg.get("dag_dependencies")
             )
@@ -3719,6 +3800,12 @@ def create_or_update_dag(
                 auto_source_schema = "script"
                 auto_source_table = script_run_environment
                 auto_load_method = "script"
+            elif task_type == STUDIO_TASK_TYPE_BINDING:
+                normalized_source_schema = ""
+                normalized_source_table = ""
+                auto_source_schema = "binding"
+                auto_source_table = str(idx)
+                auto_load_method = "binding"
             else:
                 if not dag_task_dag_id:
                     raise ValueError(
@@ -3793,12 +3880,19 @@ def create_or_update_dag(
                 },
                 "tags": tags,
             }
+            if task_type == STUDIO_TASK_TYPE_BINDING:
+                task_cfg = {
+                    "task_type": task_type,
+                    "task_group_id": task_group_id,
+                    "depends_on": task_cfg["depends_on"],
+                    "tags": tags,
+                }
             bindings = _normalize_bindings(item.get("bindings"))
             if bindings:
                 task_cfg["bindings"] = bindings
             if upsert_match_columns:
                 task_cfg["upsert_match_columns"] = upsert_match_columns
-            mode = task_cfg["column_mapping_mode"]
+            mode = str(task_cfg.get("column_mapping_mode") or "source")
             mapping_content = str(item.get("mapping_content") or "")
             if task_type != STUDIO_TASK_TYPE_SOURCE_TARGET and load_method == "upsert":
                 raise ValueError(
@@ -3861,6 +3955,7 @@ def create_or_update_dag(
                 _read_mapping_object(mapping_path)
 
         resolve_task_dependencies(task_cfgs)
+        compile_dag_parameter_flow(dag_params, task_cfgs)
 
         if sql_mapping_checks:
             for check in sql_mapping_checks:
@@ -3935,6 +4030,7 @@ def create_or_update_dag(
                 "custom_tags": user_tags,
                 "scheduler": scheduler,
                 "dag_dependencies": dag_dependencies,
+                "dag_params": dag_params,
             }
             config_path.write_text(
                 yaml.safe_dump(config_obj, sort_keys=False, allow_unicode=False),

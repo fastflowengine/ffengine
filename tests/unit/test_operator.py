@@ -5,10 +5,13 @@ Kapsam: resolve_dialect, combine_where, aggregate_results,
         FFEngineOperator init/execute, hata senaryoları, XCom.
 """
 
+import logging
+
 import pytest
 from unittest.mock import MagicMock, patch
 
 from ffengine.airflow.operator import (
+    build_runtime_binding_context,
     resolve_dialect,
     combine_where,
     aggregate_results,
@@ -17,6 +20,7 @@ from ffengine.airflow.operator import (
 )
 from ffengine.core.base_engine import FlowResult
 from ffengine.errors.exceptions import ConfigError, ConnectionError, EngineError
+import ffengine.airflow.operator as operator_module
 
 # ---------------------------------------------------------------------------
 # Patch hedefleri — execute() lazy import yaptığı için kaynak modül yolu
@@ -30,6 +34,188 @@ _P_MAPPING = "ffengine.mapping.MappingResolver"
 _P_PART = "ffengine.partition.Partitioner"
 _P_WRITER = "ffengine.pipeline.target_writer.TargetWriter"
 _P_FLOW = "ffengine.core.flow_manager.FlowManager"
+
+
+class _DagRun:
+    conf = {"run_date": "2026-07-20", "log_level": "DEBUG"}
+
+
+class _DeclaredParam:
+    def __init__(self, param_type):
+        self.schema = {"x-ffengine-type": param_type}
+
+
+class _DeclaredParams:
+    def __init__(self, **types):
+        self._params = {name: _DeclaredParam(value) for name, value in types.items()}
+
+    def get_param(self, name):
+        return self._params[name]
+
+
+class _Dag:
+    def __init__(self, **types):
+        self.params = _DeclaredParams(**types)
+
+
+def test_runtime_binding_context_merges_direct_xcom_without_values_in_logs():
+    ti = MagicMock()
+    ti.xcom_pull.side_effect = [
+        {"run_date": "2026-07-19"},
+        {"batch_limit": 50},
+    ]
+
+    context = build_runtime_binding_context(
+        {
+            "params": {"run_date": "2026-07-18", "log_level": "default"},
+            "dag_run": _DagRun(),
+            "ti": ti,
+        },
+        airflow_variables={},
+        binding_task_ids=["binding__date", "binding__limit"],
+    )
+
+    assert context["binding_values"] == {
+        "run_date": "2026-07-19",
+        "batch_limit": 50,
+    }
+    assert context["dag_run_conf"]["run_date"] == "2026-07-20"
+
+
+def test_runtime_binding_context_normalizes_declared_trigger_values_without_mutation():
+    dag_run = MagicMock()
+    dag_run.conf = {
+        "batch_limit": "3",
+        "ratio": "3.5",
+        "enabled": "true",
+        "label": "3",
+    }
+
+    context = build_runtime_binding_context(
+        {
+            "params": {},
+            "dag": _Dag(
+                batch_limit="integer",
+                ratio="number",
+                enabled="boolean",
+                label="string",
+            ),
+            "dag_run": dag_run,
+        },
+        airflow_variables={},
+    )
+
+    assert context["dag_run_conf"] == {
+        "batch_limit": 3,
+        "ratio": 3.5,
+        "enabled": True,
+        "label": "3",
+    }
+    assert dag_run.conf["batch_limit"] == "3"
+
+
+def test_runtime_binding_context_preserves_native_trigger_value_and_omits_null():
+    dag_run = MagicMock()
+    dag_run.conf = {"batch_limit": None, "native_limit": 3}
+    ti = MagicMock()
+    ti.xcom_pull.return_value = {"batch_limit": 2}
+
+    context = build_runtime_binding_context(
+        {
+            "params": {},
+            "dag": _Dag(batch_limit="integer", native_limit="integer"),
+            "dag_run": dag_run,
+            "ti": ti,
+        },
+        airflow_variables={},
+        binding_task_ids=["binding__limit"],
+    )
+
+    assert context["dag_run_conf"] == {"native_limit": 3}
+    assert context["binding_values"] == {"batch_limit": 2}
+
+
+def test_runtime_binding_context_rejects_invalid_declared_trigger_value():
+    dag_run = MagicMock()
+    dag_run.conf = {"batch_limit": "3x"}
+
+    with pytest.raises(ConfigError, match="batch_limit.*integer"):
+        build_runtime_binding_context(
+            {
+                "params": {},
+                "dag": _Dag(batch_limit="integer"),
+                "dag_run": dag_run,
+            },
+            airflow_variables={},
+        )
+
+
+def test_runtime_binding_context_rejects_conflicting_compiled_xcom_values():
+    ti = MagicMock()
+    ti.xcom_pull.side_effect = [
+        {"run_date": "2026-07-19"},
+        {"run_date": "2026-07-20"},
+    ]
+
+    with pytest.raises(ConfigError, match="Conflicting compiled Binding XCom values"):
+        build_runtime_binding_context(
+            {"params": {}, "dag_run": _DagRun(), "ti": ti},
+            airflow_variables={},
+            binding_task_ids=["binding__date_a", "binding__date_b"],
+        )
+
+
+def test_runtime_binding_context_selects_parameter_from_compiled_producer_once():
+    ti = MagicMock()
+    values = {
+        "binding__initial": {"test1": 1, "test2": 10},
+        "binding__updated": {"test1": 2},
+    }
+    ti.xcom_pull.side_effect = lambda task_ids, key: values[task_ids]
+
+    context = build_runtime_binding_context(
+        {"params": {}, "dag_run": _DagRun(), "ti": ti},
+        airflow_variables={},
+        binding_sources={
+            "test1": "binding__updated",
+            "test2": "binding__initial",
+        },
+    )
+
+    assert context["binding_values"] == {"test1": 2, "test2": 10}
+    assert ti.xcom_pull.call_count == 2
+    assert {
+        call.kwargs["task_ids"] for call in ti.xcom_pull.call_args_list
+    } == {"binding__initial", "binding__updated"}
+
+
+def test_runtime_binding_context_fails_when_selected_parameter_is_missing():
+    ti = MagicMock()
+    ti.xcom_pull.return_value = {"test1": 2}
+
+    with pytest.raises(ConfigError, match="test2.*binding__updated"):
+        build_runtime_binding_context(
+            {"params": {}, "dag_run": _DagRun(), "ti": ti},
+            airflow_variables={},
+            binding_sources={"test2": "binding__updated"},
+        )
+
+
+def test_airflow_variable_proxy_reads_used_key_once():
+    proxy = operator_module._AirflowVarProxy()
+    with patch("airflow.models.Variable.get", return_value="2026-07-21") as get:
+        assert "etl.business_date" in proxy
+        assert proxy["etl.business_date"] == "2026-07-21"
+    get.assert_called_once_with("etl.business_date")
+
+
+def test_airflow_variable_proxy_distinguishes_missing_key_from_service_error():
+    proxy = operator_module._AirflowVarProxy()
+    with patch("airflow.models.Variable.get", side_effect=KeyError("missing")):
+        assert "missing.key" not in proxy
+    with patch("airflow.models.Variable.get", side_effect=RuntimeError("offline")):
+        with pytest.raises(RuntimeError, match="offline"):
+            _ = "etl.business_date" in proxy
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +451,41 @@ class TestFFEngineOperatorExecute:
         assert result["partitions_completed"] == 1
         assert result["errors"] == []
 
+    def test_debug_log_level_is_run_scoped_and_does_not_log_values(self):
+        dag_run = MagicMock()
+        dag_run.conf = {"log_level": "DEBUG", "token": "do-not-log-this"}
+        initial_level = operator_module._log.level
+        with (
+            patch.object(
+                operator_module._log,
+                "setLevel",
+                wraps=operator_module._log.setLevel,
+            ) as set_level,
+            patch.object(operator_module, "_log_structured") as structured_log,
+        ):
+            _make_operator().execute(
+                {"params": {"log_level": "default"}, "dag_run": dag_run}
+            )
+
+        assert set_level.call_args_list[0].args == (logging.DEBUG,)
+        assert set_level.call_args_list[-1].args == (initial_level,)
+        assert operator_module._log.level == initial_level
+        assert "do-not-log-this" not in str(structured_log.call_args_list)
+
+    def test_binding_xcom_cannot_override_builtin_log_level(self):
+        runtime_context = {
+            "airflow_variables": {},
+            "airflow_params": {"log_level": "default"},
+            "binding_values": {"log_level": "DEBUG"},
+            "dag_run_conf": {},
+        }
+
+        with pytest.raises(
+            ConfigError,
+            match="Built-in DAG parameter 'log_level' cannot be assigned",
+        ):
+            _make_operator().execute(runtime_context)
+
     def test_happy_path_multi_partition(self):
         self.mock_part.return_value.plan.return_value = [
             {"part_id": 0, "where": "id < 500"},
@@ -330,7 +551,7 @@ class TestFFEngineOperatorExecute:
     def test_sql_bindings_resolved_after_sessions_open(self):
         self.task_config.update(
             {
-                "where": "id > :min_id",
+                "where": "id > {{ min_id }}",
                 "bindings": [
                     {
                         "variable_name": "min_id",

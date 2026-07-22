@@ -765,6 +765,10 @@
         "advanced";
     }
 
+    .task-card.binding-task .task-layout {
+      grid-template-areas: "advanced";
+    }
+
     .task-card {
       border: 1px solid var(--line);
       border-radius: 6px;
@@ -1017,9 +1021,82 @@
 
     .binding-row {
       display: grid;
-      grid-template-columns: 1fr 120px 1fr auto;
+      grid-template-columns: 1fr 120px auto;
       gap: 8px;
       align-items: end;
+    }
+
+    .binding-row.has-default-value {
+      grid-template-columns: 1fr 120px 1fr auto;
+    }
+
+    .binding-default-wrap input {
+      width: 100%;
+    }
+
+    .binding-airflow-selector {
+      position: relative;
+      margin-top: 6px;
+    }
+
+    .binding-airflow-options {
+      position: absolute;
+      z-index: 120;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      max-height: 220px;
+      overflow-y: auto;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--card);
+      box-shadow: 0 10px 24px color-mix(in srgb, #000 20%, transparent 80%);
+    }
+
+    .binding-airflow-option {
+      display: block;
+      width: 100%;
+      padding: 7px 8px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .binding-airflow-option:hover,
+    .binding-airflow-option.active {
+      background: color-mix(in srgb, var(--focus) 18%, var(--card) 82%);
+    }
+
+    .binding-airflow-empty {
+      padding: 7px 8px;
+      margin: 0;
+    }
+
+    .advanced-params-list {
+      display: grid;
+      gap: 8px;
+      margin: 10px 0;
+    }
+
+    .dag-param-column-labels {
+      display: grid;
+      grid-template-columns: minmax(150px, 1.2fr) 110px minmax(160px, 1.5fr) auto;
+      gap: 8px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .dag-param-row {
+      display: grid;
+      grid-template-columns: minmax(150px, 1.2fr) 110px minmax(160px, 1.5fr) auto;
+      gap: 8px;
+      align-items: center;
     }
 
     .binding-remove {
@@ -1516,8 +1593,11 @@
       .picker-grid { grid-template-columns: 1fr; }
       .picker-col { border-right: none; border-bottom: 1px solid var(--line); }
       .picker-col:last-child { border-bottom: none; }
-      .binding-row { grid-template-columns: 1fr; }
+      .binding-row,
+      .binding-row.has-default-value { grid-template-columns: 1fr; }
       .binding-remove { width: 100%; }
+      .dag-param-row { grid-template-columns: 1fr; }
+      .dag-param-column-labels { display: none; }
 
       body[data-ui-variant="current"] .source-card::after {
         display: none;

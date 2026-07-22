@@ -1,24 +1,92 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import re
+from contextlib import ExitStack
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from airflow.sdk import DAG, TaskGroup, task
+from airflow.sdk import DAG, Param, TaskGroup, get_current_context, task
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
 
 from ffengine.airflow.operator import (
     FFEngineOperator,
     aggregate_partition_payloads,
+    build_runtime_binding_context,
+    coerce_dag_param_value,
     plan_partitions_for_task,
     prepare_target_for_task,
     run_partition_for_task,
 )
+from ffengine.config.dag_param_flow import (
+    TRIGGER_SOURCE,
+    compile_dag_parameter_flow,
+    validate_binding_target_is_custom,
+)
+
+_log = logging.getLogger(__name__)
 
 DEFAULT_START_DATE = "2023-01-01T00:00:00"
+_PARAM_STRING_PATTERNS = {
+    "integer": r"^-?\d+$",
+    "number": r"^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$",
+    "boolean": r"^(true|false)$",
+}
+
+
+def _optional_param_schema(param_type: str) -> dict[str, Any]:
+    accepted_types = [param_type, "null"]
+    if param_type != "string":
+        # Airflow 3.2 selects the first non-null type for its Trigger widget.
+        # String-first preserves invalid text so JSON Schema can reject it.
+        accepted_types.insert(0, "string")
+    schema: dict[str, Any] = {
+        "type": accepted_types,
+        "x-ffengine-type": param_type,
+        "x-ffengine-schema-version": 2,
+    }
+    pattern = _PARAM_STRING_PATTERNS.get(param_type)
+    if pattern:
+        schema["pattern"] = pattern
+    return schema
+
+
+def _build_dag_params(raw_params: Any) -> dict[str, Param]:
+    if raw_params is None:
+        return {}
+    if not isinstance(raw_params, list):
+        raise ValueError("dag_params must be a list.")
+    params: dict[str, Param] = {}
+    for item in raw_params:
+        if not isinstance(item, dict):
+            raise ValueError("Each dag_params item must be a dict.")
+        name = str(item.get("name") or "").strip()
+        if not name or name in params:
+            raise ValueError("dag_params names must be non-empty and unique.")
+        param_type = str(item.get("type") or "string")
+        if name != "log_level":
+            forbidden = {"default", "required", "enum"} & set(item)
+            if forbidden:
+                raise ValueError(
+                    "Custom DAG parameters must not define default, required, or enum."
+                )
+            params[name] = Param(
+                None,
+                description=item.get("description"),
+                **_optional_param_schema(param_type),
+            )
+            continue
+        schema: dict[str, Any] = {"type": param_type}
+        if item.get("enum") is not None:
+            schema["enum"] = list(item.get("enum") or [])
+        params[name] = Param(
+            item.get("default"), description=item.get("description"), **schema
+        )
+    return params
 
 
 def _slug_task_token(value: str) -> str:
@@ -101,10 +169,15 @@ def _resolve_task_dependencies(
 
 
 def _run_script_task(
-    task_def: dict[str, Any], source_conn_id: str, target_conn_id: str
+    task_def: dict[str, Any],
+    source_conn_id: str,
+    target_conn_id: str,
+    airflow_context: dict[str, Any] | None = None,
+    binding_task_ids: list[str] | None = None,
+    binding_sources: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     from ffengine.airflow.operator import (
-        build_airflow_variable_context,
+        build_runtime_binding_context,
         resolve_dialect,
     )
     from ffengine.config.binding_resolver import BindingResolver
@@ -126,18 +199,31 @@ def _run_script_task(
     exec_dialect = source_dialect if environment == "source" else target_dialect
     bindings = task_def.get("bindings") or []
     effective_sql = script_sql
+    runtime_context = build_runtime_binding_context(
+        airflow_context,
+        binding_task_ids=binding_task_ids,
+        binding_sources=binding_sources,
+    )
     if isinstance(bindings, list) and bindings:
         resolver = BindingResolver()
-        airflow_ctx = build_airflow_variable_context()
         with DBSession(source_params, source_dialect) as src_session:
             with DBSession(target_params, target_dialect) as tgt_session:
                 resolved = resolver.resolve_sql_bindings(
                     {"where": script_sql, "bindings": bindings},
-                    context=airflow_ctx,
+                    context=runtime_context,
                     source_session=src_session,
                     target_session=tgt_session,
                     where_dialect=exec_dialect,
                 )
+        effective_sql = str(resolved.get("_resolved_where") or script_sql).strip()
+    elif "{{" in script_sql:
+        resolved = BindingResolver().resolve_sql_bindings(
+            {"where": script_sql, "bindings": []},
+            context=runtime_context,
+            source_session=None,
+            target_session=None,
+            where_dialect=exec_dialect,
+        )
         effective_sql = str(resolved.get("_resolved_where") or script_sql).strip()
     with DBSession(exec_params, exec_dialect) as db_session:
         cursor = db_session.cursor(server_side=False)
@@ -155,6 +241,121 @@ def _run_script_task(
         "connection_id": conn_id,
         "status": "ok",
     }
+
+
+def _run_binding_task(
+    task_def: dict[str, Any],
+    source_conn_id: str,
+    target_conn_id: str,
+    dag_params: list[dict[str, Any]],
+    airflow_context: dict[str, Any],
+    *,
+    superseded_sources: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    from ffengine.airflow.operator import build_runtime_binding_context, resolve_dialect
+    from ffengine.config.binding_resolver import BindingResolver
+    from ffengine.db.airflow_adapter import AirflowConnectionAdapter
+    from ffengine.db.session import DBSession
+
+    bindings = task_def.get("bindings") or []
+    if not isinstance(bindings, list) or not bindings:
+        raise ValueError("bindings is required when task_type='binding'.")
+    sources = {str(item.get("binding_source") or "") for item in bindings}
+    connection_ids = {"source": source_conn_id, "target": target_conn_id}
+    sessions: dict[str, Any] = {"source": None, "target": None}
+    runtime_context = build_runtime_binding_context(airflow_context)
+    with ExitStack() as stack:
+        for source in ("source", "target"):
+            if source not in sources:
+                continue
+            params = AirflowConnectionAdapter.get_connection_params(
+                connection_ids[source]
+            )
+            sessions[source] = stack.enter_context(
+                DBSession(params, resolve_dialect(params["conn_type"]))
+            )
+        values = BindingResolver().resolve_binding_values(
+            bindings,
+            context=runtime_context,
+            source_session=sessions["source"],
+            target_session=sessions["target"],
+        )
+    declarations = {str(item.get("name") or ""): item for item in dag_params}
+    validated = _validate_binding_param_values(values, declarations)
+    _log_dag_parameter_assignments(
+        validated,
+        bindings=bindings,
+        dag_run_conf=runtime_context["dag_run_conf"],
+        superseded_sources=superseded_sources or {},
+    )
+    return validated
+
+
+def _log_dag_parameter_assignments(
+    values: dict[str, Any],
+    *,
+    bindings: list[dict[str, Any]],
+    dag_run_conf: dict[str, Any],
+    superseded_sources: dict[str, str],
+) -> None:
+    if not _log.isEnabledFor(logging.INFO):
+        return
+    sources = {
+        str(item.get("variable_name") or "").strip(): str(
+            item.get("binding_source") or ""
+        ).strip()
+        for item in bindings
+    }
+    for name, binding_value in values.items():
+        binding_json = _encode_log_value(binding_value)
+        previous = superseded_sources.get(name, TRIGGER_SOURCE)
+        prefix = ""
+        if previous == TRIGGER_SOURCE:
+            supplied = name in dag_run_conf
+            initial_source = "dag_run_conf" if supplied else "none"
+            initial_value = dag_run_conf.get(name)
+            previous = "dag_run_conf" if supplied else "none"
+            prefix = (
+                f"DAG_PARAMETER_INITIALIZED name={name} source={initial_source} "
+                f"value={_encode_log_value(initial_value)}\n"
+            )
+        _log.info(
+            "%sDAG_PARAMETER_ASSIGNED name=%s source=%s "
+            "value=%s supersedes=%s xcom_output=true",
+            prefix,
+            name,
+            sources[name],
+            binding_json,
+            previous,
+        )
+
+
+def _encode_log_value(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _validate_binding_param_values(
+    values: dict[str, Any], declarations: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    validated: dict[str, Any] = {}
+    for name, value in values.items():
+        validate_binding_target_is_custom(name)
+        declaration = declarations.get(name)
+        if declaration is None:
+            raise ValueError(f"Binding target is not a declared DAG parameter: {name}")
+        schema = {"type": str(declaration.get("type") or "string")}
+        if declaration.get("enum") is not None:
+            schema["enum"] = list(declaration.get("enum") or [])
+        validated[name] = Param(
+            declaration.get("default"), **schema
+        ).resolve(coerce_dag_param_value(value, schema["type"]))
+    return validated
 
 
 def _resolve_config_path(raw_config_snapshot: dict[str, Any]) -> str:
@@ -186,6 +387,7 @@ def build_generated_dag(
     target_conn_id = str(raw.get("target_db_var") or "").strip()
     task_defs = raw.get("flow_tasks") or []
     scheduler = raw.get("scheduler") or {}
+    raw_dag_params = raw.get("dag_params") or []
     if not isinstance(scheduler, dict):
         scheduler = {}
 
@@ -193,6 +395,9 @@ def build_generated_dag(
         raise ValueError("source_db_var and target_db_var are required.")
     if not isinstance(task_defs, list) or not task_defs:
         raise ValueError("flow_tasks must be a list with at least one task.")
+    if not isinstance(raw_dag_params, list):
+        raise ValueError("dag_params must be a list.")
+    dag_param_flow = compile_dag_parameter_flow(raw_dag_params, task_defs)
 
     config_path = _resolve_config_path(raw)
 
@@ -239,6 +444,16 @@ def build_generated_dag(
     ]
     root_task_order = {task_id: idx + 1 for idx, task_id in enumerate(root_task_ids)}
     dag_slug = _slug_task_token(dag_id) or "dag"
+    dag_params = _build_dag_params(raw_dag_params)
+
+    def _flow_binding_sources(task_def: dict[str, Any]) -> dict[str, str]:
+        task_group_id = str(task_def.get("task_group_id") or "").strip()
+        return {
+            name: _bounded_task_id(f"binding__{_slug_task_token(source_id)}")
+            for name, source_id in dag_param_flow.binding_sources_for(
+                task_group_id
+            ).items()
+        }
 
     with DAG(
         dag_id=dag_id,
@@ -246,6 +461,7 @@ def build_generated_dag(
         start_date=dag_start_date,
         catchup=False,
         tags=list(dag_tags or []),
+        params=dag_params,
         is_paused_upon_creation=not dag_active,
     ) as dag:
         task_groups: dict[str, Any] = {}
@@ -259,6 +475,30 @@ def build_generated_dag(
                 _slug_task_token(task_group_id)
                 or f"task_{max(1, len(task_groups) + 1)}"
             )
+            if task_type == "binding":
+                binding_task_id = _bounded_task_id(f"binding__{task_slug}")
+
+                @task(task_id=binding_task_id, show_return_value_in_logs=False)
+                def _run_binding_task_wrapper(
+                    _task_def=task_def,
+                    _source_conn_id=source_conn_id,
+                    _target_conn_id=target_conn_id,
+                    _dag_params=raw_dag_params,
+                    _superseded_sources=dag_param_flow.superseded_sources_for(
+                        task_group_id
+                    ),
+                ):
+                    return _run_binding_task(
+                        _task_def,
+                        _source_conn_id,
+                        _target_conn_id,
+                        _dag_params,
+                        get_current_context(),
+                        superseded_sources=_superseded_sources,
+                    )
+
+                task_groups[task_group_id] = _run_binding_task_wrapper()
+                continue
             if task_type == "script_run":
                 script_task_id = _bounded_task_id(f"script__{task_slug}")
 
@@ -267,8 +507,15 @@ def build_generated_dag(
                     _task_def=task_def,
                     _source_conn_id=source_conn_id,
                     _target_conn_id=target_conn_id,
+                    _binding_sources=_flow_binding_sources(task_def),
                 ):
-                    return _run_script_task(_task_def, _source_conn_id, _target_conn_id)
+                    return _run_script_task(
+                        _task_def,
+                        _source_conn_id,
+                        _target_conn_id,
+                        airflow_context=get_current_context(),
+                        binding_sources=_binding_sources,
+                    )
 
                 task_groups[task_group_id] = _run_script_task_wrapper()
                 continue
@@ -321,6 +568,7 @@ def build_generated_dag(
                     task_group_id=task_group_id,
                     source_conn_id=source_conn_id,
                     target_conn_id=target_conn_id,
+                    binding_sources=_flow_binding_sources(task_def),
                     task_id=task_id_value,
                 )
                 continue
@@ -336,12 +584,17 @@ def build_generated_dag(
                     _task_group_id=task_group_id,
                     _source_conn_id=source_conn_id,
                     _target_conn_id=target_conn_id,
+                    _binding_sources=_flow_binding_sources(task_def),
                 ):
                     return plan_partitions_for_task(
                         config_path=_config_path,
                         task_group_id=_task_group_id,
                         source_conn_id=_source_conn_id,
                         target_conn_id=_target_conn_id,
+                        airflow_context=build_runtime_binding_context(
+                            get_current_context(),
+                            binding_sources=_binding_sources,
+                        ),
                     )
 
                 @task(task_id="prepare_target")
@@ -351,6 +604,7 @@ def build_generated_dag(
                     _task_group_id=task_group_id,
                     _source_conn_id=source_conn_id,
                     _target_conn_id=target_conn_id,
+                    _binding_sources=_flow_binding_sources(task_def),
                 ):
                     _ = _plan_specs
                     return prepare_target_for_task(
@@ -358,6 +612,10 @@ def build_generated_dag(
                         task_group_id=_task_group_id,
                         source_conn_id=_source_conn_id,
                         target_conn_id=_target_conn_id,
+                        airflow_context=build_runtime_binding_context(
+                            get_current_context(),
+                            binding_sources=_binding_sources,
+                        ),
                     )
 
                 @task(task_id="run_partition")
@@ -367,6 +625,7 @@ def build_generated_dag(
                     _task_group_id=task_group_id,
                     _source_conn_id=source_conn_id,
                     _target_conn_id=target_conn_id,
+                    _binding_sources=_flow_binding_sources(task_def),
                 ):
                     return run_partition_for_task(
                         config_path=_config_path,
@@ -374,6 +633,10 @@ def build_generated_dag(
                         source_conn_id=_source_conn_id,
                         target_conn_id=_target_conn_id,
                         partition_spec=partition_spec,
+                        airflow_context=build_runtime_binding_context(
+                            get_current_context(),
+                            binding_sources=_binding_sources,
+                        ),
                     )
 
                 @task(task_id="aggregate")

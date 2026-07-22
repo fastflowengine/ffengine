@@ -255,7 +255,7 @@ def test_pg_incremental_datetime_precision_safe_no_loss(
             "target_columns_meta": [],
             "batch_size": 1000,
             "where": (
-                '"event_ts" >= :wm_value '
+                '"event_ts" >= {{ wm_value }} '
                 "AND \"event_ts\" < TIMESTAMP '2026-01-01 00:00:01.000000'"
             ),
             "bindings": [
