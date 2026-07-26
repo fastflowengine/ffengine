@@ -379,6 +379,8 @@ def _attach_mapping_if_needed(
     effective["source_columns"] = mapping.source_columns
     effective["target_columns"] = mapping.target_columns
     effective["target_columns_meta"] = mapping.target_columns_meta
+    effective["target_value_exprs"] = mapping.target_value_exprs
+    effective["plain_source_by_target"] = mapping.plain_source_by_target
     return effective
 
 
@@ -758,6 +760,8 @@ class FFEngineOperator(BaseOperator):
                     task_config["source_columns"] = mapping.source_columns
                     task_config["target_columns"] = mapping.target_columns
                     task_config["target_columns_meta"] = mapping.target_columns_meta
+                    task_config["target_value_exprs"] = mapping.target_value_exprs
+                    task_config["plain_source_by_target"] = mapping.plain_source_by_target
 
                     # 7. Partition planla
                     specs = Partitioner().plan(

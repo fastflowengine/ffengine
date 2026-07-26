@@ -2111,6 +2111,22 @@ async function studioFetch(path, options) {
         syncPartitionState(card);
         return;
       }
+      if (sourceType === "sql") {
+        // A SQL query has no table: its partition-column candidates are the
+        // query's SELECT columns, which are the mapping's source_name entries
+        // (persisted in the card's .mapping-content, modal-independent). The
+        // engine partitions inline SQL by wrapping it as a subquery.
+        const mappingContent = String(card.querySelector(".mapping-content")?.value || "");
+        const names = parseMappingSourceColumns(mappingContent);
+        if (names.length) {
+          setPartitionColumnOptions(selectNode, names, preferred, "Select source column");
+          delete card.dataset.pendingPartitionColumn;
+        } else {
+          setPartitionColumnOptions(selectNode, [], "", "Generate the mapping first to choose a partition column.");
+        }
+        syncPartitionState(card);
+        return;
+      }
       if (sourceType !== "table" && sourceType !== "view") {
         setPartitionColumnOptions(selectNode, [], "", "Column selection is available only for table source.");
         syncPartitionState(card);
@@ -3159,6 +3175,27 @@ async function studioFetch(path, options) {
       return out;
     }
 
+    // Source (SELECT) columns of a mapping = the Direct rows' source_name. These
+    // are the columns present in a SQL source's output, hence the valid
+    // partition columns. The `-?` tolerates both YAML shapes: client-serialized
+    // (`  source_name:`) and server-dumped (`- source_name:` first key).
+    function parseMappingSourceColumns(mappingContent) {
+      const text = String(mappingContent || "");
+      if (!text.trim()) return [];
+      const out = [];
+      const seen = new Set();
+      for (const line of text.split(/\r?\n/)) {
+        const match = line.match(/^\s*-?\s*source_name\s*:\s*(.+)\s*$/);
+        if (!match) continue;
+        let value = String(match[1] || "").trim();
+        value = value.replace(/^['"]|['"]$/g, "").trim();
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        out.push(value);
+      }
+      return out;
+    }
+
     function setUpsertMatchOptions(card, options) {
       const datalistNode = card.querySelector(".upsert-match-options");
       if (!datalistNode) return;
@@ -3494,6 +3531,7 @@ async function studioFetch(path, options) {
       syncPartitionState(card);
       syncTaskGroupState(card, fallbackIndex);
       syncMappingState(card);
+      refreshMappingSummary(card);
       syncUpsertMatchState(card);
     }
 
@@ -3857,17 +3895,15 @@ async function studioFetch(path, options) {
       const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim() || TASK_TYPES.SOURCE_TARGET;
       const sourceType = card.querySelector(".source-type").value;
       const modeSelect = card.querySelector(".column-mapping-mode");
-      const mappingGeneratedPathWrap = card.querySelector(".mapping-generated-path-wrap");
       const mappingContentWrap = card.querySelector(".mapping-content-wrap");
-      const mappingActions = card.querySelector(".mapping-actions");
-      const generatedPathInput = card.querySelector(".mapping-generated-path");
+      const mappingEditorLaunch = card.querySelector(".mapping-editor-launch");
+      const mappingRawWrap = card.querySelector(".mapping-raw-wrap");
       if (taskType !== TASK_TYPES.SOURCE_TARGET) {
         modeSelect.disabled = true;
         modeSelect.setAttribute("aria-disabled", "true");
-        mappingGeneratedPathWrap.classList.add("hidden");
         mappingContentWrap.classList.add("hidden");
-        mappingActions.classList.add("hidden");
-        generatedPathInput.value = "";
+        if (mappingEditorLaunch) mappingEditorLaunch.classList.add("hidden");
+        if (mappingRawWrap) mappingRawWrap.classList.add("hidden");
         setMappingStatus(card, "", false);
         return;
       }
@@ -3879,13 +3915,12 @@ async function studioFetch(path, options) {
       modeSelect.setAttribute("aria-disabled", isSql ? "true" : "false");
 
       const isMappingFileMode = modeSelect.value === "mapping_file";
-      mappingGeneratedPathWrap.classList.toggle("hidden", !isMappingFileMode);
       mappingContentWrap.classList.toggle("hidden", !isMappingFileMode);
-      mappingActions.classList.toggle("hidden", !isMappingFileMode);
+      if (mappingEditorLaunch) mappingEditorLaunch.classList.toggle("hidden", !isMappingFileMode);
+      if (mappingRawWrap) mappingRawWrap.classList.toggle("hidden", !isMappingFileMode);
 
-      generatedPathInput.value = isMappingFileMode ? buildGeneratedMappingDisplayPath(card) : "";
       if (isSql) {
-        setMappingStatus(card, "mapping_file mode is required for SQL source.", false);
+        setMappingStatus(card, "Custom Mapping mode is required for SQL source.", false);
       } else if (!isMappingFileMode) {
         setMappingStatus(card, "", false);
       }
@@ -3928,23 +3963,13 @@ async function studioFetch(path, options) {
       try {
         const data = await postJson(studioUrl("/api/mapping/generate"), payload);
         if (!data || !data.ok) {
-          setMappingStatus(card && data ? apiErrorMessage(data, "Mapping uretilemedi.") : "Mapping uretilemedi.", true);
+          const failMsg = apiErrorMessage(data || {}, "Mapping uretilemedi.");
+          setMappingStatus(card, failMsg, true);
+          pushToast(sourceType === "sql" ? `SQL Query mapping failed: ${failMsg}` : failMsg, "error", true);
           return;
         }
-        if (data.generated_mapping_file) {
-          const project = (el("project").value || "").trim();
-          const domain = (el("domain").value || "").trim();
-          const level = (el("level").value || "").trim();
-          const flow = (el("flow").value || "").trim();
-          card.querySelector(".mapping-generated-path").value = [
-            project,
-            domain,
-            level,
-            flow,
-            data.generated_mapping_file,
-          ].filter(Boolean).join("/");
-        }
         card.querySelector(".mapping-content").value = data.mapping_content || "";
+        setMappingRowsFromColumns(card, data.columns || [], { serialize: true });
         const warnings = Array.isArray(data.warnings) ? data.warnings : [];
         if (warnings.length) {
           setMappingStatus(card, `Mapping generated (warning: ${warnings.length}).`, false);
@@ -3952,6 +3977,8 @@ async function studioFetch(path, options) {
           setMappingStatus(card, "Mapping uretildi.", false);
         }
         syncMappingState(card);
+        // Newly-generated SQL columns are now the partition-column candidates.
+        loadPartitionColumnOptions(card);
       } catch (err) {
         const message = apiErrorMessage(err, "Error occurred while generating mapping.");
         const visibleMessage = sourceType === "sql" ? `SQL Query mapping failed: ${message}` : message;
@@ -3962,6 +3989,781 @@ async function studioFetch(path, options) {
         );
         pushToast(visibleMessage, "error", true);
       }
+    }
+
+    // --- F1.2 Talend tMap-style mapping editor popup ----------------------
+    // The mapping editor is a single shared modal bound to `activeMappingCard`.
+    // Target rows render into the modal's `#mapping_editor_target_list`; the
+    // per-card hidden `.mapping-content` textarea stays the single submit
+    // source of truth (serialized live on every edit + on Apply).
+    let activeMappingCard = null;
+    let mappingEditorSnapshot = null; // { content, source } captured on open for Cancel
+    let mappingSourceCols = []; // [{name, data_type, nullable}] for the Input panel
+    let lastFocusedMappingField = null; // last-focused source/expression input (click-to-insert target)
+
+    function mappingTargetListEl() {
+      return el("mapping_editor_target_list");
+    }
+
+    function yamlScalar(value) {
+      const s = String(value == null ? "" : value);
+      return '"' + s.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+    }
+
+    function syncMappingRowState(row) {
+      const derived = row.querySelector(".mapping-col-kind").value === "derived";
+      // Source column stays inline (its grid track is kept for alignment even
+      // when hidden); the Expression field expands full-width below.
+      row.querySelector(".mapping-col-source-name").classList.toggle("hidden", derived);
+      row.querySelector(".mapping-col-expression-wrap").classList.toggle("hidden", !derived);
+    }
+
+    function markMappingRowsDirty(card) {
+      if (!card) return;
+      card.dataset.mappingSource = "rows";
+      mappingRowsToYaml(card);
+      refreshMappingEditorMeta();
+    }
+
+    function createMappingRow(card, values = {}) {
+      const list = mappingTargetListEl();
+      if (!list) return null;
+      const row = document.createElement("div");
+      row.className = "mapping-column-item";
+      row.innerHTML = `
+        <div class="mapping-column-row">
+          <select class="mapping-col-kind" aria-label="Column kind">
+            <option value="direct">Direct</option>
+            <option value="derived">Derived</option>
+          </select>
+          <input class="mapping-col-source-name" list="mapping_editor_source_options" placeholder="source_name">
+          <input class="mapping-col-target-name" placeholder="target_name">
+          <input class="mapping-col-target-type" placeholder="target_type e.g. varchar(50)">
+          <label class="mapping-col-nullable-wrap"><input class="mapping-col-nullable" type="checkbox"></label>
+          <button class="btn btn-danger mapping-col-remove" type="button">x</button>
+        </div>
+        <div class="mapping-col-expression-wrap mapping-col-map-field hidden">
+          <input class="mapping-col-expression" placeholder="expression, e.g. concat(first_name, ' ', last_name)">
+        </div>
+      `;
+      row.querySelector(".mapping-col-kind").value = values.expression ? "derived" : "direct";
+      row.querySelector(".mapping-col-source-name").value = values.source_name || "";
+      row.querySelector(".mapping-col-target-name").value = values.target_name || "";
+      row.querySelector(".mapping-col-target-type").value = values.target_type || "";
+      row.querySelector(".mapping-col-nullable").checked = values.nullable !== false;
+      row.querySelector(".mapping-col-expression").value = values.expression || "";
+      if (values.source_type) row.dataset.sourceType = String(values.source_type);
+
+      row.querySelector(".mapping-col-kind").addEventListener("change", () => {
+        syncMappingRowState(row);
+        row.querySelectorAll(".mapping-col-invalid").forEach((e) => {
+          e.classList.remove("mapping-col-invalid");
+        });
+        markMappingRowsDirty(card);
+      });
+      row.querySelectorAll("input").forEach((elm) => {
+        elm.addEventListener("input", () => {
+          elm.classList.remove("mapping-col-invalid");
+          markMappingRowsDirty(card);
+        });
+        if (elm.type === "checkbox") {
+          elm.addEventListener("change", () => markMappingRowsDirty(card));
+        }
+      });
+      const srcInput = row.querySelector(".mapping-col-source-name");
+      const exprInput = row.querySelector(".mapping-col-expression");
+      srcInput.addEventListener("focus", () => {
+        lastFocusedMappingField = srcInput;
+      });
+      exprInput.addEventListener("focus", () => {
+        lastFocusedMappingField = exprInput;
+      });
+      row.querySelector(".mapping-col-remove").addEventListener("click", () => {
+        if (lastFocusedMappingField === srcInput || lastFocusedMappingField === exprInput) {
+          lastFocusedMappingField = null;
+        }
+        row.remove();
+        markMappingRowsDirty(card);
+      });
+
+      list.appendChild(row);
+      syncMappingRowState(row);
+      return row;
+    }
+
+    function getMappingRows() {
+      const list = mappingTargetListEl();
+      const items = list ? Array.from(list.querySelectorAll(".mapping-column-item")) : [];
+      return items.map((row) => {
+        const derived = row.querySelector(".mapping-col-kind").value === "derived";
+        const base = {
+          target_name: row.querySelector(".mapping-col-target-name").value.trim(),
+          target_type: row.querySelector(".mapping-col-target-type").value.trim(),
+          nullable: row.querySelector(".mapping-col-nullable").checked,
+        };
+        if (derived) {
+          base.expression = row.querySelector(".mapping-col-expression").value.trim();
+        } else {
+          base.source_name = row.querySelector(".mapping-col-source-name").value.trim();
+          if (row.dataset.sourceType) base.source_type = row.dataset.sourceType;
+        }
+        return base;
+      });
+    }
+
+    function mappingRowsToYaml(card) {
+      const rows = getMappingRows();
+      const hasDerived = rows.some((r) => r.expression != null);
+      const lines = [`version: ${hasDerived ? "v1.1" : "v1"}`];
+      if (!rows.length) {
+        lines.push("columns: []");
+      } else {
+        lines.push("columns:");
+        for (const r of rows) {
+          lines.push(`- target_name: ${yamlScalar(r.target_name)}`);
+          lines.push(`  target_type: ${yamlScalar(r.target_type)}`);
+          if (r.expression != null) {
+            lines.push(`  expression: ${yamlScalar(r.expression)}`);
+          } else {
+            lines.push(`  source_name: ${yamlScalar(r.source_name)}`);
+            if (r.source_type) lines.push(`  source_type: ${yamlScalar(r.source_type)}`);
+          }
+          lines.push(`  nullable: ${r.nullable ? "true" : "false"}`);
+        }
+      }
+      const yamlText = lines.join("\n") + "\n";
+      const ta = card.querySelector(".mapping-content");
+      if (ta) ta.value = yamlText;
+      return yamlText;
+    }
+
+    // Sticky column-header row inside the scrolling list, so its columns line
+    // up pixel-perfect with the row controls (same grid template + same width,
+    // scrollbar gutter included). Re-created on every list reset.
+    function renderMappingListHeader() {
+      const list = mappingTargetListEl();
+      if (!list) return;
+      const head = document.createElement("div");
+      head.className = "mapping-io-col-head";
+      head.innerHTML =
+        "<span>Type</span>" +
+        "<span>Source</span>" +
+        "<span>Target</span>" +
+        "<span>Data type</span>" +
+        '<span class="mapping-col-head-center">Nullable</span>' +
+        "<span></span>";
+      list.appendChild(head);
+    }
+
+    function setMappingRowsFromColumns(card, columns, options = {}) {
+      const list = mappingTargetListEl();
+      if (!list) return;
+      list.innerHTML = "";
+      renderMappingListHeader();
+      lastFocusedMappingField = null;
+      const items = Array.isArray(columns) ? columns : [];
+      for (const col of items) createMappingRow(card, col || {});
+      if (options.serialize) {
+        card.dataset.mappingSource = "rows";
+        mappingRowsToYaml(card);
+      }
+      refreshMappingEditorMeta();
+    }
+
+    async function renderMappingTargetRows(card) {
+      const content = String((card.querySelector(".mapping-content") || {}).value || "").trim();
+      if (!content) {
+        setMappingRowsFromColumns(card, []);
+        return;
+      }
+      try {
+        const data = await postJson(studioUrl("/api/mapping/parse"), { mapping_content: content });
+        setMappingRowsFromColumns(card, (data && data.columns) || []);
+      } catch (err) {
+        setMappingRowsFromColumns(card, []);
+        setMappingEditorStatus(
+          "Raw YAML could not be parsed; fix it under the task's Raw YAML (advanced) box.",
+          true,
+        );
+      }
+    }
+
+    function describeMappingSource(card) {
+      const sourceType = String((card.querySelector(".source-type") || {}).value || "table");
+      const conn = (el("source_conn_id").value || "").trim();
+      if (sourceType === "sql") {
+        return conn ? `${conn} - SQL query source` : "SQL query source";
+      }
+      const schema = String((card.querySelector(".source-schema") || {}).value || "").trim();
+      const table = String((card.querySelector(".source-table") || {}).value || "").trim();
+      const loc = [schema, table].filter(Boolean).join(".");
+      return [conn, loc].filter(Boolean).join(" - ") || "source not configured";
+    }
+
+    function setMappingEditorStatus(message, isError = false) {
+      const box = el("mapping_editor_status");
+      if (!box) return;
+      box.textContent = message || "";
+      box.classList.toggle("warn", !!isError);
+      box.classList.toggle("ok", !isError && !!message);
+      // Hide the footer hint while a status message is shown, restore it after.
+      const actions = box.closest(".mapping-editor-actions");
+      if (actions) actions.classList.toggle("showing-status", !!message);
+    }
+
+    function refreshMappingEditorMeta() {
+      const box = el("mapping_editor_meta");
+      if (!box) return;
+      const rows = getMappingRows();
+      const count = rows.length;
+      const version = rows.some((r) => r.expression != null) ? "v1.1" : "v1";
+      box.textContent = count
+        ? `${count} column${count === 1 ? "" : "s"} · ${version}`
+        : "no columns · v1";
+    }
+
+    function refreshMappingSummary(card) {
+      const summary = card.querySelector(".mapping-summary");
+      if (!summary) return;
+      const content = String((card.querySelector(".mapping-content") || {}).value || "");
+      const count = (content.match(/^\s*-?\s*target_name\s*:/gm) || []).length;
+      const version = /v1\.1/.test(content) ? "v1.1" : content.trim() ? "v1" : "";
+      summary.textContent = count
+        ? `${count} column${count === 1 ? "" : "s"}${version ? " - " + version : ""}`
+        : "no columns yet";
+    }
+
+    async function fetchMappingSourceColumns(card) {
+      const sourceType = String((card.querySelector(".source-type") || {}).value || "table");
+      if (sourceType === "sql") {
+        // A SQL query has no table: its source columns are the SELECT columns,
+        // which are the Direct rows' source_name (+ source_type) already in the
+        // editor after Generate or on reopen. Derive the Input panel from them.
+        const seen = new Set();
+        const cols = [];
+        for (const r of getMappingRows()) {
+          const nm = String(r.source_name || "").trim();
+          if (!nm || seen.has(nm)) continue;
+          seen.add(nm);
+          cols.push({
+            name: nm,
+            data_type: String(r.source_type || "").trim(),
+            precision: null,
+            scale: null,
+            nullable: r.nullable !== false,
+          });
+        }
+        return cols;
+      }
+      const connId = (el("source_conn_id").value || "").trim();
+      const schema = String((card.querySelector(".source-schema") || {}).value || "").trim();
+      const table = String((card.querySelector(".source-table") || {}).value || "").trim();
+      if (!connId || !table) return [];
+      try {
+        const resp = await studioFetch(
+          `/api/columns?conn_id=${encodeURIComponent(connId)}&schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`,
+        );
+        const data = await parseJsonSafe(resp);
+        if (resp.ok && data.ok && Array.isArray(data.items)) {
+          return data.items
+            .map((it) => ({
+              name: String((it && it.name) || "").trim(),
+              data_type: String((it && it.data_type) || "").trim(),
+              precision: it && it.precision != null ? it.precision : null,
+              scale: it && it.scale != null ? it.scale : null,
+              nullable: !(it && it.nullable === false),
+            }))
+            .filter((c) => c.name);
+        }
+      } catch (_err) {
+        // best-effort: source panel just stays empty
+      }
+      return [];
+    }
+
+    function formatSourceType(col) {
+      const base = String((col && col.data_type) || "").toLowerCase().trim();
+      if (!base) return "";
+      if (col.precision != null && col.scale != null) return `${base}(${col.precision},${col.scale})`;
+      if (col.precision != null) return `${base}(${col.precision})`;
+      return base;
+    }
+
+    function refreshMappingSourceDatalist(cols) {
+      const dl = el("mapping_editor_source_options");
+      if (!dl) return;
+      dl.innerHTML = "";
+      for (const col of cols || []) {
+        const opt = document.createElement("option");
+        opt.value = col.name;
+        dl.appendChild(opt);
+      }
+    }
+
+    function renderMappingSourcePanel(card, cols) {
+      const list = el("mapping_editor_source_list");
+      if (!list) return;
+      list.innerHTML = "";
+      if (!cols || !cols.length) {
+        const empty = document.createElement("div");
+        empty.className = "mapping-io-empty muted-note";
+        empty.textContent = "No source columns. Set source connection & table (or click Generate Mapping).";
+        list.appendChild(empty);
+        return;
+      }
+      for (const col of cols) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "mapping-io-col";
+        chip.title = "Click to insert into the focused Source column / Expression field";
+        chip.innerHTML = '<span class="mapping-io-col-name"></span><span class="mapping-io-col-type muted-note"></span>';
+        chip.querySelector(".mapping-io-col-name").textContent = col.name;
+        chip.querySelector(".mapping-io-col-type").textContent = formatSourceType(col) + (col.nullable ? "" : " - not null");
+        // Keep the focused field (and its caret) from being stolen by the button.
+        chip.addEventListener("mousedown", (evt) => evt.preventDefault());
+        chip.addEventListener("click", () => insertSourceColumn(col.name));
+        list.appendChild(chip);
+      }
+    }
+
+    function mappingFieldUsable(field) {
+      if (!field || !document.body.contains(field)) return false;
+      if (field.classList.contains("mapping-col-source-name")) {
+        return !field.classList.contains("hidden");
+      }
+      const wrap = field.closest(".mapping-col-map-field");
+      return !!wrap && !wrap.classList.contains("hidden");
+    }
+
+    function lastVisibleDerivedExpr() {
+      const list = mappingTargetListEl();
+      if (!list) return null;
+      const exprs = Array.from(list.querySelectorAll(".mapping-column-item"))
+        .filter((item) => item.querySelector(".mapping-col-kind").value === "derived")
+        .map((item) => item.querySelector(".mapping-col-expression"));
+      return exprs.length ? exprs[exprs.length - 1] : null;
+    }
+
+    function insertSourceColumn(name) {
+      let field = mappingFieldUsable(lastFocusedMappingField) ? lastFocusedMappingField : null;
+      if (!field) {
+        // Nothing focused: fall back to the last Derived row's Expression field.
+        field = lastVisibleDerivedExpr();
+      }
+      if (!field) {
+        setMappingEditorStatus(
+          "Add a Derived column (or focus a Source column / Expression field), then click a source column.",
+          true,
+        );
+        return;
+      }
+      if (field.classList.contains("mapping-col-source-name")) {
+        // Direct source column: replace the whole value with the picked column.
+        field.value = name;
+      } else {
+        // Expression: insert the column name at the caret.
+        const start = field.selectionStart != null ? field.selectionStart : field.value.length;
+        const end = field.selectionEnd != null ? field.selectionEnd : field.value.length;
+        field.value = field.value.slice(0, start) + name + field.value.slice(end);
+        const caret = start + name.length;
+        try {
+          field.setSelectionRange(caret, caret);
+        } catch (_err) {
+          // some inputs disallow setSelectionRange; ignore
+        }
+      }
+      lastFocusedMappingField = field;
+      field.focus();
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      setMappingEditorStatus("", false);
+    }
+
+    async function openMappingEditor(card) {
+      if (isBusy) return;
+      const modal = el("mapping_editor_modal");
+      if (!modal || !card) return;
+      activeMappingCard = card;
+      const ta = card.querySelector(".mapping-content");
+      mappingEditorSnapshot = {
+        content: ta ? ta.value : "",
+        source: card.dataset.mappingSource || "",
+      };
+      const cap = el("mapping_editor_source_caption");
+      if (cap) cap.textContent = describeMappingSource(card);
+      setMappingEditorStatus("", false);
+      // Render the target rows first so a SQL source can derive its Input panel
+      // columns from them (they carry source_name/source_type).
+      await renderMappingTargetRows(card);
+      mappingSourceCols = await fetchMappingSourceColumns(card);
+      refreshMappingSourceDatalist(mappingSourceCols);
+      renderMappingSourcePanel(card, mappingSourceCols);
+      refreshMappingEditorMeta();
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+      document.body.classList.add("mapping-editor-open");
+      // Build the source->target link overlay once the modal is laid out.
+      buildMappingLinkOverlay();
+    }
+
+    function closeMappingEditor() {
+      const modal = el("mapping_editor_modal");
+      teardownMappingLinkOverlay();
+      if (modal) {
+        modal.classList.remove("open");
+        modal.setAttribute("aria-hidden", "true");
+      }
+      document.body.classList.remove("mapping-editor-open");
+      const list = mappingTargetListEl();
+      if (list) list.innerHTML = "";
+      activeMappingCard = null;
+      mappingEditorSnapshot = null;
+      lastFocusedMappingField = null;
+    }
+
+    // ---------------------------------------------------------------
+    // Mapping Editor connection-line overlay (Talend tMap style).
+    // Draws a dimmed SVG curve from each Source (Input) column to the
+    // Target (Output) row(s) that use it (Direct source_name, or every
+    // source referenced in a Derived expression); hovering a column
+    // brightens its connections. Pure client-side, torn down on close.
+    // ---------------------------------------------------------------
+    let mappingLinkState = null;
+    const _mappingExprRegexCache = new Map();
+
+    function mappingGridEl() {
+      return document.querySelector("#mapping_editor_modal .mapping-io-grid");
+    }
+
+    function mappingExprReferences(expr, name) {
+      let re = _mappingExprRegexCache.get(name);
+      if (!re) {
+        const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        re = new RegExp(`\\b${esc}\\b`);
+        _mappingExprRegexCache.set(name, re);
+      }
+      return re.test(expr);
+    }
+
+    function mappingSourceChipsByName() {
+      const map = new Map();
+      const list = el("mapping_editor_source_list");
+      if (!list) return map;
+      list.querySelectorAll(".mapping-io-col").forEach((chip) => {
+        const nameEl = chip.querySelector(".mapping-io-col-name");
+        const name = nameEl ? nameEl.textContent.trim() : "";
+        if (name && !map.has(name)) map.set(name, chip);
+      });
+      return map;
+    }
+
+    function extractMappingLinks() {
+      const out = [];
+      const targetList = mappingTargetListEl();
+      if (!targetList) return out;
+      const chipByName = mappingSourceChipsByName();
+      const sourceNames = Array.from(chipByName.keys());
+      targetList.querySelectorAll(".mapping-column-item").forEach((row) => {
+        const kindSel = row.querySelector(".mapping-col-kind");
+        const derived = !!kindSel && kindSel.value === "derived";
+        if (derived) {
+          const expr = String((row.querySelector(".mapping-col-expression") || {}).value || "");
+          if (!expr.trim()) return;
+          for (const name of sourceNames) {
+            if (mappingExprReferences(expr, name)) {
+              out.push({ sourceName: name, chip: chipByName.get(name), row });
+            }
+          }
+        } else {
+          const src = String((row.querySelector(".mapping-col-source-name") || {}).value || "").trim();
+          if (src && chipByName.has(src)) {
+            out.push({ sourceName: src, chip: chipByName.get(src), row });
+          }
+        }
+      });
+      return out;
+    }
+
+    function scheduleMappingLinkRedraw() {
+      const st = mappingLinkState;
+      if (!st || st.rafId) return;
+      st.rafId = requestAnimationFrame(() => {
+        st.rafId = 0;
+        redrawMappingLinks();
+      });
+    }
+
+    function redrawMappingLinks() {
+      const st = mappingLinkState;
+      if (!st || !st.svg || !st.grid) return;
+      const gridRect = st.grid.getBoundingClientRect();
+      if (!gridRect.width || !gridRect.height) return;
+      st.svg.setAttribute("viewBox", `0 0 ${gridRect.width} ${gridRect.height}`);
+      while (st.svg.firstChild) st.svg.removeChild(st.svg.firstChild);
+      st.links = [];
+
+      const srcRect = st.sourceList.getBoundingClientRect();
+      const tgtRect = st.targetList.getBoundingClientRect();
+      const tgtHeader = st.targetList.querySelector(".mapping-io-col-head");
+      const tgtTop = tgtHeader ? tgtHeader.getBoundingClientRect().bottom : tgtRect.top;
+
+      for (const link of extractMappingLinks()) {
+        if (!link.chip || !link.row) continue;
+        const cRect = link.chip.getBoundingClientRect();
+        const rRect = link.row.getBoundingClientRect();
+        const cy = cRect.top + cRect.height / 2;
+        const ry = rRect.top + rRect.height / 2;
+        // Clip: only draw when both endpoints are within their (independently
+        // scrolling) visible list areas.
+        if (cy < srcRect.top || cy > srcRect.bottom) continue;
+        if (ry < tgtTop || ry > tgtRect.bottom) continue;
+        const sx = cRect.right - gridRect.left;
+        const sy = cy - gridRect.top;
+        const tx = rRect.left - gridRect.left;
+        const ty = ry - gridRect.top;
+        const dx = Math.max(24, (tx - sx) * 0.5);
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute(
+          "d",
+          `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`,
+        );
+        path.setAttribute("class", "mapping-io-link");
+        st.svg.appendChild(path);
+        st.links.push({ ...link, path });
+      }
+      if (st.hoverKey) applyMappingLinkHover(st.hoverKey);
+    }
+
+    function clearMappingLinkHoverClasses() {
+      const st = mappingLinkState;
+      if (!st) return;
+      (st.links || []).forEach((l) => l.path.classList.remove("is-active"));
+      [el("mapping_editor_source_list"), mappingTargetListEl()].forEach((box) => {
+        if (box) box.querySelectorAll(".is-linked").forEach((n) => n.classList.remove("is-linked"));
+      });
+    }
+
+    function applyMappingLinkHover(key) {
+      const st = mappingLinkState;
+      if (!st || !st.svg) return;
+      st.hoverKey = key;
+      st.svg.classList.add("has-hover");
+      clearMappingLinkHoverClasses();
+      for (const link of st.links) {
+        const match = key.type === "source"
+          ? link.sourceName === key.name
+          : link.row === key.row;
+        if (!match) continue;
+        link.path.classList.add("is-active");
+        if (link.chip) link.chip.classList.add("is-linked");
+        if (link.row) link.row.classList.add("is-linked");
+      }
+    }
+
+    function clearMappingLinkHover() {
+      const st = mappingLinkState;
+      if (!st) return;
+      st.hoverKey = null;
+      if (st.svg) st.svg.classList.remove("has-hover");
+      clearMappingLinkHoverClasses();
+    }
+
+    function onMappingLinkHoverOver(evt) {
+      const st = mappingLinkState;
+      if (!st) return;
+      const sourceList = el("mapping_editor_source_list");
+      const chip = evt.target.closest && evt.target.closest(".mapping-io-col");
+      if (chip && sourceList && sourceList.contains(chip)) {
+        const nameEl = chip.querySelector(".mapping-io-col-name");
+        const name = nameEl ? nameEl.textContent.trim() : "";
+        if (name) applyMappingLinkHover({ type: "source", name });
+        return;
+      }
+      const row = evt.target.closest && evt.target.closest(".mapping-column-item");
+      const targetList = mappingTargetListEl();
+      if (row && targetList && targetList.contains(row)) {
+        applyMappingLinkHover({ type: "target", row });
+      }
+    }
+
+    function buildMappingLinkOverlay() {
+      teardownMappingLinkOverlay();
+      const grid = mappingGridEl();
+      const sourceList = el("mapping_editor_source_list");
+      const targetList = mappingTargetListEl();
+      if (!grid || !sourceList || !targetList) return;
+
+      let svg = grid.querySelector(".mapping-io-links");
+      if (!svg) {
+        svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        svg.setAttribute("class", "mapping-io-links");
+        svg.setAttribute("aria-hidden", "true");
+        grid.insertBefore(svg, grid.firstChild);
+      }
+
+      const st = {
+        svg, grid, sourceList, targetList, links: [], rafId: 0, hoverKey: null,
+        onScroll: () => scheduleMappingLinkRedraw(),
+        onInput: () => scheduleMappingLinkRedraw(),
+        onResize: () => scheduleMappingLinkRedraw(),
+        onHoverOver: (evt) => onMappingLinkHoverOver(evt),
+        onHoverLeave: () => clearMappingLinkHover(),
+      };
+      mappingLinkState = st;
+
+      sourceList.addEventListener("scroll", st.onScroll, { passive: true });
+      targetList.addEventListener("scroll", st.onScroll, { passive: true });
+      targetList.addEventListener("input", st.onInput);
+      window.addEventListener("resize", st.onResize);
+      sourceList.addEventListener("mouseover", st.onHoverOver);
+      targetList.addEventListener("mouseover", st.onHoverOver);
+      sourceList.addEventListener("mouseleave", st.onHoverLeave);
+      targetList.addEventListener("mouseleave", st.onHoverLeave);
+
+      st.mo = new MutationObserver(() => scheduleMappingLinkRedraw());
+      st.mo.observe(sourceList, { childList: true, subtree: true });
+      st.mo.observe(targetList, {
+        childList: true, subtree: true, attributes: true, attributeFilter: ["class"],
+      });
+      if (typeof ResizeObserver !== "undefined") {
+        st.ro = new ResizeObserver(() => scheduleMappingLinkRedraw());
+        st.ro.observe(grid);
+      }
+      scheduleMappingLinkRedraw();
+    }
+
+    function teardownMappingLinkOverlay() {
+      const st = mappingLinkState;
+      if (!st) return;
+      if (st.rafId) cancelAnimationFrame(st.rafId);
+      if (st.mo) st.mo.disconnect();
+      if (st.ro) st.ro.disconnect();
+      window.removeEventListener("resize", st.onResize);
+      if (st.sourceList) {
+        st.sourceList.removeEventListener("scroll", st.onScroll);
+        st.sourceList.removeEventListener("mouseover", st.onHoverOver);
+        st.sourceList.removeEventListener("mouseleave", st.onHoverLeave);
+      }
+      if (st.targetList) {
+        st.targetList.removeEventListener("scroll", st.onScroll);
+        st.targetList.removeEventListener("input", st.onInput);
+        st.targetList.removeEventListener("mouseover", st.onHoverOver);
+        st.targetList.removeEventListener("mouseleave", st.onHoverLeave);
+      }
+      if (st.svg) {
+        while (st.svg.firstChild) st.svg.removeChild(st.svg.firstChild);
+        st.svg.classList.remove("has-hover");
+      }
+      mappingLinkState = null;
+    }
+
+    // Client-side Apply gate. Collects ALL issues (the backend raises on the
+    // first) and flags each offending cell red. Save re-validates on the server
+    // (defense-in-depth). A bare (unsized) numeric/length target is a valid
+    // "max size" passthrough on a same-dialect mapping and an intentional blank
+    // to be filled on a cross-dialect one, so the only type rule enforced here
+    // is "not empty"; the server's dialect-aware gate owns the rest.
+    function clearMappingInvalid() {
+      const list = mappingTargetListEl();
+      if (!list) return;
+      list.querySelectorAll(".mapping-col-invalid").forEach((elm) => {
+        elm.classList.remove("mapping-col-invalid");
+      });
+    }
+
+    function validateMappingRows() {
+      const list = mappingTargetListEl();
+      const issues = [];
+      if (!list) return { ok: true, issues };
+      const seen = new Set();
+      Array.from(list.querySelectorAll(".mapping-column-item")).forEach((row) => {
+        const kindSel = row.querySelector(".mapping-col-kind");
+        const derived = !!kindSel && kindSel.value === "derived";
+        const nameInput = row.querySelector(".mapping-col-target-name");
+        const typeInput = row.querySelector(".mapping-col-target-type");
+        const srcInput = row.querySelector(".mapping-col-source-name");
+        const exprInput = row.querySelector(".mapping-col-expression");
+        const tName = ((nameInput && nameInput.value) || "").trim();
+        const tType = ((typeInput && typeInput.value) || "").trim();
+        const flag = (input, msg) => {
+          if (input) input.classList.add("mapping-col-invalid");
+          issues.push({ name: tName || "(unnamed)", msg });
+        };
+
+        if (!tName) flag(nameInput, "target name required");
+        else if (seen.has(tName.toLowerCase())) flag(nameInput, `duplicate target '${tName}'`);
+        else seen.add(tName.toLowerCase());
+
+        if (derived) {
+          if (!(exprInput && exprInput.value.trim())) flag(exprInput, "expression required");
+        } else if (!(srcInput && srcInput.value.trim())) {
+          flag(srcInput, "source column required");
+        }
+
+        if (!tType) {
+          flag(typeInput, "data type required");
+        }
+      });
+      return { ok: issues.length === 0, issues };
+    }
+
+    function distinctIssueNames(issues) {
+      const names = [];
+      for (const it of issues) {
+        if (!names.includes(it.name)) names.push(it.name);
+      }
+      return names;
+    }
+
+    function applyMappingEditor() {
+      const card = activeMappingCard;
+      if (!card) {
+        closeMappingEditor();
+        return;
+      }
+      clearMappingInvalid();
+      const result = validateMappingRows();
+      if (!result.ok) {
+        const names = distinctIssueNames(result.issues);
+        const shown = names.slice(0, 6).join(", ");
+        const more = names.length > 6 ? ` +${names.length - 6} more` : "";
+        setMappingEditorStatus(
+          `Cannot apply - ${result.issues.length} issue(s) in: ${shown}${more}. Fix the highlighted cells.`,
+          true,
+        );
+        return; // keep the modal open until the developer fixes the flagged cells
+      }
+      card.dataset.mappingSource = "rows";
+      mappingRowsToYaml(card);
+      refreshMappingSummary(card);
+      syncUpsertMatchState(card);
+      loadPartitionColumnOptions(card);
+      closeMappingEditor();
+    }
+
+    function cancelMappingEditor() {
+      const card = activeMappingCard;
+      if (card && mappingEditorSnapshot) {
+        const ta = card.querySelector(".mapping-content");
+        if (ta) ta.value = mappingEditorSnapshot.content;
+        card.dataset.mappingSource = mappingEditorSnapshot.source || "raw";
+        refreshMappingSummary(card);
+      }
+      closeMappingEditor();
+    }
+
+    function bindMappingSection(card) {
+      const openBtn = card.querySelector(".btn-open-mapping-editor");
+      if (openBtn) {
+        openBtn.addEventListener("click", () => openMappingEditor(card));
+      }
+      const ta = card.querySelector(".mapping-content");
+      if (ta) {
+        ta.addEventListener("input", () => {
+          card.dataset.mappingSource = "raw";
+          refreshMappingSummary(card);
+        });
+      }
+      refreshMappingSummary(card);
     }
 
     function syncPartitionState(card) {
@@ -4181,6 +4983,7 @@ async function studioFetch(path, options) {
       });
       card.querySelector(".mapping-content").addEventListener("input", () => {
         scheduleUpsertColumnRefresh();
+        loadPartitionColumnOptions(card);
       });
       card.querySelector(".upsert-match-input").addEventListener("keydown", (evt) => {
         if (evt.key === "Enter" || evt.key === ",") {
@@ -4231,9 +5034,15 @@ async function studioFetch(path, options) {
 
     function bindMappingState(card) {
       const modeSelect = card.querySelector(".column-mapping-mode");
-      const generateButton = card.querySelector(".btn-generate-mapping");
-      modeSelect.addEventListener("change", () => syncMappingState(card));
-      generateButton.addEventListener("click", () => generateMappingForCard(card));
+      modeSelect.addEventListener("change", () => {
+        syncMappingState(card);
+        const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim();
+        // Auto-open the editor when the user selects mapping_file from the list.
+        if (modeSelect.value === "mapping_file" && taskType === TASK_TYPES.SOURCE_TARGET) {
+          openMappingEditor(card);
+        }
+      });
+      bindMappingSection(card);
       syncMappingState(card);
     }
 
@@ -4446,6 +5255,8 @@ async function studioFetch(path, options) {
 
     function collectTaskPayload(card, index, taskIds) {
       const taskType = String(card.querySelector(".task-type")?.value || TASK_TYPES.SOURCE_TARGET).trim() || TASK_TYPES.SOURCE_TARGET;
+      // `.mapping-content` is kept live by the editor (serialized on every edit
+      // and on Apply), so it is already authoritative here — no re-serialize.
       const sourceType = card.querySelector(".source-type").value;
       const sourceSchemaVal = card.querySelector(".source-schema").value.trim();
       const sourceTableVal = card.querySelector(".source-table").value.trim();
@@ -4660,6 +5471,44 @@ async function studioFetch(path, options) {
     el("btn_add_domain").onclick = () => addDraftFolder("domain");
     el("btn_add_level").onclick = () => addDraftFolder("level");
     el("btn_add_flow").onclick = () => addDraftFolder("flow");
+
+    el("mapping_editor_backdrop").onclick = () => cancelMappingEditor();
+    el("btn_cancel_mapping_editor").onclick = () => cancelMappingEditor();
+    el("btn_apply_mapping_editor").onclick = () => applyMappingEditor();
+    el("mapping_editor_add_column").onclick = () => {
+      if (!activeMappingCard) return;
+      createMappingRow(activeMappingCard, { nullable: true });
+      markMappingRowsDirty(activeMappingCard);
+    };
+    el("mapping_editor_generate").onclick = async () => {
+      const card = activeMappingCard;
+      if (!card) return;
+      setMappingEditorStatus("Generating mapping…", false);
+      await generateMappingForCard(card);
+      // The tab status + toast sit behind the modal, so surface the result in
+      // the modal footer (below the hint) where the user can actually see it.
+      const statusBox = card.querySelector(".mapping-status");
+      const failed = !!statusBox && statusBox.classList.contains("warn");
+      // Flag draft cells that still need an explicit Data Type (non-blocking).
+      clearMappingInvalid();
+      const check = validateMappingRows();
+      if (failed) {
+        setMappingEditorStatus(statusBox.textContent || "", true);
+      } else if (!check.ok) {
+        const names = distinctIssueNames(check.issues);
+        const more = names.length > 6 ? ` +${names.length - 6} more` : "";
+        setMappingEditorStatus(
+          `Draft ready - complete the highlighted Data Type cell(s): ${names.slice(0, 6).join(", ")}${more}.`,
+          true,
+        );
+      } else {
+        setMappingEditorStatus(statusBox ? statusBox.textContent || "" : "", false);
+      }
+      // The source table may only now be known; refresh the Input panel + datalist.
+      mappingSourceCols = await fetchMappingSourceColumns(card);
+      refreshMappingSourceDatalist(mappingSourceCols);
+      renderMappingSourcePanel(card, mappingSourceCols);
+    };
     el("source_conn_id").addEventListener("change", () => {
       refreshTaskCardHeaders();
       refreshAllPartitionColumnOptions();
@@ -4687,6 +5536,10 @@ async function studioFetch(path, options) {
     }
     document.addEventListener("keydown", (evt) => {
       if (evt.key !== "Escape") return;
+      if (el("mapping_editor_modal") && el("mapping_editor_modal").classList.contains("open")) {
+        cancelMappingEditor();
+        return;
+      }
       if (el("scheduler_modal").classList.contains("open")) {
         closeSchedulerModal();
         return;

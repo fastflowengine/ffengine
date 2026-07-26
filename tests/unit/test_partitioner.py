@@ -24,15 +24,33 @@ def _dialect():
     return d
 
 
-def _conn(fetchone=None, fetchall=None):
+def _conn(fetchone=None, fetchall=None, null_count=0):
+    """Mock connection. The null-partition probe (`... col IS NULL`) returns
+    `null_count`; every other (sampling) query returns `fetchone`."""
     conn = MagicMock()
     cursor = MagicMock()
-    if fetchone is not None:
-        cursor.fetchone.return_value = fetchone
+    state = {"sql": ""}
+
+    def _execute(sql, *args, **kwargs):
+        state["sql"] = str(sql)
+
+    cursor.execute.side_effect = _execute
+
+    def _fetchone():
+        if "IS NULL" in state["sql"].upper():
+            return (null_count,)
+        return fetchone
+
+    cursor.fetchone.side_effect = _fetchone
     if fetchall is not None:
         cursor.fetchall.return_value = fetchall
     conn.cursor.return_value = cursor
     return conn
+
+
+def _sampling_sql(conn):
+    """The first (sampling) query executed — the null probe runs afterwards."""
+    return conn.cursor.return_value.execute.call_args_list[0].args[0]
 
 
 def _task(part_override=None, **overrides) -> dict:
@@ -159,14 +177,14 @@ class TestPartitionerAutoNumeric:
         conn = _conn(fetchone=(1, 100))
         task = _task(_resolved_where="status = 'ACTIVE'")
         Partitioner().plan(task, conn, _dialect())
-        sql = conn.cursor.return_value.execute.call_args.args[0]
+        sql = _sampling_sql(conn)
         assert "WHERE status = 'ACTIVE'" in sql
 
     def test_auto_numeric_uses_where_when_resolved_where_missing(self):
         conn = _conn(fetchone=(1, 100))
         task = _task(where="created_at >= '2026-01-01'")
         Partitioner().plan(task, conn, _dialect())
-        sql = conn.cursor.return_value.execute.call_args.args[0]
+        sql = _sampling_sql(conn)
         assert "WHERE created_at >= '2026-01-01'" in sql
 
     def test_auto_numeric_uses_inline_sql_relation_when_source_type_sql(self):
@@ -179,7 +197,7 @@ class TestPartitionerAutoNumeric:
             _resolved_where="id > 10",
         )
         Partitioner().plan(task, conn, _dialect())
-        sql = conn.cursor.return_value.execute.call_args.args[0]
+        sql = _sampling_sql(conn)
         assert (
             "FROM (SELECT id, amount FROM public.orders) AS ffengine_inline_sql" in sql
         )
@@ -217,7 +235,7 @@ class TestPartitionerAutoDatetime:
             _resolved_where="created_at >= '2026-01-01'",
         )
         Partitioner().plan(task, conn, _dialect())
-        sql = conn.cursor.return_value.execute.call_args.args[0]
+        sql = _sampling_sql(conn)
         assert "WHERE created_at >= '2026-01-01'" in sql
 
     def test_auto_datetime_literals_use_fixed_six_digit_precision(self):
@@ -314,26 +332,29 @@ class TestPartitionerAutoDatetime:
 class TestPartitionerHashMod:
     def test_hash_mod_returns_n_parts(self):
         task = _task({"mode": "hash_mod", "parts": 3})
-        result = Partitioner().plan(task, MagicMock(), _dialect())
+        result = Partitioner().plan(task, _conn(), _dialect())
         assert len(result) == 3
 
     def test_hash_mod_part_ids_sequential(self):
         task = _task({"mode": "hash_mod", "parts": 3})
-        result = Partitioner().plan(task, MagicMock(), _dialect())
+        result = Partitioner().plan(task, _conn(), _dialect())
         assert [s["part_id"] for s in result] == [0, 1, 2]
 
     def test_hash_mod_where_contains_mod_syntax(self):
         task = _task({"mode": "hash_mod", "parts": 3})
-        result = Partitioner().plan(task, MagicMock(), _dialect())
+        result = Partitioner().plan(task, _conn(), _dialect())
         for spec in result:
             where = spec["where"]
             assert "MOD(" in where or "%" in where
 
-    def test_hash_mod_no_db_call(self):
-        conn = MagicMock()
+    def test_hash_mod_only_runs_null_probe_query(self):
+        # hash_mod needs no sampling query, but does run one lightweight
+        # `col IS NULL` probe to decide the dedicated NULL partition.
+        conn = _conn()
         task = _task({"mode": "hash_mod", "parts": 2})
         Partitioner().plan(task, conn, _dialect())
-        conn.cursor.assert_not_called()
+        assert conn.cursor.return_value.execute.call_count == 1
+        assert "IS NULL" in conn.cursor.return_value.execute.call_args.args[0].upper()
 
     def test_hash_mod_mssql_uses_percent_operator(self):
         class _FakeMSSQLDialect:
@@ -345,7 +366,7 @@ class TestPartitionerHashMod:
         _FakeMSSQLDialect.__name__ = "MSSQLDialect"
         result = Partitioner().plan(
             _task({"mode": "hash_mod", "parts": 2}),
-            MagicMock(),
+            _conn(),
             _FakeMSSQLDialect(),
         )
         for spec in result:
@@ -412,19 +433,16 @@ class TestPartitionerDistinct:
             {"mode": "distinct", "parts": 2}, _resolved_where="status = 'ACTIVE'"
         )
         Partitioner().plan(task, conn, _dialect())
-        sql = conn.cursor.return_value.execute.call_args.args[0]
+        sql = _sampling_sql(conn)
         assert "WHERE status = 'ACTIVE'" in sql
 
 
 class TestPartitionerPercentile:
     def test_percentile_falls_back_to_auto_numeric_on_error(self):
-        cursor = MagicMock()
-        cursor.fetchone.return_value = (1, 1000)
-        conn = MagicMock()
-        conn.cursor.return_value = cursor
-
         result = Partitioner().plan(
-            _task({"mode": "percentile", "parts": 4}), conn, _dialect()
+            _task({"mode": "percentile", "parts": 4}),
+            _conn(fetchone=(1, 1000)),
+            _dialect(),
         )
         assert len(result) == 4
 
@@ -453,8 +471,10 @@ class TestPartitionerPercentile:
         percentile_cursor.fetchone.return_value = (50,)
         minmax_cursor = MagicMock()
         minmax_cursor.fetchone.return_value = (0, 100)
+        null_cursor = MagicMock()
+        null_cursor.fetchone.return_value = (0,)
         conn = MagicMock()
-        conn.cursor.side_effect = [percentile_cursor, minmax_cursor]
+        conn.cursor.side_effect = [percentile_cursor, minmax_cursor, null_cursor]
 
         task = _task({"mode": "percentile", "parts": 2}, _resolved_where="id > 10")
         result = Partitioner().plan(task, conn, PostgresDialect())
@@ -476,8 +496,10 @@ class TestPartitionerPercentileDialectSql:
         percentile_cursor.fetchone.return_value = (50,)
         minmax_cursor = MagicMock()
         minmax_cursor.fetchone.return_value = (0, 100)
+        null_cursor = MagicMock()
+        null_cursor.fetchone.return_value = (0,)
         conn = MagicMock()
-        conn.cursor.side_effect = [percentile_cursor, minmax_cursor]
+        conn.cursor.side_effect = [percentile_cursor, minmax_cursor, null_cursor]
 
         result = Partitioner().plan(
             _task({"mode": "percentile", "parts": 2}), conn, PostgresDialect()
@@ -485,7 +507,7 @@ class TestPartitionerPercentileDialectSql:
 
         assert len(result) == 2
         assert "50" in result[0]["where"]
-        assert conn.cursor.call_count == 2
+        assert conn.cursor.call_count == 3
         executed_sql = percentile_cursor.execute.call_args.args[0]
         assert "PERCENTILE_CONT" in executed_sql
         assert "OVER ()" not in executed_sql
@@ -511,3 +533,54 @@ class TestPartitionerPercentileDialectSql:
         assert "TOP 1" in sql
         assert "OVER ()" in sql
         assert "LIMIT 1" not in sql
+
+
+class TestPartitionerNullPartition:
+    def test_auto_numeric_appends_null_partition_when_nulls_exist(self):
+        result = Partitioner().plan(
+            _task({"parts": 2}), _conn(fetchone=(1, 100), null_count=5), _dialect()
+        )
+        assert len(result) == 3
+        assert result[-1]["where"] == '"id" IS NULL'
+        assert [s["part_id"] for s in result] == [0, 1, 2]
+
+    def test_auto_numeric_no_null_partition_when_no_nulls(self):
+        result = Partitioner().plan(
+            _task({"parts": 2}), _conn(fetchone=(1, 100), null_count=0), _dialect()
+        )
+        assert len(result) == 2
+        assert all("IS NULL" not in (s["where"] or "") for s in result)
+
+    def test_single_partition_fallback_never_appends_null_partition(self):
+        # min == max -> single unbounded partition already reads NULL rows;
+        # appending would double-count, so the probe must be skipped entirely.
+        conn = _conn(fetchone=(42, 42), null_count=9)
+        result = Partitioner().plan(_task(), conn, _dialect())
+        assert result == [{"part_id": 0, "where": None}]
+
+    def test_hash_mod_appends_null_partition_when_nulls_exist(self):
+        result = Partitioner().plan(
+            _task({"mode": "hash_mod", "parts": 2}), _conn(null_count=3), _dialect()
+        )
+        assert len(result) == 3
+        assert result[-1]["where"] == '"id" IS NULL'
+
+    def test_null_probe_applies_resolved_where(self):
+        conn = _conn(fetchone=(1, 100), null_count=0)
+        task = _task({"parts": 2}, _resolved_where="status = 'ACTIVE'")
+        Partitioner().plan(task, conn, _dialect())
+        probe_sql = conn.cursor.return_value.execute.call_args.args[0]  # last = probe
+        assert "IS NULL" in probe_sql.upper()
+        assert "(status = 'ACTIVE') AND" in probe_sql
+
+    def test_distinct_excludes_null_value_and_appends_null_partition(self):
+        # DISTINCT returns a NULL value: it must not enter the IN-list, and the
+        # dedicated NULL partition covers the NULL rows.
+        conn = _conn(fetchall=[(1,), (None,), (2,)], null_count=4)
+        result = Partitioner().plan(
+            _task({"mode": "distinct", "parts": 2}), conn, _dialect()
+        )
+        for spec in result:
+            if "IN (" in (spec["where"] or ""):
+                assert "None" not in spec["where"]
+        assert result[-1]["where"] == '"id" IS NULL'

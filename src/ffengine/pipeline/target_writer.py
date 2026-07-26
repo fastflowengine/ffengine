@@ -95,6 +95,13 @@ class TargetWriter:
         qualified = self._qualify(schema, table)
         load_method = task_config.get("load_method", "append")
 
+        # F1.2: v1.1 derived columns -> target-side push-down enrichment.
+        value_exprs = task_config.get("target_value_exprs") or {}
+        if value_exprs:
+            return self._write_batch_enriched(
+                rows, task_config, qualified, load_method, value_exprs
+            )
+
         if not columns:
             raise ValidationError(
                 f"target_columns bos olamaz: {qualified}. "
@@ -129,7 +136,8 @@ class TargetWriter:
             ) from exc
 
         cursor = self.session.cursor(server_side=False)
-        adapted_rows = self._adapt_rows_for_insert(rows)
+        column_types = self._target_column_types(task_config, columns)
+        adapted_rows = self._adapt_rows_for_insert(rows, column_types)
         try:
             cursor.executemany(sql, adapted_rows)
             self.session.conn.commit()
@@ -149,6 +157,100 @@ class TargetWriter:
         finally:
             cursor.close()
         return len(rows)
+
+    # ------------------------------------------------------------------
+    # F1.2 - Push-down enrichment write path
+    # ------------------------------------------------------------------
+
+    def _write_batch_enriched(
+        self,
+        rows: list[tuple],
+        task_config: dict,
+        qualified: str,
+        load_method: str,
+        value_exprs: dict,
+    ) -> int:
+        target_columns = task_config.get("target_columns", [])
+        source_columns = task_config.get("source_columns", [])
+        plain_source_by_target = task_config.get("plain_source_by_target", {})
+        if not target_columns:
+            raise ValidationError(
+                f"target_columns bos olamaz: {qualified}."
+            )
+        src_index = {name: i for i, name in enumerate(source_columns)}
+
+        try:
+            if load_method == "upsert":
+                match_columns, update_columns = self._resolve_upsert_columns(
+                    task_config=task_config, target_columns=target_columns
+                )
+                derived_match = [c for c in match_columns if c in value_exprs]
+                if derived_match:
+                    raise ValidationError(
+                        "upsert_match_columns bir turetilmis (expression) kolon "
+                        f"olamaz: {derived_match}"
+                    )
+                self._validate_enriched_match_not_null(
+                    rows, src_index, match_columns, plain_source_by_target
+                )
+                sql, bind_plan = self.dialect.generate_enriched_upsert_query(
+                    qualified, target_columns, value_exprs,
+                    plain_source_by_target, match_columns, update_columns,
+                )
+            else:
+                sql, bind_plan = self.dialect.generate_enriched_insert_query(
+                    qualified, target_columns, value_exprs, plain_source_by_target
+                )
+        except ValidationError:
+            raise
+        except Exception as exc:
+            raise DialectError.wrap(
+                exc,
+                f"Enrichment yazma SQL uretilemedi: {qualified}",
+                details={"target": qualified, "load_method": load_method},
+            ) from exc
+
+        bind_rows = [
+            tuple(row[src_index[name]] for name in bind_plan) for row in rows
+        ]
+        adapted_rows = self._adapt_rows_for_insert(bind_rows)
+        cursor = self.session.cursor(server_side=False)
+        try:
+            cursor.executemany(sql, adapted_rows)
+            self.session.conn.commit()
+        except Exception as exc:
+            self.session.conn.rollback()
+            raise ConnectionError.wrap(
+                exc,
+                f"Hedefe enriched batch yazimi basarisiz: {qualified}. "
+                f"Root cause: {exc}",
+                details={
+                    "target": qualified,
+                    "rows": len(rows),
+                    "load_method": load_method,
+                    "root_cause": str(exc),
+                    "sql_preview": sanitize_sql_preview(sql),
+                },
+            ) from exc
+        finally:
+            cursor.close()
+        return len(rows)
+
+    def _validate_enriched_match_not_null(
+        self,
+        rows: list[tuple],
+        src_index: dict[str, int],
+        match_columns: list[str],
+        plain_source_by_target: dict[str, str],
+    ) -> None:
+        for row_idx, row in enumerate(rows):
+            for col in match_columns:
+                src = plain_source_by_target[col]
+                if row[src_index[src]] is None:
+                    raise ValidationError(
+                        "upsert_match_columns kolonlarinda NULL deger olamaz. "
+                        f"Satir={row_idx}, kolon={col}"
+                    )
 
     def rollback_batch(self, exc: Exception | None = None) -> None:
         """Rollback active transaction."""
@@ -230,13 +332,44 @@ class TargetWriter:
         finally:
             cursor.close()
 
-    def _adapt_rows_for_insert(self, rows: list[tuple]) -> list[tuple]:
+    @staticmethod
+    def _is_json_column_type(data_type: str) -> bool:
+        base = str(data_type or "").strip().upper().split("(")[0].strip()
+        return base in ("JSON", "JSONB")
+
+    def _target_column_types(
+        self, task_config: dict, columns: list[str]
+    ) -> list[str]:
+        """Target data_type per output column (aligned to `columns`).
+
+        Read from target_columns_meta (ColumnInfo or dict), keyed by name so it
+        is robust to ordering. Empty string when a column has no metadata.
+        """
+        type_by_name: dict[str, str] = {}
+        for meta in task_config.get("target_columns_meta") or []:
+            if isinstance(meta, dict):
+                name = str(meta.get("name") or "")
+                data_type = str(meta.get("data_type") or "")
+            else:
+                name = str(getattr(meta, "name", "") or "")
+                data_type = str(getattr(meta, "data_type", "") or "")
+            if name:
+                type_by_name[name] = data_type
+        return [type_by_name.get(name, "") for name in columns]
+
+    def _adapt_rows_for_insert(
+        self, rows: list[tuple], column_types: list[str] | None = None
+    ) -> list[tuple]:
         """
         Normalize Python values before executemany().
 
-        psycopg3 does not auto-adapt dict/list values for JSONB inserts when
-        passed as plain %s params. For PostgreSQL dialects, wrap JSON-like
-        payloads with Jsonb to avoid `cannot adapt type 'dict'` errors.
+        psycopg3 does not auto-adapt dict values for JSONB inserts when passed
+        as plain %s params, so JSON payloads are wrapped with Jsonb. A Python
+        ``list``, however, is ambiguous: it can come from a JSON/JSONB column
+        (wrap as Jsonb) OR from a Postgres array column such as ``text[]``
+        (leave as-is so psycopg adapts it to a native array). We disambiguate
+        by the target column's declared type; without type info we keep the
+        legacy behavior (list -> Jsonb).
         """
         dialect_name = type(self.dialect).__name__.lower()
         if "postgres" not in dialect_name:
@@ -247,15 +380,28 @@ class TargetWriter:
         except Exception:
             return rows
 
+        def _list_is_json(idx: int) -> bool:
+            if not column_types or idx >= len(column_types):
+                return True  # no type info -> legacy behavior
+            return self._is_json_column_type(column_types[idx])
+
         out: list[tuple] = []
         changed = False
         for row in rows:
             row_out = []
             row_changed = False
-            for value in row:
-                if isinstance(value, (dict, list)):
+            for idx, value in enumerate(row):
+                if isinstance(value, dict):
                     row_out.append(Jsonb(value))
                     row_changed = True
+                elif isinstance(value, list):
+                    if _list_is_json(idx):
+                        row_out.append(Jsonb(value))
+                        row_changed = True
+                    else:
+                        # Postgres array column (text[], int[], ...) -> leave the
+                        # Python list; psycopg adapts it to a native array.
+                        row_out.append(value)
                 else:
                     row_out.append(value)
             if row_changed:

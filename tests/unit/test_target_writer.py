@@ -414,6 +414,55 @@ def test_write_batch_adapts_postgres_dict_values_for_json(writer, session):
     assert isinstance(call_rows[0][0], FakeJsonb)
 
 
+def test_write_batch_postgres_list_uses_target_type(session):
+    # A Python list bound to a Postgres array column (text[]) must stay a list
+    # so psycopg adapts it to a native array; a list bound to a json/jsonb
+    # column is wrapped as Jsonb; a dict is always wrapped.
+    class PostgresDialect:
+        def quote_identifier(self, name):
+            return f'"{name}"'
+
+        def generate_bulk_insert_query(self, table, columns):
+            return "INSERT INTO ..."
+
+    class FakeJsonb:
+        def __init__(self, value):
+            self.value = value
+
+    json_mod = types.ModuleType("psycopg.types.json")
+    json_mod.Jsonb = FakeJsonb
+    types_mod = types.ModuleType("psycopg.types")
+    psycopg_mod = types.ModuleType("psycopg")
+    with patch.dict(
+        sys.modules,
+        {
+            "psycopg": psycopg_mod,
+            "psycopg.types": types_mod,
+            "psycopg.types.json": json_mod,
+        },
+    ):
+        pg_writer = TargetWriter(session, PostgresDialect())
+        pg_writer.write_batch(
+            [(["step1", "step2"], {"k": "v"}, ["a", "b"])],
+            {
+                "target_schema": "s",
+                "target_table": "t",
+                "target_columns": ["arr_col", "json_obj", "json_arr"],
+                "target_columns_meta": [
+                    ColumnInfo("arr_col", "TEXT[]"),
+                    ColumnInfo("json_obj", "JSONB"),
+                    ColumnInfo("json_arr", "JSON"),
+                ],
+            },
+        )
+
+    row = session.cursor.return_value.executemany.call_args[0][1][0]
+    assert row[0] == ["step1", "step2"]        # text[] -> native list, not Jsonb
+    assert not isinstance(row[0], FakeJsonb)
+    assert isinstance(row[1], FakeJsonb)        # jsonb dict -> wrapped
+    assert isinstance(row[2], FakeJsonb)        # json list -> wrapped
+
+
 # ------------------------------------------------------------------
 # rollback_batch()
 # ------------------------------------------------------------------

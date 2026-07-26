@@ -39,6 +39,43 @@ def test_connect(mock_connect, dialect):
     assert result is mock_conn
 
 
+@patch("psycopg.connect")
+def test_connect_registers_infinity_datetime_loaders(mock_connect, dialect):
+    from ffengine.dialects.postgres import (
+        _PG_OID_DATE,
+        _PG_OID_TIMESTAMP,
+        _PG_OID_TIMESTAMPTZ,
+    )
+
+    mock_conn = MagicMock()
+    mock_connect.return_value = mock_conn
+    dialect.connect({"host": "h", "user": "u", "password": "p", "dbname": "d"})
+
+    registered_oids = {
+        call.args[0] for call in mock_conn.adapters.register_loader.call_args_list
+    }
+    assert registered_oids == {_PG_OID_DATE, _PG_OID_TIMESTAMP, _PG_OID_TIMESTAMPTZ}
+
+
+def test_infinity_datetime_loaders_preserve_sentinels():
+    # ±infinity sentinels are returned as raw text (exact copy); finite values
+    # are left to psycopg's default loader (not exercised here).
+    from ffengine.dialects.postgres import (
+        _PG_OID_DATE,
+        _PG_OID_TIMESTAMP,
+        _PG_OID_TIMESTAMPTZ,
+        _infinity_datetime_loaders,
+    )
+
+    loaders = dict(_infinity_datetime_loaders())
+    assert set(loaders) == {_PG_OID_DATE, _PG_OID_TIMESTAMP, _PG_OID_TIMESTAMPTZ}
+    for oid, loader_cls in loaders.items():
+        loader = loader_cls(oid, None)
+        assert loader.load(b"-infinity") == "-infinity"
+        assert loader.load(b"infinity") == "infinity"
+        assert loader.load(memoryview(b"-infinity")) == "-infinity"
+
+
 def test_create_cursor_standard(dialect):
     mock_conn = MagicMock()
     mock_cursor = MagicMock()

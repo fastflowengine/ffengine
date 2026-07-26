@@ -40,6 +40,7 @@ from ffengine.ui.studio_service import (
     discover_tables,
     fetch_timeline_runs,
     generate_mapping_preview,
+    parse_mapping_columns,
     get_dag_revisions,
     normalize_scheduler,
     promote_dag_revision,
@@ -781,7 +782,7 @@ class MappingGeneratePayload(BaseModel):
     inline_sql: str | None = None
     task_group_id: str | None = Field(default=None, min_length=1)
     task_no: int = Field(1, ge=1)
-    version: str = "v1"
+    version: str = "v1.1"
 
     @field_validator("project", "domain", "level", "flow", mode="before")
     @classmethod
@@ -1052,6 +1053,21 @@ def api_mapping_generate(payload: MappingGeneratePayload) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         _raise_http_from_exception(exc)
+
+
+class MappingParsePayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    mapping_content: str = ""
+
+
+@flow_studio_app.post("/api/mapping/parse")
+def api_mapping_parse(payload: MappingParsePayload) -> dict[str, Any]:
+    try:
+        result = parse_mapping_columns(payload.mapping_content)
+        return {"ok": True, **result}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @flow_studio_app.get("/api/timeline")

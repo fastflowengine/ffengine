@@ -6,6 +6,53 @@ from typing import Any
 
 from ffengine.dialects.base import BaseDialect, ColumnInfo
 
+# Postgres builtin type OIDs (frozen catalog values).
+_PG_OID_DATE = 1082
+_PG_OID_TIMESTAMP = 1114
+_PG_OID_TIMESTAMPTZ = 1184
+
+_INFINITY_LOADERS: list[tuple[int, Any]] | None = None
+
+
+def _infinity_datetime_loaders() -> list[tuple[int, Any]]:
+    """Loaders that preserve Postgres ±infinity date/time sentinels.
+
+    Postgres allows ``infinity`` / ``-infinity`` for date, timestamp and
+    timestamptz. psycopg3 raises ``DataError`` for them because they have no
+    Python ``datetime``. For a same-dialect replication we must copy the value
+    exactly, so these loaders return the raw text (e.g. ``'-infinity'``) - which
+    binds straight back into a Postgres date/time column - and delegate every
+    finite value to the driver's default loader. Cached (loader classes are
+    built once) and lazy so psycopg stays an optional import.
+    """
+    global _INFINITY_LOADERS
+    if _INFINITY_LOADERS is not None:
+        return _INFINITY_LOADERS
+
+    from psycopg.types.datetime import (
+        DateLoader,
+        TimestampLoader,
+        TimestamptzLoader,
+    )
+
+    def _preserve(base):
+        class _Loader(base):
+            def load(self, data):
+                if data == b"-infinity" or data == b"infinity":
+                    return bytes(data).decode()
+                return super().load(data)
+
+        _Loader.__name__ = f"InfinityPreserving{base.__name__}"
+        _Loader.__qualname__ = _Loader.__name__
+        return _Loader
+
+    _INFINITY_LOADERS = [
+        (_PG_OID_DATE, _preserve(DateLoader)),
+        (_PG_OID_TIMESTAMP, _preserve(TimestampLoader)),
+        (_PG_OID_TIMESTAMPTZ, _preserve(TimestamptzLoader)),
+    ]
+    return _INFINITY_LOADERS
+
 
 class PostgresDialect(BaseDialect):
     """PostgreSQL dialect using the psycopg3 driver."""
@@ -28,7 +75,13 @@ class PostgresDialect(BaseDialect):
         elif "database" in conn_params:
             del conn_params["database"]
 
-        return psycopg.connect(**conn_params, autocommit=False)
+        conn = psycopg.connect(**conn_params, autocommit=False)
+        # Preserve ±infinity date/time sentinels as raw text (exact copy).
+        # Registered by OID: registering by type name does not override the
+        # binary C loaders.
+        for oid, loader_cls in _infinity_datetime_loaders():
+            conn.adapters.register_loader(oid, loader_cls)
+        return conn
 
     def create_cursor(self, conn: Any, server_side: bool = False) -> Any:
         if server_side:
@@ -179,6 +232,30 @@ class PostgresDialect(BaseDialect):
             updates = ", ".join(f"{col} = EXCLUDED.{col}" for col in quoted_update_columns)
             return f"{sql} ON CONFLICT ({conflict_cols}) DO UPDATE SET {updates}"
         return f"{sql} ON CONFLICT ({conflict_cols}) DO NOTHING"
+
+    def generate_enriched_upsert_query(
+        self,
+        table: str,
+        target_columns: list[str],
+        value_exprs: dict,
+        plain_source_by_target: dict[str, str],
+        match_columns: list[str],
+        update_columns: list[str],
+    ) -> tuple[str, list[str]]:
+        """F1.2 - upsert with target-side derived expressions (ON CONFLICT)."""
+        value_sql, bind_plan = self._compile_row_values(
+            target_columns, value_exprs, plain_source_by_target
+        )
+        cols = ", ".join(self.quote_identifier(c) for c in target_columns)
+        conflict = ", ".join(self.quote_identifier(c) for c in match_columns)
+        sql = f"INSERT INTO {table} ({cols}) VALUES ({', '.join(value_sql)})"
+        if update_columns:
+            updates = ", ".join(
+                f"{self.quote_identifier(c)} = EXCLUDED.{self.quote_identifier(c)}"
+                for c in update_columns
+            )
+            return f"{sql} ON CONFLICT ({conflict}) DO UPDATE SET {updates}", bind_plan
+        return f"{sql} ON CONFLICT ({conflict}) DO NOTHING", bind_plan
 
     def get_pagination_query(self, query: str, limit: int, offset: int) -> str:
         return f"{query} LIMIT {limit} OFFSET {offset}"

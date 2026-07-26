@@ -12,6 +12,9 @@ from ffengine.dialects.type_mapper import TypeMapper, UnsupportedTypeError
 from ffengine.errors.exceptions import MappingError
 from ffengine.mapping.resolver import VALID_MAPPING_VERSIONS, _dialect_name
 from ffengine.mapping.type_contract import (
+    LENGTH_BEARING_TYPES,
+    NUMERIC_PARAM_TYPES,
+    parse_type,
     render_type_literal_from_column,
     validate_mapping_object_strict,
 )
@@ -28,6 +31,7 @@ class MappingGenerator:
         schema: str,
         table: str,
         version: str = "v1",
+        strict: bool = True,
     ) -> dict:
         if version not in VALID_MAPPING_VERSIONS:
             raise MappingError(
@@ -42,6 +46,9 @@ class MappingGenerator:
 
         src_name = _dialect_name(src_dialect)
         tgt_name = _dialect_name(tgt_dialect)
+        same_dialect = bool(src_name) and (
+            str(src_name).strip().lower() == str(tgt_name).strip().lower()
+        )
 
         columns = []
         for col in src_cols:
@@ -49,9 +56,27 @@ class MappingGenerator:
             try:
                 tgt_type = TypeMapper.map_type(source_type, src_name, tgt_name)
             except UnsupportedTypeError as exc:
-                raise MappingError(
-                    f"'{col.name}' kolonu icin tur cevirisi basarisiz: {exc}"
-                ) from exc
+                if strict:
+                    raise MappingError(
+                        f"'{col.name}' kolonu icin tur cevirisi basarisiz: {exc}"
+                    ) from exc
+                # Scaffold: same dialect -> lossless identity copy; different
+                # dialect -> blank for the developer to fill (enforced at
+                # Apply/Save). The "max size" rule, keyed on Connection Type.
+                tgt_type = source_type if same_dialect else ""
+            else:
+                # Unsized (bare) numeric/length: cross-dialect scaffold leaves it
+                # blank (no guessed size); same-dialect keeps the bare max-size
+                # passthrough. strict=True keeps the bare type so the final gate
+                # fails loud on a cross-dialect mapping.
+                base, params = parse_type(tgt_type)
+                if (
+                    params is None
+                    and base in (NUMERIC_PARAM_TYPES | LENGTH_BEARING_TYPES)
+                    and not same_dialect
+                    and not strict
+                ):
+                    tgt_type = ""
             columns.append(
                 {
                     "source_name": col.name,
@@ -68,6 +93,11 @@ class MappingGenerator:
             "target_dialect": tgt_name,
             "columns": columns,
         }
+        if not strict:
+            # Lenient scaffold (Flow Studio "Generate"): return a best-effort
+            # draft even if some target types still lack precision/length. The
+            # strict gate runs at Apply (client) and Save/runtime (server).
+            return mapping_obj
         try:
             return validate_mapping_object_strict(
                 mapping_obj,

@@ -1003,6 +1003,8 @@ def _resolve_mapping_file_path(flow_dir: Path, mapping_file: str) -> Path:
 
 
 def _mapping_yaml_to_source_columns(mapping_obj: dict[str, Any]) -> list[str]:
+    from ffengine.mapping import expression as _expr
+
     validated = validate_mapping_object_strict(
         mapping_obj,
         valid_versions=VALID_MAPPING_VERSIONS,
@@ -1014,11 +1016,23 @@ def _mapping_yaml_to_source_columns(mapping_obj: dict[str, Any]) -> list[str]:
     for idx, item in enumerate(entries, start=1):
         if not isinstance(item, dict):
             raise ValueError(f"Mapping columns[{idx-1}] must be a dict.")
+        expr_text = str(item.get("expression") or "").strip()
+        if expr_text:
+            # v1.1 derived column: source columns come from expression refs;
+            # parsing also validates expression syntax at save time.
+            try:
+                ast = _expr.parse(expr_text)
+            except Exception as exc:
+                raise ValueError(
+                    f"Mapping columns[{idx-1}] expression invalid: {exc}"
+                ) from exc
+            out.extend(_expr.column_refs(ast))
+            continue
         src = str(item.get("source_name") or "").strip()
         if not src:
             raise ValueError(f"Mapping columns[{idx-1}] source_name cannot be empty.")
         out.append(src)
-    return out
+    return list(dict.fromkeys(out))
 
 
 def _parse_yaml_mapping_text(mapping_content: str, *, label: str) -> dict[str, Any]:
@@ -1035,6 +1049,27 @@ def _parse_yaml_mapping_text(mapping_content: str, *, label: str) -> dict[str, A
         context=label,
     )
     return parsed
+
+
+def parse_mapping_columns(mapping_content: str) -> dict[str, Any]:
+    """
+    Lenient parse of a mapping YAML into structured columns for the Flow Studio
+    row editor. No strict validation here (that runs on save) so the user can
+    load and repair any mapping in the structured editor.
+    """
+    try:
+        parsed = yaml.safe_load(mapping_content or "")
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Invalid mapping YAML: {exc}") from exc
+    if parsed is None:
+        return {"version": "v1.1", "columns": []}
+    if not isinstance(parsed, dict):
+        raise ValueError("Invalid mapping YAML: root must be a dict.")
+    cols = parsed.get("columns")
+    return {
+        "version": str(parsed.get("version") or "v1.1"),
+        "columns": cols if isinstance(cols, list) else [],
+    }
 
 
 def _read_mapping_object(path: Path) -> dict[str, Any]:
@@ -1126,38 +1161,12 @@ def _parse_param_pair(params: str | None) -> tuple[int | None, int | None]:
     return precision, scale
 
 
-def _target_length_fallback(base_type: str, target_dialect: str) -> int | None:
-    by_dialect: dict[str, dict[str, int]] = {
-        "oracle": {
-            "VARCHAR2": 4000,
-            "NVARCHAR2": 2000,
-            "RAW": 2000,
-            "CHAR": 1,
-            "NCHAR": 1,
-        },
-        "mssql": {
-            "NVARCHAR": 4000,
-            "VARCHAR": 8000,
-            "VARBINARY": 8000,
-            "BINARY": 1,
-            "NCHAR": 1,
-            "CHAR": 1,
-        },
-        "postgres": {
-            "VARCHAR": 65535,
-            "CHAR": 1,
-        },
-    }
-    return by_dialect.get(target_dialect, {}).get(base_type)
-
-
 def _normalize_target_type_for_strict(
     *,
     target_type: str,
     source_type: str,
     source_meta: dict[str, Any],
-    target_dialect: str,
-    column_name: str,
+    same_dialect: bool = False,
 ) -> str:
     target_base, target_params = parse_type(target_type)
     if target_params is not None:
@@ -1175,14 +1184,10 @@ def _normalize_target_type_for_strict(
             explicit_length = src_param_precision
         if explicit_length is not None and explicit_length > 0:
             return f"{target_base}({explicit_length})"
-        fallback = _target_length_fallback(target_base, target_dialect)
-        if fallback is not None:
-            return f"{target_base}({fallback})"
-        raise ValueError(
-            "Global strict mapping validation failed: "
-            f"column '{column_name}' target_type '{target_base}' requires explicit length "
-            "and no fallback is defined. Regenerate mapping."
-        )
+        # No resolvable length. "No size" is a deliberate "max size" choice:
+        # same dialect -> lossless bare passthrough; different dialect -> leave
+        # blank for the developer to fill (Apply/Save block on empty).
+        return target_base if same_dialect else ""
 
     if target_base in NUMERIC_PARAM_TYPES:
         precision = src_meta_precision or src_param_precision
@@ -1191,11 +1196,9 @@ def _normalize_target_type_for_strict(
             if scale is not None and scale >= 0:
                 return f"{target_base}({precision},{scale})"
             return f"{target_base}({precision})"
-        raise ValueError(
-            "Global strict mapping validation failed: "
-            f"column '{column_name}' target_type '{target_base}' requires explicit precision/scale. "
-            "Regenerate mapping."
-        )
+        # Unsized numeric: same dialect -> bare passthrough (max size, lossless);
+        # different dialect -> blank (no guessed precision/scale).
+        return target_base if same_dialect else ""
 
     return target_base
 
@@ -1366,17 +1369,15 @@ def extract_sql_select_columns(
                 )
             source_type = f"VARBINARY({source_length})"
         elif source_type in NUMERIC_PARAM_TYPES:
-            if source_precision is None:
-                raise ValueError(
-                    "SQL metadata extraction failed: "
-                    f"'{name}' precision could not be resolved. "
-                    "Cast numeric SQL expressions with explicit precision/scale, "
-                    "for example ::numeric(8,0)."
-                )
-            if source_scale is None:
-                source_type = f"{source_type}({source_precision})"
-            else:
-                source_type = f"{source_type}({source_precision},{source_scale})"
+            # Lenient draft: an unparameterized numeric (e.g. Postgres bare
+            # `numeric`) keeps its bare base type here. The developer sets an
+            # explicit precision/scale in the Mapping Editor; strict validation
+            # enforces it at Apply/Save, not at scaffold (generate) time.
+            if source_precision is not None:
+                if source_scale is None:
+                    source_type = f"{source_type}({source_precision})"
+                else:
+                    source_type = f"{source_type}({source_precision},{source_scale})"
         elif source_type in LENGTH_BEARING_TYPES:
             if source_length is None:
                 raise ValueError(
@@ -1442,12 +1443,16 @@ def _build_mapping_from_columns(
     src_dialect_name: str,
     tgt_dialect_name: str,
     version: str = "v1",
+    strict: bool = True,
 ) -> tuple[dict[str, Any], list[str]]:
     if version not in VALID_MAPPING_VERSIONS:
         raise ValueError(
             f"Invalid mapping version: {version!r}. "
             f"Gecerli: {sorted(VALID_MAPPING_VERSIONS)}"
         )
+    same_dialect = bool(src_dialect_name) and (
+        str(src_dialect_name).strip().lower() == str(tgt_dialect_name).strip().lower()
+    )
     warnings: list[str] = []
     rows: list[dict[str, Any]] = []
     for col in columns:
@@ -1463,19 +1468,43 @@ def _build_mapping_from_columns(
         try:
             tgt_type = TypeMapper.map_type(src_type, src_dialect_name, tgt_dialect_name)
         except UnsupportedTypeError as exc:
-            raise ValueError(
-                "Mapping generation failed: "
-                f"column '{src_name}' source_type '{src_type}' cannot be mapped "
-                f"from '{src_dialect_name}' to '{tgt_dialect_name}'. "
-                "Regenerate mapping with explicit source metadata."
-            ) from exc
+            if strict:
+                raise ValueError(
+                    "Mapping generation failed: "
+                    f"column '{src_name}' source_type '{src_type}' cannot be mapped "
+                    f"from '{src_dialect_name}' to '{tgt_dialect_name}'. "
+                    "Regenerate mapping with explicit source metadata."
+                ) from exc
+            # Scaffold: same dialect -> lossless identity copy of the source
+            # type; different dialect -> leave blank for the developer to fill.
+            tgt_type = src_type if same_dialect else ""
+            if not same_dialect:
+                warnings.append(
+                    f"column '{src_name}' (source '{src_type}') could not be "
+                    "auto-mapped - set a target Data Type before Apply."
+                )
+            rows.append(
+                {
+                    "source_name": src_name,
+                    "target_name": src_name,
+                    "source_type": src_type,
+                    "target_type": tgt_type,
+                    "nullable": bool(col.get("nullable", True)),
+                }
+            )
+            continue
         tgt_type = _normalize_target_type_for_strict(
             target_type=tgt_type,
             source_type=src_type,
             source_meta=col,
-            target_dialect=tgt_dialect_name,
-            column_name=src_name,
+            same_dialect=same_dialect,
         )
+        if not tgt_type:
+            # Cross-dialect unsized type: blanked for the developer to fill.
+            warnings.append(
+                f"column '{src_name}' (source '{src_type}') has no explicit size; "
+                "set an explicit target Data Type before Apply."
+            )
         rows.append(
             {
                 "source_name": src_name,
@@ -1493,17 +1522,91 @@ def _build_mapping_from_columns(
         "target_dialect": tgt_dialect_name,
         "columns": rows,
     }
-    validate_mapping_object_strict(
-        mapping_obj,
-        valid_versions=VALID_MAPPING_VERSIONS,
-        error_cls=ValueError,
-        context="mapping/generate",
-    )
+    if strict:
+        validate_mapping_object_strict(
+            mapping_obj,
+            valid_versions=VALID_MAPPING_VERSIONS,
+            error_cls=ValueError,
+            context="mapping/generate",
+        )
     return mapping_obj, warnings
+
+
+def _incomplete_type_warnings(columns: list[dict[str, Any]]) -> list[str]:
+    """Draft columns FFEngine could not fill (blank target_type).
+
+    A blank target_type means the source type had no explicit size and the
+    source/target Connection Types differ (or the type is not cross-mappable),
+    so FFEngine left it for the developer to complete. Not an error at scaffold
+    (generate) time — strict validation enforces a non-empty type at Apply/Save.
+    A bare numeric/length target on a same-dialect mapping is a valid "max size"
+    passthrough and is intentionally NOT flagged.
+    """
+    out: list[str] = []
+    for col in columns or []:
+        tgt_name = str(col.get("target_name") or col.get("name") or "").strip()
+        tgt_type = str(col.get("target_type") or "").strip()
+        if tgt_type:
+            continue
+        src_type = str(col.get("source_type") or "").strip()
+        detail = f" (source '{src_type}')" if src_type else ""
+        out.append(
+            f"column '{tgt_name}'{detail} could not be auto-mapped - "
+            "set a target Data Type before Apply."
+        )
+    return out
 
 
 def _mapping_dump_text(mapping_obj: dict[str, Any]) -> str:
     return yaml.safe_dump(mapping_obj, sort_keys=False, allow_unicode=True)
+
+
+def _resolve_save_dialect_names(
+    payload: dict[str, Any]
+) -> tuple[str | None, str | None]:
+    """Resolve the authoritative source/target dialect names from the DAG's
+    connections. These drive the same-vs-cross "max size" rule at Save. Any
+    failure -> (None, None) so strict validation is preserved unchanged."""
+    try:
+        source_conn_id = str(payload.get("source_conn_id") or "").strip()
+        target_conn_id = str(payload.get("target_conn_id") or "").strip()
+        if not source_conn_id or not target_conn_id:
+            return None, None
+        src_params = AirflowConnectionAdapter.get_connection_params(source_conn_id)
+        tgt_params = AirflowConnectionAdapter.get_connection_params(target_conn_id)
+        src_name = _dialect_name(resolve_dialect(src_params["conn_type"]))
+        tgt_name = _dialect_name(resolve_dialect(tgt_params["conn_type"]))
+        return src_name, tgt_name
+    except Exception:
+        return None, None
+
+
+def _stamp_mapping_dialects(
+    mapping_content: str, *, source_dialect: str, target_dialect: str
+) -> str:
+    """Stamp the authoritative source/target dialects into a mapping YAML.
+
+    The Flow Studio row editor serializes mappings without top-level
+    source_dialect/target_dialect, so the same-dialect "max size" waiver in
+    validate_mapping_object_strict cannot fire (and the persisted file would not
+    be self-describing at runtime). Here the backend injects the real Connection
+    Types (from the DAG's connections) - overwriting any client value - before
+    validation and before the file is written. Malformed/non-dict content is
+    returned unchanged so the normal gate raises the proper shape/YAML error.
+    """
+    try:
+        parsed = yaml.safe_load(mapping_content)
+    except yaml.YAMLError:
+        return mapping_content
+    if not isinstance(parsed, dict):
+        return mapping_content
+    ordered: dict[str, Any] = {"version": parsed.get("version")}
+    ordered["source_dialect"] = source_dialect
+    ordered["target_dialect"] = target_dialect
+    for key, value in parsed.items():
+        if key not in ("version", "source_dialect", "target_dialect"):
+            ordered[key] = value
+    return _mapping_dump_text(ordered)
 
 
 def _generate_mapping_content_for_task(
@@ -1524,7 +1627,7 @@ def _generate_mapping_content_for_task(
         "source_type": source_type,
         "task_no": max(1, int(task_no)),
         "task_group_id": task_group_id,
-        "version": "v1",
+        "version": "v1.1",
     }
     if source_type in {"table", "view"}:
         preview_payload["source_schema"] = str(task.get("source_schema") or "").strip()
@@ -3585,13 +3688,12 @@ def generate_mapping_preview(payload: dict[str, Any]) -> dict[str, Any]:
 
     src_name = _dialect_name(src_dialect)
     tgt_name = _dialect_name(tgt_dialect)
-    version = str(payload.get("version") or "v1").strip() or "v1"
+    version = str(payload.get("version") or "v1.1").strip() or "v1.1"
     task_no = max(1, int(payload.get("task_no") or 1))
     task_group_id = str(payload.get("task_group_id") or "").strip()
     if not task_group_id:
         task_group_id = f"task_{task_no}"
     generated_mapping_file = _auto_mapping_relative_file(task_no, task_group_id)
-    warnings: list[str] = []
 
     if source_type in {"table", "view"}:
         source_schema = str(payload.get("source_schema") or "").strip()
@@ -3601,6 +3703,9 @@ def generate_mapping_preview(payload: dict[str, Any]) -> dict[str, Any]:
                 "source_schema and source_table are required when source_type=table|view."
             )
         with DBSession(src_params, src_dialect) as src_session:
+            # Lenient scaffold: produce a best-effort draft even when a source
+            # column lacks precision/length (e.g. bare `numeric`). Strict type
+            # validation runs at Apply (client) and Save (server), not here.
             mapping_obj = MappingGenerator().generate(
                 src_session.conn,
                 src_dialect,
@@ -3608,27 +3713,33 @@ def generate_mapping_preview(payload: dict[str, Any]) -> dict[str, Any]:
                 source_schema,
                 source_table,
                 version=version,
+                strict=False,
             )
     elif source_type == "sql":
         inline_sql = str(payload.get("inline_sql") or "").strip()
         if not inline_sql:
             raise ValueError("inline_sql is required when source_type='sql'.")
         sql_cols = extract_sql_select_columns_for_conn(source_conn_id, inline_sql)
-        mapping_obj, warnings = _build_mapping_from_columns(
+        mapping_obj, _ = _build_mapping_from_columns(
             columns=sql_cols,
             src_dialect_name=src_name,
             tgt_dialect_name=tgt_name,
             version=version,
+            strict=False,
         )
     else:
         raise ValueError("source_type can only be table|view|sql.")
 
     mapping_text = _mapping_dump_text(mapping_obj)
+    columns = mapping_obj.get("columns") or []
+    warnings = _incomplete_type_warnings(columns)
     return {
         "mapping_content": mapping_text,
         "generated_mapping_file": generated_mapping_file,
         "warnings": warnings,
-        "column_count": len(mapping_obj.get("columns") or []),
+        "column_count": len(columns),
+        "version": str(mapping_obj.get("version") or version),
+        "columns": columns,
     }
 
 
@@ -3754,6 +3865,10 @@ def create_or_update_dag(
         task_cfgs: list[dict[str, Any]] = []
         sql_mapping_checks: list[dict[str, Any]] = []
         pending_mapping_writes: list[dict[str, Any]] = []
+        # Authoritative Connection Types (DAG-level) for the same-vs-cross "max
+        # size" rule; stamped into each inline mapping so Save + runtime + the
+        # persisted file all agree on the dialects.
+        save_src_dialect, save_tgt_dialect = _resolve_save_dialect_names(payload)
         for idx, item in enumerate(tasks_input, start=1):
             task_type = _normalize_task_type(item.get("task_type"))
             source_schema = str(item.get("source_schema") or "").strip()
@@ -3894,6 +4009,12 @@ def create_or_update_dag(
                 task_cfg["upsert_match_columns"] = upsert_match_columns
             mode = str(task_cfg.get("column_mapping_mode") or "source")
             mapping_content = str(item.get("mapping_content") or "")
+            if mapping_content.strip() and save_src_dialect and save_tgt_dialect:
+                mapping_content = _stamp_mapping_dialects(
+                    mapping_content,
+                    source_dialect=save_src_dialect,
+                    target_dialect=save_tgt_dialect,
+                )
             if task_type != STUDIO_TASK_TYPE_SOURCE_TARGET and load_method == "upsert":
                 raise ValueError(
                     "load_method='upsert' is only valid for source_target tasks."

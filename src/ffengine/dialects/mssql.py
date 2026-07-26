@@ -183,6 +183,57 @@ class MSSQLDialect(BaseDialect):
             f"{' '.join(clauses)};"
         )
 
+    # ------------------------------------------------------------------
+    # F1.2 - Push-down enrichment
+    # ------------------------------------------------------------------
+
+    def _bind_placeholder(self, index: int) -> str:
+        return "?"
+
+    def _expr_ops(self, mode: str, *, alloc=None, quote=None):
+        from ffengine.mapping import expression as _expr
+
+        return _expr.MSSQLExprOps(mode=mode, alloc=alloc, quote=quote)
+
+    def generate_enriched_upsert_query(
+        self,
+        table: str,
+        target_columns: list[str],
+        value_exprs: dict,
+        plain_source_by_target: dict[str, str],
+        match_columns: list[str],
+        update_columns: list[str],
+    ) -> tuple[str, list[str]]:
+        """F1.2 - MERGE upsert with target-side derived expressions."""
+        value_sql, bind_plan = self._compile_row_values(
+            target_columns, value_exprs, plain_source_by_target
+        )
+        q = self.quote_identifier
+        source_select = ", ".join(
+            f"{v} AS {q(c)}" for v, c in zip(value_sql, target_columns)
+        )
+        on_clause = " AND ".join(
+            f"target.{q(c)} = source.{q(c)}" for c in match_columns
+        )
+        clauses: list[str] = []
+        if update_columns:
+            updates = ", ".join(
+                f"target.{q(c)} = source.{q(c)}" for c in update_columns
+            )
+            clauses.append(f"WHEN MATCHED THEN UPDATE SET {updates}")
+        insert_cols = ", ".join(q(c) for c in target_columns)
+        insert_vals = ", ".join(f"source.{q(c)}" for c in target_columns)
+        clauses.append(
+            f"WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})"
+        )
+        sql = (
+            f"MERGE INTO {table} AS target "
+            f"USING (SELECT {source_select}) AS source "
+            f"ON {on_clause} "
+            f"{' '.join(clauses)};"
+        )
+        return sql, bind_plan
+
     def get_pagination_query(self, query: str, limit: int, offset: int) -> str:
         return f"{query} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"
 

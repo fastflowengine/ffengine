@@ -131,8 +131,11 @@ def test_build_mapping_from_columns_preserves_mssql_lengths_for_oracle_target():
     assert rows[1]["target_type"] == "VARCHAR2(140)"
 
 
-def test_build_mapping_from_columns_uses_bounded_fallback_for_unbounded_source():
-    mapping_obj, _warnings = ss._build_mapping_from_columns(
+def test_build_mapping_from_columns_cross_dialect_unbounded_source_is_blanked():
+    # Cross Connection Type + unsized source: FFEngine no longer guesses a
+    # bounded fallback; it leaves the target Data Type blank for the developer
+    # to fill (Apply/Save block on empty).
+    mapping_obj, warnings = ss._build_mapping_from_columns(
         columns=[
             {
                 "name": "NOTES",
@@ -143,8 +146,10 @@ def test_build_mapping_from_columns_uses_bounded_fallback_for_unbounded_source()
         ],
         src_dialect_name="mssql",
         tgt_dialect_name="oracle",
+        strict=False,
     )
-    assert mapping_obj["columns"][0]["target_type"] == "VARCHAR2(4000)"
+    assert mapping_obj["columns"][0]["target_type"] == ""
+    assert any("NOTES" in w for w in warnings)
 
 
 def test_build_mapping_from_columns_fail_fast_for_unsupported_source_type():
@@ -154,6 +159,183 @@ def test_build_mapping_from_columns_fail_fast_for_unsupported_source_type():
             src_dialect_name="mssql",
             tgt_dialect_name="oracle",
         )
+
+
+def test_build_mapping_from_columns_same_dialect_keeps_bare_numeric_strict():
+    # Same Connection Type: an unsized numeric is a lossless "max size"
+    # passthrough (non-narrowing), so it stays bare and passes even the strict
+    # gate (strict=True default).
+    mapping_obj, warnings = ss._build_mapping_from_columns(
+        columns=[{"name": "amount", "source_type": "NUMERIC", "nullable": True}],
+        src_dialect_name="postgres",
+        tgt_dialect_name="postgres",
+    )
+    row = mapping_obj["columns"][0]
+    assert row["target_name"] == "amount"
+    assert row["target_type"] == "NUMERIC"
+    assert warnings == []
+
+
+def test_build_mapping_from_columns_cross_dialect_rejects_bare_numeric_strict():
+    # Different Connection Type: "bare" does not mean max on every DB, so the
+    # strict gate still fails loud (the target would be blanked, and an empty
+    # target_type is rejected).
+    with pytest.raises(ValueError):
+        ss._build_mapping_from_columns(
+            columns=[{"name": "amount", "source_type": "NUMERIC", "nullable": True}],
+            src_dialect_name="postgres",
+            tgt_dialect_name="oracle",
+        )
+
+
+def test_build_mapping_from_columns_same_dialect_lenient_keeps_bare_numeric():
+    # Lenient scaffold, same dialect: bare numeric preserved as max-size.
+    mapping_obj, warnings = ss._build_mapping_from_columns(
+        columns=[{"name": "amount", "source_type": "NUMERIC", "nullable": True}],
+        src_dialect_name="postgres",
+        tgt_dialect_name="postgres",
+        strict=False,
+    )
+    row = mapping_obj["columns"][0]
+    assert row["target_name"] == "amount"
+    from ffengine.mapping.type_contract import parse_type
+
+    _base, params = parse_type(row["target_type"])
+    assert params is None
+    assert warnings == []
+
+
+def test_build_mapping_from_columns_cross_dialect_lenient_blanks_bare_numeric():
+    # Lenient scaffold, different dialect: unsized numeric is blanked for the
+    # developer to fill, with a warning.
+    mapping_obj, warnings = ss._build_mapping_from_columns(
+        columns=[{"name": "amount", "source_type": "NUMERIC", "nullable": True}],
+        src_dialect_name="postgres",
+        tgt_dialect_name="oracle",
+        strict=False,
+    )
+    assert mapping_obj["columns"][0]["target_type"] == ""
+    assert any("amount" in w for w in warnings)
+
+
+def test_build_mapping_from_columns_same_dialect_unmapped_type_identity():
+    # Same dialect + a type TypeMapper cannot cross-map (Postgres array): copy
+    # the source type through (identity), lossless, no raise, no blank.
+    mapping_obj, warnings = ss._build_mapping_from_columns(
+        columns=[{"name": "flow_steps", "source_type": "TEXT[]", "nullable": True}],
+        src_dialect_name="postgres",
+        tgt_dialect_name="postgres",
+        strict=False,
+    )
+    assert mapping_obj["columns"][0]["target_type"] == "TEXT[]"
+    assert warnings == []
+
+
+def test_build_mapping_from_columns_cross_dialect_unmapped_type_blanked():
+    # Different dialect + un-cross-mappable type: blank + warning (developer fills).
+    mapping_obj, warnings = ss._build_mapping_from_columns(
+        columns=[{"name": "flow_steps", "source_type": "TEXT[]", "nullable": True}],
+        src_dialect_name="postgres",
+        tgt_dialect_name="oracle",
+        strict=False,
+    )
+    assert mapping_obj["columns"][0]["target_type"] == ""
+    assert any("flow_steps" in w for w in warnings)
+
+
+def test_incomplete_type_warnings_flags_only_blank_target_types():
+    # Only a blank target_type (FFEngine could not fill it) is flagged. A bare
+    # numeric/length is a valid same-dialect "max size" passthrough, not a draft
+    # gap, so it must NOT warn.
+    warns = ss._incomplete_type_warnings(
+        [
+            {"target_name": "flow_steps", "source_type": "TEXT[]", "target_type": ""},
+            {"target_name": "amount", "target_type": "numeric"},
+            {"target_name": "note", "target_type": "varchar"},
+            {"target_name": "ok_num", "target_type": "numeric(18,2)"},
+            {"target_name": "id", "target_type": "integer"},
+        ]
+    )
+    joined = " | ".join(warns)
+    assert "flow_steps" in joined and "TEXT[]" in joined  # blank -> warned
+    assert "amount" not in joined  # bare numeric (max size) -> no warning
+    assert "note" not in joined  # bare varchar (max size) -> no warning
+    assert "ok_num" not in joined  # parameterized -> no warning
+    assert "id" not in joined  # not a param-bearing type -> no warning
+
+
+_DIALECTLESS_BARE_NUMERIC_YAML = textwrap.dedent(
+    """\
+    version: v1
+    columns:
+      - source_name: amount
+        target_name: amount
+        source_type: NUMERIC
+        target_type: NUMERIC
+        nullable: true
+    """
+)
+
+
+def test_stamp_mapping_dialects_makes_same_dialect_bare_numeric_pass():
+    # The row editor serializes without dialects, so the same-dialect waiver
+    # cannot fire. Stamping the authoritative connection types lets a
+    # same-dialect bare NUMERIC pass the Save gate.
+    stamped = ss._stamp_mapping_dialects(
+        _DIALECTLESS_BARE_NUMERIC_YAML,
+        source_dialect="postgres",
+        target_dialect="postgres",
+    )
+    assert "source_dialect: postgres" in stamped
+    assert "target_dialect: postgres" in stamped
+    parsed = ss._parse_yaml_mapping_text(stamped, label="mapping/test.yaml")
+    assert parsed["columns"][0]["target_type"] == "NUMERIC"
+
+
+def test_stamp_mapping_dialects_cross_dialect_bare_numeric_still_rejected():
+    stamped = ss._stamp_mapping_dialects(
+        _DIALECTLESS_BARE_NUMERIC_YAML,
+        source_dialect="postgres",
+        target_dialect="oracle",
+    )
+    with pytest.raises(ValueError, match="precision/scale"):
+        ss._parse_yaml_mapping_text(stamped, label="mapping/test.yaml")
+
+
+def test_stamp_mapping_dialects_overwrites_client_supplied_dialects():
+    content = textwrap.dedent(
+        """\
+        version: v1
+        source_dialect: oracle
+        target_dialect: mssql
+        columns:
+          - source_name: id
+            target_name: id
+            target_type: INTEGER
+            nullable: false
+        """
+    )
+    stamped = ss._stamp_mapping_dialects(
+        content, source_dialect="postgres", target_dialect="postgres"
+    )
+    import yaml as _yaml
+
+    obj = _yaml.safe_load(stamped)
+    assert obj["source_dialect"] == "postgres"
+    assert obj["target_dialect"] == "postgres"
+    # columns preserved
+    assert obj["columns"][0]["target_name"] == "id"
+
+
+def test_stamp_mapping_dialects_returns_malformed_content_unchanged():
+    # A non-dict / unparseable body is left untouched so the normal gate raises
+    # the proper shape error downstream.
+    assert (
+        ss._stamp_mapping_dialects(
+            "- just\n- a\n- list\n", source_dialect="postgres", target_dialect="postgres"
+        )
+        == "- just\n- a\n- list\n"
+    )
 
 
 def test_extract_sql_select_columns_mssql_returns_parameterized_source_types():
@@ -219,7 +401,11 @@ def test_extract_sql_select_columns_postgres_uses_type_display_and_oid_metadata(
     )
 
 
-def test_extract_sql_select_columns_postgres_requires_numeric_expression_precision():
+def test_extract_sql_select_columns_postgres_lenient_on_unparameterized_numeric():
+    # Lenient scaffold: an unparameterized numeric (Postgres bare `numeric`)
+    # keeps its bare base type here instead of raising. The developer sets an
+    # explicit precision in the Mapping Editor; strict validation enforces it at
+    # Apply/Save, not at generate (scaffold) time.
     cursor = _Cursor(
         description=[
             _DescriptionColumn(
@@ -232,5 +418,7 @@ def test_extract_sql_select_columns_postgres_requires_numeric_expression_precisi
     session = _Session(cursor)
     postgres = _dialect("PostgresDialect")
 
-    with pytest.raises(ValueError, match="::numeric\\(8,0\\)"):
-        ss.extract_sql_select_columns(session, postgres, "SELECT current_date")
+    cols = ss.extract_sql_select_columns(session, postgres, "SELECT current_date")
+
+    assert cols[0]["source_type"] == "NUMERIC"
+    assert cols[0]["source_precision"] is None

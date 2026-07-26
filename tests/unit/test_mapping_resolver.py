@@ -358,3 +358,87 @@ class TestMappingResolverDispatch:
                 _src_dialect([]),
                 _tgt_dialect(),
             )
+
+
+_V11_YAML = textwrap.dedent(
+    """\
+    version: "v1.1"
+    columns:
+      - source_name: first_name
+        target_name: first_name
+        target_type: varchar(100)
+      - target_name: full_name
+        target_type: varchar(220)
+        expression: "concat(first_name, ' ', last_name)"
+      - target_name: load_date
+        target_type: date
+        expression: current_date
+      - target_name: email_lower
+        target_type: varchar(120)
+        expression: lower(email)
+"""
+)
+
+_V11_SRC_COLS = [
+    ColumnInfo(name="first_name", data_type="varchar"),
+    ColumnInfo(name="last_name", data_type="varchar"),
+    ColumnInfo(name="email", data_type="varchar"),
+]
+
+
+class TestMappingResolverV11:
+    def _resolve(self, tmp_path, yaml_text=_V11_YAML, cols=None):
+        p = tmp_path / "m.yaml"
+        p.write_text(yaml_text, encoding="utf-8")
+        task = _task(column_mapping_mode="mapping_file", mapping_file=str(p))
+        src = _src_dialect(_V11_SRC_COLS if cols is None else cols)
+        return MappingResolver().resolve(task, _conn(), src, _tgt_dialect())
+
+    def test_derived_columns_captured(self, tmp_path):
+        r = self._resolve(tmp_path)
+        assert set(r.target_value_exprs) == {"full_name", "load_date", "email_lower"}
+        assert r.plain_source_by_target == {"first_name": "first_name"}
+
+    def test_source_columns_include_expression_refs(self, tmp_path):
+        r = self._resolve(tmp_path)
+        assert r.source_columns == ["first_name", "last_name", "email"]
+
+    def test_target_columns_include_derived_for_ddl(self, tmp_path):
+        r = self._resolve(tmp_path)
+        assert r.target_columns == ["first_name", "full_name", "load_date", "email_lower"]
+        assert [c.name for c in r.target_columns_meta] == r.target_columns
+
+    def test_derived_refs_order(self, tmp_path):
+        r = self._resolve(tmp_path)
+        assert r.target_value_exprs["full_name"].refs == ("first_name", "last_name")
+        assert r.target_value_exprs["load_date"].refs == ()
+        assert r.target_value_exprs["full_name"].target_type == "varchar(220)"
+
+    def test_drift_direct_source_missing_fails(self, tmp_path):
+        yaml_text = textwrap.dedent(
+            """\
+            version: "v1.1"
+            columns:
+              - source_name: ghost_col
+                target_name: ghost
+                target_type: varchar(10)
+            """
+        )
+        with pytest.raises(MappingError, match="drift"):
+            self._resolve(tmp_path, yaml_text=yaml_text)
+
+    def test_derived_ref_to_missing_column_fails(self, tmp_path):
+        yaml_text = textwrap.dedent(
+            """\
+            version: "v1.1"
+            columns:
+              - source_name: first_name
+                target_name: first_name
+                target_type: varchar(100)
+              - target_name: x
+                target_type: varchar(10)
+                expression: upper(ghost)
+            """
+        )
+        with pytest.raises(MappingError, match="unknown source column"):
+            self._resolve(tmp_path, yaml_text=yaml_text)

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flow Studio</title>
-  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=49">
+  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=64">
 </head>
 <body class="flow-studio-root" data-ui-variant="current">
   <div id="operation_progress" class="operation-progress hidden" role="status" aria-live="polite" aria-busy="false">
@@ -295,9 +295,9 @@
             <div class="sub-card advanced-card">
             <div class="tabs" role="tablist">
               <button class="tab-btn filter-tab-button active" data-tab="filter" type="button">Filter & Bindings</button>
+              <button class="tab-btn" data-tab="mapping" type="button">Mapping</button>
               <button class="tab-btn" data-tab="partitioning" type="button">Partitioning</button>
               <button class="tab-btn" data-tab="performance" type="button">Performance</button>
-              <button class="tab-btn" data-tab="mapping" type="button">Mapping</button>
               <button class="tab-btn" data-tab="dependencies" type="button">Dependencies</button>
             </div>
             <div class="tab-panel active" data-tab-panel="filter">
@@ -367,20 +367,20 @@
                 Mapping Mode
                 <select class="column-mapping-mode">
                   <option value="source">source (automatic)</option>
-                  <option value="mapping_file">mapping_file</option>
+                  <option value="mapping_file">Custom Mapping</option>
                 </select>
               </label>
-              <label class="mapping-content-wrap">
-                Content
-                <textarea class="mapping-content" rows="8" placeholder="version: v1&#10;columns: []"></textarea>
-              </label>
-              <div class="mapping-actions">
-                <button class="btn btn-secondary btn-generate-mapping" type="button">Generate Mapping</button>
+              <div class="mapping-editor-launch">
+                <button class="btn btn-primary btn-open-mapping-editor" type="button">Open Mapping Editor</button>
+                <span class="mapping-summary muted-note"></span>
               </div>
-              <label class="mapping-generated-path-wrap">
-                Generated Mapping Path
-                <input class="mapping-generated-path" readonly>
-              </label>
+              <details class="mapping-raw-wrap">
+                <summary>Raw YAML (advanced)</summary>
+                <label class="mapping-content-wrap">
+                  Content
+                  <textarea class="mapping-content" rows="8" placeholder="version: v1.1&#10;columns: []"></textarea>
+                </label>
+              </details>
               <div class="mapping-status muted-note"></div>
             </div>
             <div class="tab-panel" data-tab-panel="dependencies">
@@ -642,6 +642,51 @@
     </div>
   </div>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=77"></script>
+  <div id="mapping_editor_modal" class="mapping-editor-modal" aria-hidden="true">
+    <div class="mapping-editor-backdrop" id="mapping_editor_backdrop"></div>
+    <div class="mapping-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="mapping_editor_title">
+      <div class="mapping-editor-head">
+        <div class="mapping-editor-head-main">
+          <h3 id="mapping_editor_title">Mapping Editor</h3>
+          <div class="mapping-editor-subline">
+            <span id="mapping_editor_source_caption" class="muted-note"></span>
+            <span id="mapping_editor_meta" class="mapping-editor-meta" title="Version is v1.1 when any Derived (expression) column exists; v1 otherwise."></span>
+          </div>
+        </div>
+        <button class="btn btn-secondary" id="mapping_editor_generate" type="button" title="Auto-generate target columns from the source">Generate Mapping</button>
+      </div>
+      <div class="mapping-editor-body">
+        <div class="mapping-io-grid">
+          <div class="mapping-io-source">
+            <div class="mapping-io-panel-head">
+              <span class="mapping-io-panel-title">Source (Input)</span>
+              <span class="mapping-io-panel-sub muted-note">click a column to insert into the active expression</span>
+            </div>
+            <div class="mapping-io-source-list" id="mapping_editor_source_list"></div>
+          </div>
+          <div class="mapping-io-target">
+            <div class="mapping-io-panel-head">
+              <span class="mapping-io-panel-title">Target (Output)</span>
+              <button class="btn btn-success mapping-io-add" id="mapping_editor_add_column" type="button">+Add Target Column</button>
+            </div>
+            <div class="mapping-io-list" id="mapping_editor_target_list"></div>
+          </div>
+        </div>
+      </div>
+      <div class="mapping-editor-actions">
+        <div class="mapping-editor-foot-info">
+          <span class="mapping-editor-hint muted-note">Direct = copies a source column. Derived = computes in the target DB via an expression (e.g. concat(first_name, ' ', last_name)).</span>
+          <span id="mapping_editor_status" class="mapping-editor-status muted-note"></span>
+        </div>
+        <div class="mapping-editor-actions-btns">
+          <button class="btn btn-secondary" id="btn_cancel_mapping_editor" type="button" title="Discard changes and close">Cancel</button>
+          <button class="btn btn-primary" id="btn_apply_mapping_editor" type="button" title="Apply columns to the mapping">Apply</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <datalist id="mapping_editor_source_options"></datalist>
+
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=91"></script>
 </body>
 </html>

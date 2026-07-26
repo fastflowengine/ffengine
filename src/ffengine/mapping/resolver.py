@@ -12,13 +12,15 @@ Modes:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import yaml
 
 from ffengine.dialects.base import ColumnInfo
 from ffengine.dialects.type_mapper import TypeMapper, UnsupportedTypeError
 from ffengine.errors.exceptions import MappingError
+from ffengine.mapping import expression as _expr
 from ffengine.mapping.type_contract import (
     LENGTH_BEARING_TYPES,
     NUMERIC_PARAM_TYPES,
@@ -26,7 +28,16 @@ from ffengine.mapping.type_contract import (
     validate_mapping_object_strict,
 )
 
-VALID_MAPPING_VERSIONS: frozenset[str] = frozenset({"v1"})
+VALID_MAPPING_VERSIONS: frozenset[str] = frozenset({"v1", "v1.1"})
+
+
+@dataclass(frozen=True)
+class DerivedExpr:
+    """A v1.1 push-down derived target column (compiled once per task/run)."""
+
+    ast: Any
+    refs: tuple[str, ...]      # ordered source-column refs = bind order
+    target_type: str
 
 
 @dataclass
@@ -36,6 +47,14 @@ class MappingResult:
     source_columns: list[str]
     target_columns: list[str]
     target_columns_meta: list[ColumnInfo]
+    # v1.1 push-down enrichment (empty for v1 / source mode):
+    target_value_exprs: dict[str, DerivedExpr] = field(default_factory=dict)
+    plain_source_by_target: dict[str, str] = field(default_factory=dict)
+
+
+def _dedup(names: list[str]) -> list[str]:
+    """Order-stable de-duplication (first appearance wins)."""
+    return list(dict.fromkeys(names))
 
 
 def _dialect_name(dialect) -> str:
@@ -67,7 +86,9 @@ class MappingResolver:
                 task_config, src_conn, src_dialect, tgt_dialect
             )
         if mode == "mapping_file":
-            return self._resolve_mapping_file_mode(task_config, tgt_dialect)
+            return self._resolve_mapping_file_mode(
+                task_config, src_conn, src_dialect, tgt_dialect
+            )
 
         raise MappingError(f"Bilinmeyen column_mapping_mode: {mode!r}")
 
@@ -169,23 +190,32 @@ class MappingResolver:
         )
 
     def _resolve_mapping_file_mode(
-        self, task_config: dict, tgt_dialect
+        self, task_config: dict, src_conn, src_dialect, tgt_dialect
     ) -> MappingResult:
         path = task_config.get("mapping_file")
         mapping = self._load_mapping_file(path)
         tgt_name = _dialect_name(tgt_dialect)
-
         entries = mapping.get("columns") or []
-        source_columns: list[str] = []
+
+        direct_names = [
+            str(e["source_name"]) for e in entries if e.get("source_name")
+        ]
+        # F1.2 drift check: one metadata query at run start (mapping_file mode).
+        live_cols = self._live_source_columns(task_config, src_conn, src_dialect)
+        # Expressions may reference any physical source column; fall back to the
+        # declared direct columns when live metadata is unavailable (mocks/empty).
+        allowed = live_cols if live_cols else set(direct_names)
+
         target_columns: list[str] = []
         target_columns_meta: list[ColumnInfo] = []
+        target_value_exprs: dict[str, DerivedExpr] = {}
+        plain_source_by_target: dict[str, str] = {}
+        extra_refs: list[str] = []
 
         for entry in entries:
-            src_col = entry["source_name"]
-            tgt_col = entry["target_name"]
-            tgt_type = entry["target_type"]
+            tgt_col = str(entry["target_name"])
+            tgt_type = str(entry["target_type"])
             nullable = entry.get("nullable", True)
-
             precision, scale = self._normalize_precision_scale(
                 target_type=tgt_type,
                 source_precision=None,
@@ -193,8 +223,6 @@ class MappingResolver:
                 target_dialect=tgt_name,
                 column_name=tgt_col,
             )
-
-            source_columns.append(src_col)
             target_columns.append(tgt_col)
             target_columns_meta.append(
                 ColumnInfo(
@@ -205,12 +233,58 @@ class MappingResolver:
                     scale=scale,
                 )
             )
+            expr_text = entry.get("expression")
+            if expr_text:
+                ast = _expr.compile_expression(str(expr_text), allowed)
+                refs = _expr.column_refs(ast)
+                target_value_exprs[tgt_col] = DerivedExpr(
+                    ast=ast, refs=tuple(refs), target_type=tgt_type
+                )
+                extra_refs.extend(refs)
+            else:
+                plain_source_by_target[tgt_col] = str(entry["source_name"])
+
+        self._check_source_drift(direct_names, extra_refs, live_cols)
+        source_columns = _dedup(direct_names + extra_refs)
 
         return MappingResult(
             source_columns=source_columns,
             target_columns=target_columns,
             target_columns_meta=target_columns_meta,
+            target_value_exprs=target_value_exprs,
+            plain_source_by_target=plain_source_by_target,
         )
+
+    @staticmethod
+    def _live_source_columns(task_config: dict, src_conn, src_dialect) -> set[str]:
+        """One metadata query at task start; empty set when unavailable."""
+        if src_conn is None or src_dialect is None:
+            return set()
+        schema = task_config.get("source_schema", "")
+        table = task_config.get("source_table", "")
+        try:
+            live = src_dialect.get_table_schema(src_conn, schema, table)
+        except Exception as exc:
+            raise MappingError(
+                f"mapping_file drift check: kaynak sema alinamadi "
+                f"{schema}.{table}: {exc}"
+            ) from exc
+        return {c.name for c in live}
+
+    @staticmethod
+    def _check_source_drift(
+        direct_names: list[str], extra_refs: list[str], live_cols: set[str]
+    ) -> None:
+        """Fail loud if a referenced physical column is missing from source."""
+        if not live_cols:
+            return
+        referenced = _dedup(list(direct_names) + list(extra_refs))
+        missing = [c for c in referenced if c not in live_cols]
+        if missing:
+            raise MappingError(
+                "mapping_file drift: referenced source column(s) not found in "
+                f"live source schema: {missing}. Regenerate/repair the mapping."
+            )
 
     def _normalize_precision_scale(
         self,

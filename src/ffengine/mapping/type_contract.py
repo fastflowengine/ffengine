@@ -114,6 +114,15 @@ def validate_mapping_object_strict(
     if not isinstance(mapping_obj, dict):
         _raise(error_cls, f"Invalid mapping ({context}): root must be a dict.")
 
+    # Same-vs-cross Connection Type (dialect) governs the "max size" rule:
+    # when source and target dialects are identical, an unsized (bare) numeric /
+    # length target is a lossless "use max size" passthrough (provably non-
+    # narrowing), so the explicit-params requirement is waived. A missing or
+    # unequal pair keeps the strict fail-loud behaviour (no silent narrowing).
+    _sd = str(mapping_obj.get("source_dialect") or "").strip().lower()
+    _td = str(mapping_obj.get("target_dialect") or "").strip().lower()
+    same_dialect = bool(_sd) and _sd == _td
+
     version = mapping_obj.get("version")
     if version not in valid_versions:
         _raise(
@@ -126,6 +135,7 @@ def validate_mapping_object_strict(
     if not isinstance(entries, list) or not entries:
         _raise(error_cls, f"Invalid mapping ({context}): columns must be a non-empty list.")
 
+    seen_targets: set[str] = set()
     for idx, entry in enumerate(entries, start=1):
         if not isinstance(entry, dict):
             _raise(error_cls, f"Invalid mapping ({context}): columns[{idx-1}] must be a dict.")
@@ -133,12 +143,8 @@ def validate_mapping_object_strict(
         src_col = str(entry.get("source_name") or "").strip()
         tgt_col = str(entry.get("target_name") or "").strip()
         tgt_type = str(entry.get("target_type") or "").strip()
+        expr = str(entry.get("expression") or "").strip()
 
-        if not src_col:
-            _raise(
-                error_cls,
-                f"Invalid mapping ({context}): columns[{idx-1}] source_name cannot be empty.",
-            )
         if not tgt_col:
             _raise(
                 error_cls,
@@ -150,15 +156,42 @@ def validate_mapping_object_strict(
                 f"Invalid mapping ({context}): columns[{idx-1}] target_type cannot be empty.",
             )
 
+        # v1.1 XOR: a column is either a direct mapping (source_name) or a
+        # derived push-down column (expression) - exactly one, never both.
+        if src_col and expr:
+            _raise(
+                error_cls,
+                f"Invalid mapping ({context}): column '{tgt_col}' sets both "
+                "source_name and expression; use exactly one.",
+            )
+        if not src_col and not expr:
+            _raise(
+                error_cls,
+                f"Invalid mapping ({context}): column '{tgt_col}' must set exactly "
+                "one of source_name or expression.",
+            )
+        if expr and version == "v1":
+            _raise(
+                error_cls,
+                f"Invalid mapping ({context}): column '{tgt_col}' uses expression, "
+                "which requires mapping version v1.1.",
+            )
+        if tgt_col in seen_targets:
+            _raise(
+                error_cls,
+                f"Invalid mapping ({context}): duplicate target_name '{tgt_col}'.",
+            )
+        seen_targets.add(tgt_col)
+
         base, params = parse_type(tgt_type)
-        if base in LENGTH_BEARING_TYPES and params is None:
+        if base in LENGTH_BEARING_TYPES and params is None and not same_dialect:
             _raise(
                 error_cls,
                 "Global strict mapping validation failed: "
                 f"column '{tgt_col}' target_type '{tgt_type}' requires explicit length "
                 "(example: CHAR(3), VARCHAR2(140)). Regenerate mapping.",
             )
-        if base in NUMERIC_PARAM_TYPES and params is None:
+        if base in NUMERIC_PARAM_TYPES and params is None and not same_dialect:
             _raise(
                 error_cls,
                 "Global strict mapping validation failed: "

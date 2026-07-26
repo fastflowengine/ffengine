@@ -44,17 +44,25 @@ class Partitioner:
         if mode == "explicit":
             return self._plan_explicit(part)
         if mode == "auto_numeric":
-            return self._plan_auto_numeric(task_config, src_conn, src_dialect)
-        if mode == "auto_datetime":
-            return self._plan_auto_datetime(task_config, src_conn, src_dialect)
-        if mode == "percentile":
-            return self._plan_percentile(task_config, src_conn, src_dialect)
-        if mode == "hash_mod":
-            return self._plan_hash_mod(task_config, src_dialect)
-        if mode == "distinct":
-            return self._plan_distinct(task_config, src_conn, src_dialect)
+            specs = self._plan_auto_numeric(task_config, src_conn, src_dialect)
+        elif mode == "auto_datetime":
+            specs = self._plan_auto_datetime(task_config, src_conn, src_dialect)
+        elif mode == "percentile":
+            specs = self._plan_percentile(task_config, src_conn, src_dialect)
+        elif mode == "hash_mod":
+            specs = self._plan_hash_mod(task_config, src_dialect)
+        elif mode == "distinct":
+            specs = self._plan_distinct(task_config, src_conn, src_dialect)
+        else:
+            raise PartitionError(f"Bilinmeyen partition modu: '{mode}'")
 
-        raise PartitionError(f"Bilinmeyen partition modu: '{mode}'")
+        # Column-based modes match rows by the partition column's value, so a row
+        # whose column is NULL matches no range/bucket and would be silently
+        # dropped. Add a dedicated `col IS NULL` partition (only when NULLs
+        # exist) so a partitioned run moves the same rows as a full-table read.
+        return self._append_null_partition_if_needed(
+            specs, task_config, src_conn, src_dialect, part
+        )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -116,6 +124,45 @@ class Partitioner:
         if not where_text:
             return sql
         return f"{sql} WHERE {where_text}"
+
+    def _append_null_partition_if_needed(
+        self, specs: list[dict], task_config: dict, src_conn, src_dialect, part: dict
+    ) -> list[dict]:
+        """Append a dedicated `col IS NULL` partition when the column has NULLs.
+
+        Skipped when a spec is already unbounded (the single-partition fallback
+        reads everything, including NULLs) — appending would double-count.
+        """
+        if not specs:
+            return specs
+        # An unbounded spec (where None/empty) already reads NULL rows.
+        for spec in specs:
+            if not str(spec.get("where") or "").strip():
+                return specs
+
+        col = part.get("column")
+        if not col:
+            return specs
+        q_col = src_dialect.quote_identifier(col)
+        null_where = f"{q_col} IS NULL"
+        relation = self._source_relation(task_config, src_dialect)
+        planned_where = self._planned_where(task_config)
+        count_where = (
+            null_where if not planned_where else f"({planned_where}) AND {null_where}"
+        )
+        sql = self._append_where(f"SELECT COUNT(*) FROM {relation}", count_where)
+
+        cursor = src_conn.cursor()
+        try:
+            cursor.execute(sql)
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+
+        null_count = int(row[0]) if row and row[0] is not None else 0
+        if null_count <= 0:
+            return specs
+        return list(specs) + [{"part_id": len(specs), "where": null_where}]
 
     # ------------------------------------------------------------------
     # Strategies
@@ -418,7 +465,9 @@ class Partitioner:
         finally:
             cursor.close()
 
-        values = [row[0] for row in rows]
+        # Drop NULL from the IN-list values: `col IN (..., NULL)` never matches a
+        # NULL row, and NULLs are covered by the dedicated NULL partition.
+        values = [row[0] for row in rows if row[0] is not None]
         if not values:
             return self._plan_single_partition()
 

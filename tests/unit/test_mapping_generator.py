@@ -121,12 +121,49 @@ class TestMappingGenerator:
         with pytest.raises(MappingError, match="requires explicit precision/scale"):
             MappingGenerator().generate(_conn(), src, tgt, "public", "t")
 
+    def test_generate_cross_dialect_lenient_blanks_bare_numeric(self):
+        # strict=False, different Connection Type: an unsized numeric is blanked
+        # for the developer to fill (no guessed precision/scale).
+        cols = [ColumnInfo("amount", "NUMBER")]
+        src = _oracle_dialect(cols)
+        tgt = _postgres_dialect()
+        result = MappingGenerator().generate(
+            _conn(), src, tgt, "public", "t", strict=False
+        )
+        assert result["columns"][0]["target_type"] == ""
+
+    def test_generate_same_dialect_lenient_keeps_bare_numeric(self):
+        # strict=False, same Connection Type: bare numeric is a lossless max-size
+        # passthrough; kept as-is, no raise.
+        cols = [ColumnInfo("amount", "NUMBER")]
+        src = _oracle_dialect(cols)
+        tgt = _oracle_dialect([])
+        result = MappingGenerator().generate(
+            _conn(), src, tgt, "public", "t", strict=False
+        )
+        row = result["columns"][0]
+        assert row["target_name"] == "amount"
+        from ffengine.mapping.type_contract import parse_type
+
+        _base, params = parse_type(row["target_type"])
+        assert params is None
+
     def test_generate_unsupported_type_raises_mapping_error(self):
         cols = [ColumnInfo("col1", "XMLTYPE")]
         src = _oracle_dialect(cols)
         tgt = _postgres_dialect()
         with pytest.raises(MappingError, match="col1"):
             MappingGenerator().generate(_conn(), src, tgt, "public", "t")
+
+    def test_generate_same_dialect_lenient_unmapped_type_identity(self):
+        # strict=False, same Connection Type: an un-cross-mappable type (Postgres
+        # array) is copied through as identity, lossless, no raise.
+        src = _make_dialect("PostgresDialect", [ColumnInfo("flow_steps", "TEXT[]")])
+        tgt = _postgres_dialect()
+        result = MappingGenerator().generate(
+            _conn(), src, tgt, "public", "t", strict=False
+        )
+        assert result["columns"][0]["target_type"] == "TEXT[]"
 
     def test_generate_invalid_version_raises_mapping_error(self):
         src = _oracle_dialect([ColumnInfo("id", "NUMBER", precision=10)])
