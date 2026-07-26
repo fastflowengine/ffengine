@@ -483,6 +483,57 @@
       display: block;
     }
 
+    .advanced-tabs {
+      display: flex;
+      gap: 6px;
+      padding: 10px 16px 0;
+    }
+
+    .advanced-tab-btn {
+      border: 1px solid color-mix(in srgb, var(--line) 80%, var(--card) 20%);
+      background: color-mix(in srgb, var(--bg) 90%, var(--line) 10%);
+      color: var(--text);
+      border-radius: 999px;
+      font-size: 12px;
+      line-height: 1;
+      min-height: var(--ui-control-height-compact);
+      padding: 0 12px;
+      cursor: pointer;
+    }
+
+    .advanced-tab-btn.active {
+      border-color: color-mix(in srgb, var(--focus) 45%, var(--line) 55%);
+      background: color-mix(in srgb, var(--focus) 22%, var(--card) 78%);
+    }
+
+    .advanced-panel {
+      display: none;
+    }
+
+    .advanced-panel.active {
+      display: block;
+    }
+
+    .notify-triggers {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 4px;
+    }
+
+    .notify-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .notify-check input {
+      width: auto;
+      margin: 0;
+    }
+
     .scheduler-shared-fields {
       display: grid;
       gap: 8px;

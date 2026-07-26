@@ -42,9 +42,19 @@ from ffengine.ui.studio_service import (
     generate_mapping_preview,
     parse_mapping_columns,
     get_dag_revisions,
+    normalize_notifications,
     normalize_scheduler,
     promote_dag_revision,
     resolve_dag_config_for_update,
+)
+from ffengine.airflow.notification_template import (
+    DEFAULT_TEMPLATE_NAME,
+    PLACEHOLDERS,
+    delete_template,
+    load_templates,
+    render_template,
+    sample_meta,
+    save_template,
 )
 
 _FOLDER_PATH_REQUIRED_MESSAGE = "Select a project and DAG path."
@@ -446,6 +456,52 @@ class SchedulerPayload(BaseModel):
         return self
 
 
+class NotificationsPayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    notify_on: list[str] | None = None
+    notify_emails: list[str] | None = None
+    notify_conn_id: str | None = None
+    notify_template: str | None = None
+
+    @model_validator(mode="after")
+    def _v_notifications(self) -> "NotificationsPayload":
+        normalized = normalize_notifications(self.model_dump(exclude_none=True))
+        if normalized is None:
+            self.notify_on = None
+            self.notify_emails = None
+            self.notify_conn_id = None
+            self.notify_template = None
+        else:
+            self.notify_on = normalized["notify_on"]
+            self.notify_emails = normalized["notify_emails"]
+            self.notify_conn_id = normalized["notify_conn_id"]
+            self.notify_template = normalized.get("notify_template")
+        return self
+
+
+class MailTemplatePayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: str
+    subject: str
+    html_body: str
+
+
+class MailTemplateDeletePayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: str
+
+
+class MailTemplatePreviewPayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    subject: str = ""
+    html_body: str = ""
+    kind: str = "failure"
+
+
 class DagDependenciesPayload(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -602,6 +658,7 @@ class DagUpsertPayload(BaseModel):
     scheduler: SchedulerPayload | None = None
     dag_dependencies: DagDependenciesPayload | None = None
     dag_params: list[DagParamPayload] | None = None
+    notifications: NotificationsPayload | None = None
 
     @field_validator("project", "domain", "level", "flow", mode="before")
     @classmethod
@@ -845,6 +902,78 @@ def studio_index(response: Response) -> str:
 def dag_explorer_index(response: Response) -> str:
     response.headers["Cache-Control"] = "no-store"
     return _load_dag_explorer_html()
+
+
+def _load_mail_templates_html() -> str:
+    template_path = (
+        Path(__file__).resolve().parent / "templates" / "mail_templates" / "index.html"
+    )
+    return template_path.read_text(encoding="utf-8")
+
+
+@flow_studio_app.get("/mail-templates", response_class=HTMLResponse)
+def mail_templates_index(response: Response) -> str:
+    response.headers["Cache-Control"] = "no-store"
+    return _load_mail_templates_html()
+
+
+@flow_studio_app.get("/api/mail-templates")
+def api_mail_templates_list() -> dict[str, Any]:
+    try:
+        templates = load_templates()
+        names = sorted(
+            templates.keys(),
+            key=lambda n: (n != DEFAULT_TEMPLATE_NAME, n.lower()),
+        )
+        return {
+            "ok": True,
+            "templates": templates,
+            "names": names,
+            "default_name": DEFAULT_TEMPLATE_NAME,
+            "placeholders": PLACEHOLDERS,
+        }
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@flow_studio_app.post("/api/mail-templates")
+def api_mail_template_save(
+    payload: MailTemplatePayload,
+    _: None = Depends(_optional_api_key_dep),
+) -> dict[str, Any]:
+    try:
+        template = save_template(payload.name, payload.subject, payload.html_body)
+        return {"ok": True, "name": payload.name.strip(), "template": template}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@flow_studio_app.post("/api/mail-templates/delete")
+def api_mail_template_delete(
+    payload: MailTemplateDeletePayload,
+    _: None = Depends(_optional_api_key_dep),
+) -> dict[str, Any]:
+    try:
+        delete_template(payload.name)
+        return {"ok": True, "name": payload.name.strip()}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@flow_studio_app.post("/api/mail-templates/preview")
+def api_mail_template_preview(payload: MailTemplatePreviewPayload) -> dict[str, Any]:
+    try:
+        kind = "failure" if payload.kind == "failure" else "success"
+        label = "FAILED" if kind == "failure" else "SUCCEEDED"
+        template = {"subject": payload.subject, "html_body": payload.html_body}
+        subject, html = render_template(template, sample_meta(kind), label)
+        return {"ok": True, "subject": subject, "html": html}
+    except Exception as exc:
+        _raise_http_from_exception(exc)
 
 
 @flow_studio_app.get("/health")

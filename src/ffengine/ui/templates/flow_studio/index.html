@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flow Studio</title>
-  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=64">
+  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=65">
 </head>
 <body class="flow-studio-root" data-ui-variant="current">
   <div id="operation_progress" class="operation-progress hidden" role="status" aria-live="polite" aria-busy="false">
@@ -594,29 +594,65 @@
     <div class="scheduler-backdrop" id="advanced_modal_backdrop"></div>
     <div class="scheduler-dialog dag-deps-dialog" role="dialog" aria-modal="true" aria-labelledby="advanced_modal_title">
       <div class="scheduler-dialog-head">
-        <h3 id="advanced_modal_title">Advanced DAG Parameters</h3>
+        <h3 id="advanced_modal_title">Advanced</h3>
+      </div>
+      <div class="advanced-tabs" role="tablist">
+        <button class="advanced-tab-btn active" type="button" data-advanced-tab="params">DAG Parameters</button>
+        <button class="advanced-tab-btn" type="button" data-advanced-tab="notifications">Notifications</button>
       </div>
       <div class="scheduler-dialog-body">
-        <div class="scheduler-control">
-          <label>
-            Log Level
-            <select id="advanced_log_level" class="scheduler-control-input">
-              <option value="default">Default</option>
-              <option value="DEBUG">DEBUG</option>
-            </select>
-          </label>
-          <div class="bindings-head">
-            <span class="bindings-title">DAG Parameters</span>
-            <button class="btn btn-success" id="btn_add_dag_param" type="button">+Add</button>
+        <div class="advanced-panel active" data-advanced-panel="params">
+          <div class="scheduler-control">
+            <label>
+              Log Level
+              <select id="advanced_log_level" class="scheduler-control-input">
+                <option value="default">Default</option>
+                <option value="DEBUG">DEBUG</option>
+              </select>
+            </label>
+            <div class="bindings-head">
+              <span class="bindings-title">DAG Parameters</span>
+              <button class="btn btn-success" id="btn_add_dag_param" type="button">+Add</button>
+            </div>
+            <div class="dag-param-column-labels" aria-hidden="true">
+              <span>Parameter Name</span>
+              <span>Parameter Type</span>
+              <span>Description</span>
+              <span></span>
+            </div>
+            <div id="advanced_params_list" class="advanced-params-list"></div>
+            <div class="muted-note">Parameters are non-secret and appear automatically in Airflow Trigger DAG. Use them as {{ dag.parameter_name }}.</div>
           </div>
-          <div class="dag-param-column-labels" aria-hidden="true">
-            <span>Parameter Name</span>
-            <span>Parameter Type</span>
-            <span>Description</span>
-            <span></span>
+        </div>
+        <div class="advanced-panel" data-advanced-panel="notifications">
+          <div class="scheduler-control">
+            <div class="bindings-head">
+              <span class="bindings-title">Notify on</span>
+            </div>
+            <div class="notify-triggers">
+              <label class="notify-check"><input type="checkbox" id="notify_on_failure"> Failure</label>
+              <label class="notify-check"><input type="checkbox" id="notify_on_success"> Success</label>
+            </div>
+            <label>
+              Recipients
+              <textarea id="notify_emails" class="scheduler-control-input" rows="2" placeholder="ops@bank.example, dev@bank.example"></textarea>
+            </label>
+            <label>
+              SMTP Connection
+              <select id="notify_conn_id" class="scheduler-control-input"></select>
+            </label>
+            <label>
+              Mail Template
+              <select id="notify_template" class="scheduler-control-input"></select>
+            </label>
+            <label>
+              Channel
+              <select id="notify_channel" class="scheduler-control-input" disabled>
+                <option value="email">Email</option>
+              </select>
+            </label>
+            <div class="muted-note">Bildirimler yalnız durum/metadata taşır (iş, run, durum, süre, satır sayısı, hata özeti, log linki); veri satırları e-postaya konmaz. SMTP kimlik bilgileri yalnızca seçtiğiniz Airflow Connection'da tutulur; bildirim hatası aktarımı düşürmez.</div>
           </div>
-          <div id="advanced_params_list" class="advanced-params-list"></div>
-          <div class="muted-note">Parameters are non-secret and appear automatically in Airflow Trigger DAG. Use them as {{ dag.parameter_name }}.</div>
         </div>
       </div>
       <div class="scheduler-dialog-actions">
@@ -687,6 +723,6 @@
   </div>
   <datalist id="mapping_editor_source_options"></datalist>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=91"></script>
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=93"></script>
 </body>
 </html>

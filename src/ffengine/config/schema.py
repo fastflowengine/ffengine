@@ -37,6 +37,10 @@ VALID_PARTITION_MODES: frozenset[str] = frozenset(
     }
 )
 
+# F1.3 — Operasyonel bildirim (Community): desteklenen tetikleyiciler.
+# deadline/reconciliation/threshold bu dilimde YOK (Enterprise / sonraki dalga).
+VALID_NOTIFY_TRIGGERS: frozenset[str] = frozenset({"failure", "success"})
+
 # Root seviyesinde zorunlu alanlar
 REQUIRED_ROOT_FIELDS: tuple[str, ...] = ("source_db_var", "target_db_var", "flow_tasks")
 

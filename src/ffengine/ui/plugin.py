@@ -45,4 +45,13 @@ class FlowStudioPlugin(AirflowPlugin):
             "icon": _TRANSPARENT_ICON_DATA_URI,
             "icon_dark_mode": _TRANSPARENT_ICON_DATA_URI,
         },
+        {
+            "name": "Mail Templates",
+            "href": "/flow-studio/mail-templates",
+            "destination": "nav",
+            "url_route": "mail_templates",
+            "category": "admin",
+            "icon": _TRANSPARENT_ICON_DATA_URI,
+            "icon_dark_mode": _TRANSPARENT_ICON_DATA_URI,
+        },
     ]

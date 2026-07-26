@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mail Templates</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f8fb; --card: #ffffff; --line: #d9e0ea; --text: #17212b;
+      --muted: #5a6a7d; --accent: #0b57d0; --ok: #198754; --danger: #dc2626;
+    }
+    :root[data-theme="dark"] {
+      --bg: #0f172a; --card: #111827; --line: #2a3952; --text: #e5eefb;
+      --muted: #9db0cb; --accent: #7cb2ff; --ok: #22c55e; --danger: #f87171;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #0f172a; --card: #111827; --line: #2a3952; --text: #e5eefb;
+        --muted: #9db0cb; --accent: #7cb2ff; --ok: #22c55e; --danger: #f87171;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text);
+      font: 14px/1.5 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    header { padding: 14px 20px; border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; gap: 14px; }
+    header h1 { font-size: 17px; margin: 0; }
+    header .sub { color: var(--muted); font-size: 12px; }
+    .wrap { display: grid; grid-template-columns: 260px 1fr; gap: 16px; padding: 16px 20px; }
+    @media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } }
+    .panel { background: var(--card); border: 1px solid var(--line);
+      border-radius: 10px; padding: 14px; }
+    .panel h2 { font-size: 13px; margin: 0 0 10px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .04em; }
+    .tpl-list { list-style: none; margin: 0 0 10px; padding: 0; }
+    .tpl-list li { padding: 8px 10px; border-radius: 8px; cursor: pointer;
+      border: 1px solid transparent; }
+    .tpl-list li.active { background: color-mix(in srgb, var(--accent) 16%, var(--card));
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
+    input, textarea, select { width: 100%; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--line); background: var(--bg); color: var(--text);
+      font: inherit; }
+    textarea { min-height: 220px; font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 12.5px; resize: vertical; }
+    input[readonly] { opacity: .7; }
+    .btn { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
+      background: var(--card); color: var(--text); cursor: pointer; font: inherit; }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn.danger { border-color: var(--danger); color: var(--danger); }
+    .btn:hover { filter: brightness(1.03); }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .actions { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .ph { display: inline-block; margin: 2px 4px 2px 0; padding: 3px 7px; font-size: 12px;
+      border: 1px solid var(--line); border-radius: 999px; cursor: pointer;
+      font-family: ui-monospace, Menlo, Consolas, monospace; }
+    .ph:hover { border-color: var(--accent); color: var(--accent); }
+    .ph-desc { color: var(--muted); font-size: 11px; }
+    .preview-frame { width: 100%; height: 280px; border: 1px solid var(--line);
+      border-radius: 8px; background: #fff; }
+    .preview-subject { font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 12.5px; padding: 6px 8px; background: var(--bg);
+      border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px;
+      word-break: break-all; }
+    .note { color: var(--muted); font-size: 12px; margin-top: 10px; }
+    #toast { position: fixed; bottom: 18px; right: 18px; padding: 10px 14px;
+      border-radius: 8px; color: #fff; background: var(--ok); display: none; z-index: 20; }
+    #toast.err { background: var(--danger); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Mail Templates</h1>
+    <span class="sub">FFEngine notification email templates · used by DAG failure/success alerts</span>
+    <a class="btn" href="/flow-studio/" style="margin-left:auto">← Flow Studio</a>
+  </header>
+
+  <div class="wrap">
+    <div class="panel">
+      <h2>Templates</h2>
+      <ul class="tpl-list" id="tpl_list"></ul>
+      <button class="btn" id="btn_new" type="button">+ New template</button>
+    </div>
+
+    <div class="panel">
+      <div class="row" style="justify-content:space-between">
+        <h2 style="margin:0">Edit</h2>
+        <span class="ph-desc" id="edit_hint"></span>
+      </div>
+
+      <label>Name</label>
+      <input id="f_name" placeholder="Template name (letters, digits, space, _ or -)" maxlength="60">
+
+      <label>Subject <span class="ph-desc">(plain text · CR/LF stripped)</span></label>
+      <input id="f_subject" placeholder="{{status}} [FFEngine] DAG {{dag_id}}">
+
+      <label>Body (HTML)</label>
+      <textarea id="f_body" spellcheck="false"></textarea>
+
+      <label>Placeholders <span class="ph-desc">(click to insert at cursor)</span></label>
+      <div id="ph_list"></div>
+
+      <div class="actions">
+        <button class="btn primary" id="btn_save" type="button">Save</button>
+        <button class="btn" id="btn_preview" type="button">Preview</button>
+        <select id="preview_kind" style="width:auto">
+          <option value="failure">Failure</option>
+          <option value="success">Success</option>
+        </select>
+        <button class="btn danger" id="btn_delete" type="button">Delete</button>
+        <button class="btn" id="btn_reset" type="button">Reset “Default”</button>
+      </div>
+
+      <label style="margin-top:16px">Preview</label>
+      <div class="preview-subject" id="preview_subject">Subject preview…</div>
+      <iframe class="preview-frame" id="preview_frame" sandbox="" title="Preview"></iframe>
+      <div class="note">Notifications carry run metadata only; data rows are never included.
+        The security footer is appended automatically. Only sanitized error type/code/message
+        are exposed — raw DB details are never available as placeholders.</div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    (function () {
+      "use strict";
+      function basePath() { return "/flow-studio"; }
+      function el(id) { return document.getElementById(id); }
+      function resolveTheme() {
+        var stored = null;
+        try { stored = localStorage.getItem("theme") || localStorage.getItem("colorMode"); } catch (e) {}
+        if (stored === "dark" || stored === "light") return stored;
+        return (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light";
+      }
+      document.documentElement.setAttribute("data-theme", resolveTheme());
+
+      var DEFAULT_NAME = "Default";
+      var templates = {};
+      var names = [];
+      var placeholders = [];
+      var current = null;   // selected name (null = new/unsaved)
+      var lastField = null; // "f_subject" | "f_body"
+
+      function toast(msg, isErr) {
+        var t = el("toast");
+        t.textContent = msg;
+        t.className = isErr ? "err" : "";
+        t.style.display = "block";
+        setTimeout(function () { t.style.display = "none"; }, 2600);
+      }
+
+      async function api(path, opts) {
+        var res = await fetch(basePath() + path, Object.assign({
+          headers: { "Accept": "application/json", "Content-Type": "application/json" },
+          credentials: "same-origin",
+        }, opts || {}));
+        var data = {};
+        try { data = await res.json(); } catch (e) {}
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.detail || ("Request failed (" + res.status + ")"));
+        }
+        return data;
+      }
+
+      function renderList() {
+        var ul = el("tpl_list");
+        ul.innerHTML = "";
+        names.forEach(function (name) {
+          var li = document.createElement("li");
+          li.textContent = name;
+          if (name === current) li.className = "active";
+          li.addEventListener("click", function () { selectTemplate(name); });
+          ul.appendChild(li);
+        });
+      }
+
+      function renderPlaceholders() {
+        var box = el("ph_list");
+        box.innerHTML = "";
+        placeholders.forEach(function (p) {
+          var span = document.createElement("span");
+          span.className = "ph";
+          span.textContent = "{{" + p.name + "}}";
+          span.title = p.description || "";
+          span.addEventListener("click", function () { insertPlaceholder("{{" + p.name + "}}"); });
+          box.appendChild(span);
+        });
+      }
+
+      function insertPlaceholder(text) {
+        var field = el(lastField === "f_body" ? "f_body" : "f_subject");
+        var start = field.selectionStart || 0;
+        var end = field.selectionEnd || 0;
+        field.value = field.value.slice(0, start) + text + field.value.slice(end);
+        field.focus();
+        field.selectionStart = field.selectionEnd = start + text.length;
+      }
+
+      function selectTemplate(name) {
+        var tpl = templates[name];
+        if (!tpl) return;
+        current = name;
+        el("f_name").value = name;
+        el("f_name").readOnly = true;
+        el("f_subject").value = tpl.subject || "";
+        el("f_body").value = tpl.html_body || "";
+        el("edit_hint").textContent = "Editing existing template";
+        renderList();
+      }
+
+      function newTemplate() {
+        current = null;
+        el("f_name").value = "";
+        el("f_name").readOnly = false;
+        el("f_subject").value = "{{status}} [FFEngine] DAG {{dag_id}}";
+        el("f_body").value = (templates[DEFAULT_NAME] && templates[DEFAULT_NAME].html_body) || "";
+        el("edit_hint").textContent = "New template";
+        el("f_name").focus();
+        renderList();
+      }
+
+      async function loadTemplates(selectName) {
+        try {
+          var data = await api("/api/mail-templates");
+          templates = data.templates || {};
+          names = data.names || Object.keys(templates);
+          placeholders = data.placeholders || [];
+          renderPlaceholders();
+          var target = selectName && templates[selectName] ? selectName
+            : (current && templates[current] ? current : (names[0] || DEFAULT_NAME));
+          renderList();
+          if (templates[target]) selectTemplate(target);
+        } catch (e) { toast(e.message, true); }
+      }
+
+      async function saveTemplate() {
+        var name = el("f_name").value.trim();
+        try {
+          await api("/api/mail-templates", {
+            method: "POST",
+            body: JSON.stringify({
+              name: name,
+              subject: el("f_subject").value,
+              html_body: el("f_body").value,
+            }),
+          });
+          toast("Saved: " + name);
+          await loadTemplates(name);
+        } catch (e) { toast(e.message, true); }
+      }
+
+      async function deleteTemplate() {
+        var name = el("f_name").value.trim();
+        if (!name) return;
+        if (!window.confirm("Delete template “" + name + "”?")) return;
+        try {
+          await api("/api/mail-templates/delete", {
+            method: "POST", body: JSON.stringify({ name: name }),
+          });
+          toast("Deleted: " + name);
+          current = null;
+          await loadTemplates(DEFAULT_NAME);
+        } catch (e) { toast(e.message, true); }
+      }
+
+      async function resetDefault() {
+        if (!window.confirm("Reset the built-in “Default” template?")) return;
+        try {
+          await api("/api/mail-templates/delete", {
+            method: "POST", body: JSON.stringify({ name: DEFAULT_NAME }),
+          });
+          toast("Default reset");
+          current = null;
+          await loadTemplates(DEFAULT_NAME);
+        } catch (e) { toast(e.message, true); }
+      }
+
+      async function preview() {
+        try {
+          var data = await api("/api/mail-templates/preview", {
+            method: "POST",
+            body: JSON.stringify({
+              subject: el("f_subject").value,
+              html_body: el("f_body").value,
+              kind: el("preview_kind").value,
+            }),
+          });
+          el("preview_subject").textContent = "Subject: " + (data.subject || "");
+          el("preview_frame").srcdoc = data.html || "";
+        } catch (e) { toast(e.message, true); }
+      }
+
+      el("f_subject").addEventListener("focus", function () { lastField = "f_subject"; });
+      el("f_body").addEventListener("focus", function () { lastField = "f_body"; });
+      el("btn_new").addEventListener("click", newTemplate);
+      el("btn_save").addEventListener("click", saveTemplate);
+      el("btn_delete").addEventListener("click", deleteTemplate);
+      el("btn_reset").addEventListener("click", resetDefault);
+      el("btn_preview").addEventListener("click", preview);
+      el("preview_kind").addEventListener("change", preview);
+
+      loadTemplates();
+    })();
+  </script>
+</body>
+</html>

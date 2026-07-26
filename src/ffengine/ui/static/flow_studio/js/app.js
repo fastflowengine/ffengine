@@ -444,6 +444,10 @@ async function studioFetch(path, options) {
     let schedulerAppliedState = null;
     let dagParamsAppliedState = null;
     let dagParamsDraftState = null;
+    let notificationsAppliedState = null;
+    let notificationsDraftState = null;
+    let allConnectionsState = [];
+    let mailTemplateNamesState = ["Default"];
     let dagDepsAppliedState = null;
     let dagDepsDraftState = null;
     let dagDepsOptionsState = [];
@@ -494,7 +498,163 @@ async function studioFetch(path, options) {
       if (!summary) return;
       const params = normalizeDagParams(dagParamsAppliedState || defaultDagParams());
       const logLevel = String(params[0].default || "default");
-      summary.textContent = `Log level: ${logLevel === "default" ? "Default" : logLevel} • ${Math.max(0, params.length - 1)} parameters`;
+      summary.textContent = `Log level: ${logLevel === "default" ? "Default" : logLevel} • ${Math.max(0, params.length - 1)} parameters • Notify: ${notificationsSummaryText(notificationsAppliedState)}`;
+    }
+
+    function notificationsSummaryText(state) {
+      if (!state || !Array.isArray(state.notify_on) || !state.notify_on.length) return "off";
+      return state.notify_on
+        .map((trigger) => (trigger === "failure" ? "Failure" : "Success"))
+        .join("+");
+    }
+
+    function cloneNotifications(state) {
+      if (!state || typeof state !== "object") return {};
+      const triggers = Array.isArray(state.notify_on) ? state.notify_on.slice() : [];
+      const emails = Array.isArray(state.notify_emails) ? state.notify_emails.slice() : [];
+      const connId = String(state.notify_conn_id || "").trim();
+      if (!triggers.length && !emails.length && !connId) return {};
+      const out = { notify_on: triggers, notify_emails: emails, notify_conn_id: connId };
+      const template = String(state.notify_template || "").trim();
+      if (template && template !== "Default") out.notify_template = template;
+      return out;
+    }
+
+    function setAdvancedTab(name) {
+      const target = name === "notifications" ? "notifications" : "params";
+      for (const btn of document.querySelectorAll(".advanced-tab-btn")) {
+        btn.classList.toggle("active", btn.getAttribute("data-advanced-tab") === target);
+      }
+      for (const panel of document.querySelectorAll(".advanced-panel")) {
+        panel.classList.toggle("active", panel.getAttribute("data-advanced-panel") === target);
+      }
+    }
+
+    function populateNotifyConnSelect(selected) {
+      const select = el("notify_conn_id");
+      if (!select) return;
+      const smtp = allConnectionsState.filter(
+        (item) => String(item.conn_type || "").toLowerCase() === "smtp"
+      );
+      const useSmtpOnly = smtp.length > 0;
+      const source = useSmtpOnly ? smtp : allConnectionsState;
+      const chosen = String(selected || "").trim();
+      select.innerHTML = "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Select an SMTP connection…";
+      select.appendChild(placeholder);
+      let matched = false;
+      for (const item of source) {
+        const connId = String(item.conn_id || "").trim();
+        if (!connId) continue;
+        if (connId === chosen) matched = true;
+        const option = document.createElement("option");
+        option.value = connId;
+        option.textContent = useSmtpOnly
+          ? connId
+          : `${connId} (${String(item.conn_type || "?")})`;
+        select.appendChild(option);
+      }
+      if (chosen && !matched) {
+        const option = document.createElement("option");
+        option.value = chosen;
+        option.textContent = chosen;
+        select.appendChild(option);
+      }
+      select.value = chosen;
+    }
+
+    function populateNotifyTemplateSelect(selected) {
+      const select = el("notify_template");
+      if (!select) return;
+      const chosen = String(selected || "Default").trim() || "Default";
+      select.innerHTML = "";
+      const seen = new Set();
+      for (const name of mailTemplateNamesState) {
+        const value = String(name || "").trim();
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        select.appendChild(option);
+      }
+      if (!seen.has(chosen)) {
+        const option = document.createElement("option");
+        option.value = chosen;
+        option.textContent = chosen;
+        select.appendChild(option);
+      }
+      select.value = chosen;
+    }
+
+    async function loadMailTemplateNames() {
+      try {
+        const resp = await studioFetch("/api/mail-templates");
+        if (resp.ok) {
+          const data = await parseJsonSafe(resp);
+          const names = Array.isArray(data.names) ? data.names : [];
+          if (names.length) mailTemplateNamesState = names;
+        }
+      } catch (_err) {
+        // keep the current names (at least "Default")
+      }
+      const modal = el("advanced_modal");
+      if (modal && modal.classList.contains("open")) {
+        const select = el("notify_template");
+        populateNotifyTemplateSelect(select ? select.value : "Default");
+      }
+    }
+
+    function renderAdvancedNotifications() {
+      const state = notificationsDraftState || {};
+      const triggers = Array.isArray(state.notify_on) ? state.notify_on : [];
+      const emails = Array.isArray(state.notify_emails) ? state.notify_emails : [];
+      const connId = String(state.notify_conn_id || "").trim();
+      const configured = triggers.length || emails.length || connId;
+      el("notify_on_failure").checked = configured ? triggers.includes("failure") : true;
+      el("notify_on_success").checked = triggers.includes("success");
+      el("notify_emails").value = emails.join(", ");
+      populateNotifyConnSelect(connId);
+      populateNotifyTemplateSelect(state.notify_template || "Default");
+    }
+
+    function collectAdvancedModalNotifications() {
+      const triggers = [];
+      if (el("notify_on_failure").checked) triggers.push("failure");
+      if (el("notify_on_success").checked) triggers.push("success");
+      const emails = String(el("notify_emails").value || "")
+        .split(/[,;\s]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const connId = String(el("notify_conn_id").value || "").trim();
+      // Nothing configured -> notifications off (no error).
+      if (!emails.length && !connId) return null;
+      if (!triggers.length) {
+        throw new Error("Select at least one notification trigger (Failure/Success).");
+      }
+      if (!emails.length) {
+        throw new Error("Add at least one recipient email for notifications.");
+      }
+      if (!connId) {
+        throw new Error("Select an SMTP Airflow Connection for notifications.");
+      }
+      const seen = new Set();
+      const uniqueEmails = [];
+      for (const addr of emails) {
+        if ((addr.match(/@/g) || []).length !== 1 || /\s/.test(addr) || !addr.includes(".")) {
+          throw new Error(`Invalid email address: ${addr}`);
+        }
+        const low = addr.toLowerCase();
+        if (seen.has(low)) continue;
+        seen.add(low);
+        uniqueEmails.push(addr);
+      }
+      const result = { notify_on: triggers, notify_emails: uniqueEmails, notify_conn_id: connId };
+      const template = String(el("notify_template").value || "").trim();
+      if (template && template !== "Default") result.notify_template = template;
+      return result;
     }
 
     function createAdvancedParamRow(value = {}) {
@@ -548,7 +708,11 @@ async function studioFetch(path, options) {
     function openAdvancedModal() {
       if (isBusy) return;
       dagParamsDraftState = normalizeDagParams(dagParamsAppliedState || defaultDagParams());
+      notificationsDraftState = cloneNotifications(notificationsAppliedState);
+      loadMailTemplateNames();
       renderAdvancedModal();
+      renderAdvancedNotifications();
+      setAdvancedTab("params");
       el("advanced_modal").classList.add("open");
       el("advanced_modal").setAttribute("aria-hidden", "false");
     }
@@ -557,11 +721,15 @@ async function studioFetch(path, options) {
       el("advanced_modal").classList.remove("open");
       el("advanced_modal").setAttribute("aria-hidden", "true");
       dagParamsDraftState = null;
+      notificationsDraftState = null;
     }
 
     function applyAdvancedModal() {
       try {
-        dagParamsAppliedState = collectAdvancedModalParams();
+        const params = collectAdvancedModalParams();
+        const notifications = collectAdvancedModalNotifications();
+        dagParamsAppliedState = params;
+        notificationsAppliedState = notifications;
         refreshDagParameterBindingControls();
         renderAdvancedSummary();
         closeAdvancedModal();
@@ -1530,6 +1698,8 @@ async function studioFetch(path, options) {
       setCustomTags([]);
       dagParamsAppliedState = defaultDagParams();
       dagParamsDraftState = null;
+      notificationsAppliedState = null;
+      notificationsDraftState = null;
       dagDepsReferencedByState = [];
       renderAdvancedSummary();
       setSchedulerAppliedState({
@@ -2474,6 +2644,7 @@ async function studioFetch(path, options) {
           }));
         }
 
+        allConnectionsState = Array.isArray(items) ? items : [];
         fillConnectionSelect("source_conn_id", items, "ffengine_source");
         fillConnectionSelect("target_conn_id", items, "ffengine_target");
         refreshTaskCardHeaders();
@@ -5064,6 +5235,7 @@ async function studioFetch(path, options) {
       setSchedulerAppliedState(payload.scheduler || null);
       const loadedDagParams = Array.isArray(payload.dag_params) ? payload.dag_params : [];
       dagParamsAppliedState = normalizeDagParams(loadedDagParams || defaultDagParams());
+      notificationsAppliedState = payload.notifications || null;
       renderAdvancedSummary();
       setSchedulerFormFromState(schedulerAppliedState);
       syncFolderPathDisplay();
@@ -5387,6 +5559,7 @@ async function studioFetch(path, options) {
         custom_tags: customTagsState.slice(),
         scheduler: cloneSchedulerState(schedulerAppliedState || collectSchedulerFormPayload()),
         dag_params: normalizeDagParams(dagParamsAppliedState || defaultDagParams()),
+        notifications: cloneNotifications(notificationsAppliedState),
         source_conn_id: el("source_conn_id").value,
         target_conn_id: el("target_conn_id").value,
         task_group_id: firstTask.task_group_id,
@@ -5456,6 +5629,9 @@ async function studioFetch(path, options) {
     el("btn_cancel_advanced_modal").onclick = () => closeAdvancedModal();
     el("btn_apply_advanced_modal").onclick = () => applyAdvancedModal();
     el("advanced_modal_backdrop").onclick = () => closeAdvancedModal();
+    for (const tab of document.querySelectorAll(".advanced-tab-btn")) {
+      tab.addEventListener("click", () => setAdvancedTab(tab.getAttribute("data-advanced-tab") || "params"));
+    }
     el("btn_add_dag_param").onclick = () => createAdvancedParamRow({});
     el("delete_dag_confirm_input").addEventListener("input", () => syncDeleteDagConfirmState());
     el("delete_dag_backdrop").onclick = () => closeDeleteDagModal();
@@ -5568,6 +5744,8 @@ async function studioFetch(path, options) {
       setCustomTags([]);
       dagParamsAppliedState = defaultDagParams();
       dagParamsDraftState = null;
+      notificationsAppliedState = null;
+      notificationsDraftState = null;
       dagDepsOptionsState = [];
       dagDepsReferencedByState = [];
       renderAdvancedSummary();
@@ -5580,6 +5758,7 @@ async function studioFetch(path, options) {
       } catch (_err) {
         // no-op: UI message already shown
       }
+      loadMailTemplateNames();
       try {
         await loadAirflowVariables();
       } catch (_err) {

@@ -225,7 +225,7 @@ def test_binding_task_hides_empty_source_card_and_uses_advanced_only_layout():
     )
     assert ".task-card.binding-task .task-layout" in style_css
     assert 'grid-template-areas: "advanced";' in style_css
-    assert "app.js?v=91" in index_html
+    assert "app.js?v=93" in index_html
 
 
 def test_advanced_dag_parameter_uses_parameter_type_label():
@@ -238,7 +238,7 @@ def test_advanced_dag_parameter_uses_parameter_type_label():
 
     assert "Parameter Type" in index_html
     assert "Data Type" not in index_html
-    assert "style.css?v=64" in index_html
+    assert "style.css?v=65" in index_html
 
 
 def test_connection_selector_uses_generic_source_and_target_labels():
@@ -254,7 +254,7 @@ def test_connection_selector_uses_generic_source_and_target_labels():
     assert "Select Target Connection" in app_js
     assert "DB Connection" not in app_js
     assert "database connection" not in index_html
-    assert "app.js?v=91" in index_html
+    assert "app.js?v=93" in index_html
 
 
 def test_binding_ui_has_conditional_default_and_searchable_variable_selector():
@@ -332,7 +332,7 @@ def test_folder_path_ui_requires_explicit_selection():
     assert '(el("level").value || "").trim() || "level1"' not in app_js
     assert 'el("flow").value.trim() || "src_to_stg"' not in app_js
     assert '(el("flow").value || "").trim() || "src_to_stg"' not in app_js
-    assert "app.js?v=91" in index_html
+    assert "app.js?v=93" in index_html
 
 
 def test_dag_explorer_html_ok(client):
@@ -791,6 +791,178 @@ def test_create_dag_persists_upsert_match_columns_and_roundtrips(client, studio_
     assert cfg_resp.status_code == 200, cfg_resp.text
     task_preload = (cfg_resp.json().get("payload") or {}).get("flow_tasks", [])[0]
     assert task_preload["upsert_match_columns"] == ["id", "name"]
+
+
+def test_create_dag_persists_notifications_and_roundtrips(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["notifications"] = {
+        "notify_on": ["failure", "success"],
+        "notify_emails": ["ops@bank.example", "dev@bank.example"],
+        "notify_conn_id": "smtp_default",
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+
+    flow = Path(r.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
+    )
+    assert cfg["notifications"] == {
+        "notify_on": ["failure", "success"],
+        "notify_emails": ["ops@bank.example", "dev@bank.example"],
+        "notify_conn_id": "smtp_default",
+    }
+
+    dag_id = Path(r.json()["dag_path"]).stem
+    cfg_resp = client.get(f"/api/dag-config?dag_id={dag_id}")
+    assert cfg_resp.status_code == 200, cfg_resp.text
+    reloaded = (cfg_resp.json().get("payload") or {}).get("notifications")
+    assert reloaded == {
+        "notify_on": ["failure", "success"],
+        "notify_emails": ["ops@bank.example", "dev@bank.example"],
+        "notify_conn_id": "smtp_default",
+    }
+
+
+def test_create_dag_without_notifications_omits_block(client, studio_paths):
+    payload = _minimal_table_payload()
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    flow = Path(r.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
+    )
+    # backward-compatible: no notifications key when unused
+    assert "notifications" not in cfg
+
+
+def test_create_dag_rejects_invalid_notification_email(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["notifications"] = {
+        "notify_on": ["failure"],
+        "notify_emails": ["not-an-email"],
+        "notify_conn_id": "smtp_default",
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "Invalid email address" in r.text
+
+
+# ---- F1.3b mail templates ------------------------------------------------
+
+def test_mail_templates_list_returns_names_and_placeholders(client):
+    fake = {
+        "Default": {"subject": "s", "html_body": "b"},
+        "Banka": {"subject": "s2", "html_body": "b2"},
+    }
+    with patch.object(api_app_module, "load_templates", return_value=fake):
+        r = client.get("/api/mail-templates")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["ok"] is True
+    assert "Default" in data["names"] and "Banka" in data["names"]
+    assert data["default_name"] == "Default"
+    assert any(p["name"] == "status" for p in data["placeholders"])
+
+
+def test_mail_template_save_ok(client):
+    with patch.object(
+        api_app_module, "save_template",
+        return_value={"subject": "S", "html_body": "B"},
+    ) as saver:
+        r = client.post(
+            "/api/mail-templates",
+            json={"name": "Banka", "subject": "S", "html_body": "B"},
+        )
+    assert r.status_code == 200, r.text
+    saver.assert_called_once()
+    assert r.json()["name"] == "Banka"
+
+
+def test_mail_template_save_validation_422(client):
+    with patch.object(
+        api_app_module, "save_template",
+        side_effect=ValueError("subject cannot be empty"),
+    ):
+        r = client.post(
+            "/api/mail-templates",
+            json={"name": "X", "subject": "", "html_body": "B"},
+        )
+    assert r.status_code == 422
+    assert "subject cannot be empty" in r.text
+
+
+def test_mail_template_delete_ok(client):
+    with patch.object(api_app_module, "delete_template") as deleter:
+        r = client.post("/api/mail-templates/delete", json={"name": "Banka"})
+    assert r.status_code == 200, r.text
+    deleter.assert_called_once()
+
+
+def test_mail_template_preview_renders_status_first(client):
+    body = {
+        "subject": "{{status}} DAG {{dag_id}}",
+        "html_body": "<p>{{status}} {{rows}}</p>",
+        "kind": "failure",
+    }
+    r = client.post("/api/mail-templates/preview", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["subject"].startswith("FAILED")
+    assert "no data rows" in data["html"].lower()
+
+
+def test_mail_templates_page_served(client):
+    r = client.get("/mail-templates")
+    assert r.status_code == 200
+    assert "Mail Templates" in r.text
+    assert "/api/mail-templates" in r.text
+
+
+def test_plugin_registers_admin_mail_templates_view():
+    from ffengine.ui.plugin import FlowStudioPlugin
+
+    entry = next(
+        (v for v in FlowStudioPlugin.external_views if v.get("url_route") == "mail_templates"),
+        None,
+    )
+    assert entry is not None
+    assert entry["category"] == "admin"
+    assert entry["href"] == "/flow-studio/mail-templates"
+
+
+def test_create_dag_persists_notify_template(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["notifications"] = {
+        "notify_on": ["failure"],
+        "notify_emails": ["ops@bank.example"],
+        "notify_conn_id": "smtp_default",
+        "notify_template": "Banka-Kritik",
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    flow = Path(r.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
+    )
+    assert cfg["notifications"]["notify_template"] == "Banka-Kritik"
+
+
+def test_create_dag_omits_default_notify_template(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["notifications"] = {
+        "notify_on": ["failure"],
+        "notify_emails": ["ops@bank.example"],
+        "notify_conn_id": "smtp_default",
+        "notify_template": "Default",
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    flow = Path(r.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
+    )
+    assert "notify_template" not in cfg["notifications"]
 
 
 def test_create_dag_rejects_upsert_without_match_columns(client, studio_paths):

@@ -29,6 +29,7 @@ from ffengine.config.dag_param_flow import (
     compile_dag_parameter_flow,
     validate_binding_target_is_custom,
 )
+from ffengine.config.schema import VALID_NOTIFY_TRIGGERS
 from ffengine.config.validator import ConfigValidator
 from ffengine.db.airflow_adapter import AirflowConnectionAdapter
 from ffengine.db.session import DBSession
@@ -376,6 +377,100 @@ def normalize_scheduler(raw_scheduler: Any) -> dict[str, Any]:
         "active": active,
         "start_date": start_date,
     }
+
+
+def _normalize_notify_triggers(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("notifications.notify_on must be a list.")
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        value = str(item or "").strip().lower()
+        if not value:
+            continue
+        if value not in VALID_NOTIFY_TRIGGERS:
+            raise ValueError(
+                f"Invalid notify_on trigger: '{value}'. "
+                f"Valid values: {sorted(VALID_NOTIFY_TRIGGERS)}"
+            )
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _normalize_notify_emails(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        candidates: list[Any] = re.split(r"[,;\s]+", raw)
+    elif isinstance(raw, (list, tuple)):
+        candidates = list(raw)
+    else:
+        raise ValueError("notifications.notify_emails must be a list.")
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        addr = str(item or "").strip()
+        if not addr:
+            continue
+        if addr.count("@") != 1 or any(c.isspace() for c in addr) or "." not in addr:
+            raise ValueError(f"Invalid email address: '{addr}'.")
+        low = addr.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        out.append(addr)
+    return out
+
+
+def normalize_notifications(raw: Any) -> dict[str, Any] | None:
+    """F1.3 — flow seviyesi operasyonel bildirim politikasini normalize eder.
+
+    Bos/tanimsiz -> None (bildirim yok, geriye donuk uyumlu). Bildirim
+    etkinse notify_on (failure/success), notify_emails ve notify_conn_id
+    (SMTP Airflow Connection) zorunludur; gecersiz deger fail-loud.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("notifications must be an object.")
+
+    triggers = _normalize_notify_triggers(raw.get("notify_on"))
+    emails = _normalize_notify_emails(raw.get("notify_emails"))
+    conn_id = str(raw.get("notify_conn_id") or "").strip()
+    template = str(raw.get("notify_template") or "").strip()
+
+    if not triggers and not emails and not conn_id:
+        return None
+
+    if not triggers:
+        raise ValueError(
+            "notifications.notify_on must include at least one of: "
+            f"{sorted(VALID_NOTIFY_TRIGGERS)}."
+        )
+    if not emails:
+        raise ValueError(
+            "notifications.notify_emails must include at least one recipient."
+        )
+    if not conn_id:
+        raise ValueError(
+            "notifications.notify_conn_id (SMTP Airflow Connection) is required."
+        )
+
+    result: dict[str, Any] = {
+        "notify_on": triggers,
+        "notify_emails": emails,
+        "notify_conn_id": conn_id,
+    }
+    # Default template is implicit at runtime; persist only a non-default choice
+    # so existing configs stay byte-identical (backward compatible).
+    if template and template != "Default":
+        result["notify_template"] = template
+    return result
 
 
 def _extract_flow_target(flow: str) -> str:
@@ -2133,6 +2228,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
     scheduler = normalize_scheduler(raw.get("scheduler"))
     dag_dependencies = _normalize_dag_dependencies(raw.get("dag_dependencies"))
     dag_params = _normalize_dag_params(raw.get("dag_params"))
+    notifications = normalize_notifications(raw.get("notifications"))
 
     payload = {
         "project": project,
@@ -2143,6 +2239,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "scheduler": scheduler,
         "dag_dependencies": dag_dependencies,
         "dag_params": dag_params,
+        "notifications": notifications,
         "group_no": _extract_group_no(did, config_path),
         "task_group_id": first_task["task_group_id"],
         "task_type": first_task["task_type"],
@@ -3847,6 +3944,10 @@ def create_or_update_dag(
             dag_dependencies = _normalize_dag_dependencies(
                 payload.get("dag_dependencies")
             )
+        if update and "notifications" not in payload:
+            notifications = normalize_notifications(existing_cfg.get("notifications"))
+        else:
+            notifications = normalize_notifications(payload.get("notifications"))
         scope_entries = _collect_scope_studio_dag_entries(project, domain)
         dag_upstream_dag_ids = _validate_dag_dependencies_for_scope(
             project=project,
@@ -4153,6 +4254,8 @@ def create_or_update_dag(
                 "dag_dependencies": dag_dependencies,
                 "dag_params": dag_params,
             }
+            if notifications:
+                config_obj["notifications"] = notifications
             config_path.write_text(
                 yaml.safe_dump(config_obj, sort_keys=False, allow_unicode=False),
                 encoding="utf-8",
