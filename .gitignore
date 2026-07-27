@@ -26,4 +26,6 @@ handbook/
 *.rar
 # Local debug override file must stay untracked.
 /docker/docker-compose.local.debug.yml
+# Temporary per-worktree live-test overrides (F1.x) must stay untracked.
+/docker/docker-compose.f1-*.override.yml
 /.vscode/
