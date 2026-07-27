@@ -225,7 +225,7 @@ def test_binding_task_hides_empty_source_card_and_uses_advanced_only_layout():
     )
     assert ".task-card.binding-task .task-layout" in style_css
     assert 'grid-template-areas: "advanced";' in style_css
-    assert "app.js?v=93" in index_html
+    assert "app.js?v=95" in index_html
 
 
 def test_advanced_dag_parameter_uses_parameter_type_label():
@@ -254,7 +254,7 @@ def test_connection_selector_uses_generic_source_and_target_labels():
     assert "Select Target Connection" in app_js
     assert "DB Connection" not in app_js
     assert "database connection" not in index_html
-    assert "app.js?v=93" in index_html
+    assert "app.js?v=95" in index_html
 
 
 def test_binding_ui_has_conditional_default_and_searchable_variable_selector():
@@ -332,7 +332,7 @@ def test_folder_path_ui_requires_explicit_selection():
     assert '(el("level").value || "").trim() || "level1"' not in app_js
     assert 'el("flow").value.trim() || "src_to_stg"' not in app_js
     assert '(el("flow").value || "").trim() || "src_to_stg"' not in app_js
-    assert "app.js?v=93" in index_html
+    assert "app.js?v=95" in index_html
 
 
 def test_dag_explorer_html_ok(client):
@@ -836,6 +836,202 @@ def test_create_dag_without_notifications_omits_block(client, studio_paths):
     assert "notifications" not in cfg
 
 
+# ---------------------------------------------------------------------------
+# F1.4/F1.5 — file source (csv/json) + file target round-trip
+# ---------------------------------------------------------------------------
+
+
+def _read_first_task(response):
+    flow = Path(response.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
+    )
+    return cfg["flow_tasks"][0]
+
+
+def test_create_dag_persists_csv_file_source(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "csv",
+            "file_path": "/incoming/orders_{{ run_date }}.csv",
+            "delimiter": ";",
+            "encoding": "utf-8",
+            "mapping_content": _sql_mapping_yaml(["id", "name"]),
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    task = _read_first_task(r)
+    assert task["source_type"] == "csv"
+    assert task["file_path"] == "/incoming/orders_{{ run_date }}.csv"
+    assert task["delimiter"] == ";"
+    # file sources are always explicit-mapping (no type inference)
+    assert task["column_mapping_mode"] == "mapping_file"
+    assert not task.get("source_table")
+
+    # preload (edit) must round-trip the file fields so the UI can rehydrate.
+    dag_id = Path(r.json()["dag_path"]).stem
+    reloaded = client.get(f"/api/dag-config?dag_id={dag_id}").json()["payload"]
+    rt = reloaded["flow_tasks"][0]
+    assert rt["source_type"] == "csv"
+    assert rt["file_path"] == "/incoming/orders_{{ run_date }}.csv"
+    assert rt["delimiter"] == ";"
+
+
+def test_create_dag_persists_json_flat_file_source(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "json",
+            "file_path": "/incoming/orders.jsonl",
+            "json_mode": "flat",
+            "mapping_content": _sql_mapping_yaml(["id", "name"]),
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    task = _read_first_task(r)
+    assert task["source_type"] == "json"
+    assert task["json_mode"] == "flat"
+
+
+def test_create_dag_persists_file_target(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "target_type": "file",
+            "target_file_path": "/out/orders.csv",
+            "target_delimiter": "|",
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    task = _read_first_task(r)
+    assert task["target_type"] == "file"
+    assert task["target_file_path"] == "/out/orders.csv"
+    assert task["target_delimiter"] == "|"
+
+
+def test_create_dag_rejects_csv_without_file_path(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {"source_type": "csv", "mapping_content": _sql_mapping_yaml(["id"])}
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422, r.text
+    assert "file_path" in r.text
+
+
+def test_create_dag_rejects_json_raw_mode(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "json",
+            "file_path": "/x.jsonl",
+            "json_mode": "raw",
+            "mapping_content": _sql_mapping_yaml(["id"]),
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422, r.text
+    assert "json_mode" in r.text or "raw" in r.text
+
+
+def test_create_dag_db_to_db_omits_file_keys(client, studio_paths):
+    # backward-compat: a plain DB→DB task carries no file keys.
+    payload = _minimal_table_payload()
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    task = _read_first_task(r)
+    assert "file_path" not in task
+    assert task.get("target_type", "db") != "file"
+
+
+def test_dag_explorer_html_restyled_with_search(client):
+    r = client.get("/dag-explorer")
+    assert r.status_code == 200, r.text
+    html = r.text
+    # adopts the Flow Studio design system + carries the new search box, while
+    # keeping the JS-owned ids intact.
+    assert "flow_studio/css/style.css" in html
+    assert 'id="dag_search"' in html
+    assert 'id="tree_container"' in html
+    assert 'id="list_container"' in html
+
+
+def test_dag_search_matches_config_content(client, studio_paths, monkeypatch):
+    # DAG A — csv source carrying a distinctive keyword in its config.yaml.
+    a = _minimal_table_payload()
+    a.update(
+        {
+            "source_type": "csv",
+            "file_path": "/incoming/zztophit_orders.csv",
+            "mapping_content": _sql_mapping_yaml(["id", "name"]),
+        }
+    )
+    ra = client.post("/api/create-dag", json=a)
+    assert ra.status_code == 201, ra.text
+    a_path = ra.json()["dag_path"]
+    a_id = Path(a_path).stem
+
+    # DAG B — plain table source in a different flow (distinct files/id).
+    b = _minimal_table_payload()
+    b.update({"flow": "stg_to_dwh", "source_table": "plainaudit"})
+    rb = client.post("/api/create-dag", json=b)
+    assert rb.status_code == 201, rb.text
+    b_path = rb.json()["dag_path"]
+    b_id = Path(b_path).stem
+
+    a_item = {"dag_id": a_id, "bucket": "dags_root", "fileloc": a_path}
+    b_item = {"dag_id": b_id, "bucket": "dags_root", "fileloc": b_path}
+
+    # _dag_searchable_text pulls the .py + config.yaml → contains the csv path.
+    assert "zztophit_orders" in ss._dag_searchable_text(a_item).lower()
+
+    monkeypatch.setattr(
+        ss,
+        "discover_dag_explorer_items",
+        lambda: {"root": "/opt/airflow/dags", "items": [a_item, b_item], "count": 2},
+    )
+
+    # case-insensitive content match → only DAG A.
+    r = client.get("/api/dag-search?q=ZZTOPHIT")
+    assert r.status_code == 200, r.text
+    assert [it["dag_id"] for it in r.json()["items"]] == [a_id]
+
+    # empty query → all.
+    r = client.get("/api/dag-search?q=")
+    assert {it["dag_id"] for it in r.json()["items"]} == {a_id, b_id}
+
+    # dag_id substring match works too.
+    r = client.get(f"/api/dag-search?q={b_id[:6]}")
+    assert b_id in [it["dag_id"] for it in r.json()["items"]]
+
+
+def test_file_source_mapping_preview_detects_columns(tmp_path, monkeypatch):
+    src = tmp_path / "orders.csv"
+    src.write_text("id;name\n1;alice\n2;bob\n", encoding="utf-8")
+    monkeypatch.setattr(
+        ss.AirflowConnectionAdapter,
+        "get_connection_params",
+        staticmethod(lambda conn_id: {"conn_type": "fs"}),
+    )
+    out = ss.generate_mapping_preview(
+        {
+            "source_type": "csv",
+            "source_conn_id": "fs_default",
+            "target_conn_id": "tgt_c",
+            "file_path": str(src),
+            "delimiter": ";",
+        }
+    )
+    names = [c["source_name"] for c in out["columns"]]
+    assert names == ["id", "name"]
+    assert out["sample_rows"][0] == ["1", "alice"]
+    assert all(c["target_type"] == "varchar(255)" for c in out["columns"])
+
+
 def test_create_dag_rejects_invalid_notification_email(client, studio_paths):
     payload = _minimal_table_payload()
     payload["notifications"] = {
@@ -963,6 +1159,59 @@ def test_create_dag_omits_default_notify_template(client, studio_paths):
         (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
     )
     assert "notify_template" not in cfg["notifications"]
+
+
+def test_create_dag_persists_deadline_minutes_roundtrips(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["notifications"] = {
+        "notify_on": ["failure", "deadline"],
+        "notify_emails": ["ops@bank.example"],
+        "notify_conn_id": "smtp_default",
+        "notify_deadline_minutes": 45,
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    flow = Path(r.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
+    )
+    assert cfg["notifications"]["notify_on"] == ["failure", "deadline"]
+    assert cfg["notifications"]["notify_deadline_minutes"] == 45
+
+    dag_id = Path(r.json()["dag_path"]).stem
+    reloaded = (
+        client.get(f"/api/dag-config?dag_id={dag_id}").json().get("payload") or {}
+    ).get("notifications")
+    assert reloaded["notify_deadline_minutes"] == 45
+
+
+def test_create_dag_rejects_deadline_without_minutes(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["notifications"] = {
+        "notify_on": ["deadline"],
+        "notify_emails": ["ops@bank.example"],
+        "notify_conn_id": "smtp_default",
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "notify_deadline_minutes must be a positive" in r.text
+
+
+def test_create_dag_omits_deadline_minutes_when_not_selected(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["notifications"] = {
+        "notify_on": ["failure"],
+        "notify_emails": ["ops@bank.example"],
+        "notify_conn_id": "smtp_default",
+        "notify_deadline_minutes": 30,
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    flow = Path(r.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
+    )
+    assert "notify_deadline_minutes" not in cfg["notifications"]
 
 
 def test_create_dag_rejects_upsert_without_match_columns(client, studio_paths):

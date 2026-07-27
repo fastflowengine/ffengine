@@ -55,14 +55,53 @@ def test_invalid_trigger_rejected():
         )
 
 
-def test_deadline_trigger_rejected_this_slice():
-    # deadline is intentionally out of the Community v1 slice.
-    with pytest.raises(ValueError, match="Invalid notify_on trigger"):
+def test_deadline_trigger_accepted_with_minutes():
+    # F1.3c — deadline is now a supported trigger (requires positive minutes).
+    result = normalize_notifications(
+        {
+            "notify_on": ["failure", "deadline"],
+            "notify_emails": ["a@x.com"],
+            "notify_conn_id": "smtp_default",
+            "notify_deadline_minutes": 45,
+        }
+    )
+    assert result["notify_on"] == ["failure", "deadline"]
+    assert result["notify_deadline_minutes"] == 45
+
+
+@pytest.mark.parametrize("minutes", [None, 0, -5])
+def test_deadline_requires_positive_minutes(minutes):
+    payload = {
+        "notify_on": ["deadline"],
+        "notify_emails": ["a@x.com"],
+        "notify_conn_id": "smtp_default",
+    }
+    if minutes is not None:
+        payload["notify_deadline_minutes"] = minutes
+    with pytest.raises(ValueError, match="notify_deadline_minutes must be a positive"):
+        normalize_notifications(payload)
+
+
+def test_deadline_minutes_dropped_when_not_selected():
+    result = normalize_notifications(
+        {
+            "notify_on": ["failure"],
+            "notify_emails": ["a@x.com"],
+            "notify_conn_id": "smtp_default",
+            "notify_deadline_minutes": 30,
+        }
+    )
+    assert "notify_deadline_minutes" not in result
+
+
+def test_deadline_minutes_non_integer_rejected():
+    with pytest.raises(ValueError, match="must be an integer"):
         normalize_notifications(
             {
                 "notify_on": ["deadline"],
                 "notify_emails": ["a@x.com"],
                 "notify_conn_id": "smtp_default",
+                "notify_deadline_minutes": "soon",
             }
         )
 

@@ -92,3 +92,21 @@ class PartitionError(FFEngineError):
     """Partition planlama hatası (eksik kolon, geçersiz mod, boş aralık)."""
 
     default_code = "partition_error"
+
+
+class FileSourceError(FFEngineError):
+    """Dosya kaynağı okuma/parse hatası (F1.4 — bozuk satır, nested, vb.)."""
+
+    default_code = "file_source_error"
+
+
+class FileTransportError(FFEngineError):
+    """Dosya transport hatası (F1.5 — SFTP/local stream/rename)."""
+
+    default_code = "file_transport_error"
+
+
+class FileTargetError(FFEngineError):
+    """Dosya hedefi yazma hatası (F1.5 — kolon/M=1/atomiklik)."""
+
+    default_code = "file_target_error"

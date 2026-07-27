@@ -501,10 +501,17 @@ async function studioFetch(path, options) {
       summary.textContent = `Log level: ${logLevel === "default" ? "Default" : logLevel} • ${Math.max(0, params.length - 1)} parameters • Notify: ${notificationsSummaryText(notificationsAppliedState)}`;
     }
 
+    const NOTIFY_LABELS = { failure: "Failure", success: "Success", deadline: "Deadline" };
+
     function notificationsSummaryText(state) {
       if (!state || !Array.isArray(state.notify_on) || !state.notify_on.length) return "off";
+      const minutes = parseInt(state.notify_deadline_minutes, 10);
       return state.notify_on
-        .map((trigger) => (trigger === "failure" ? "Failure" : "Success"))
+        .map((trigger) => {
+          const label = NOTIFY_LABELS[trigger] || trigger;
+          if (trigger === "deadline" && minutes > 0) return `Deadline(${minutes}m)`;
+          return label;
+        })
         .join("+");
     }
 
@@ -517,6 +524,8 @@ async function studioFetch(path, options) {
       const out = { notify_on: triggers, notify_emails: emails, notify_conn_id: connId };
       const template = String(state.notify_template || "").trim();
       if (template && template !== "Default") out.notify_template = template;
+      const minutes = parseInt(state.notify_deadline_minutes, 10);
+      if (triggers.includes("deadline") && minutes > 0) out.notify_deadline_minutes = minutes;
       return out;
     }
 
@@ -607,6 +616,11 @@ async function studioFetch(path, options) {
       }
     }
 
+    function syncDeadlineMinutesVisibility() {
+      const row = el("notify_deadline_minutes_row");
+      if (row) row.style.display = el("notify_on_deadline").checked ? "" : "none";
+    }
+
     function renderAdvancedNotifications() {
       const state = notificationsDraftState || {};
       const triggers = Array.isArray(state.notify_on) ? state.notify_on : [];
@@ -615,6 +629,10 @@ async function studioFetch(path, options) {
       const configured = triggers.length || emails.length || connId;
       el("notify_on_failure").checked = configured ? triggers.includes("failure") : true;
       el("notify_on_success").checked = triggers.includes("success");
+      el("notify_on_deadline").checked = triggers.includes("deadline");
+      const minutes = parseInt(state.notify_deadline_minutes, 10);
+      el("notify_deadline_minutes").value = minutes > 0 ? String(minutes) : "";
+      syncDeadlineMinutesVisibility();
       el("notify_emails").value = emails.join(", ");
       populateNotifyConnSelect(connId);
       populateNotifyTemplateSelect(state.notify_template || "Default");
@@ -624,6 +642,7 @@ async function studioFetch(path, options) {
       const triggers = [];
       if (el("notify_on_failure").checked) triggers.push("failure");
       if (el("notify_on_success").checked) triggers.push("success");
+      if (el("notify_on_deadline").checked) triggers.push("deadline");
       const emails = String(el("notify_emails").value || "")
         .split(/[,;\s]+/)
         .map((item) => item.trim())
@@ -632,7 +651,7 @@ async function studioFetch(path, options) {
       // Nothing configured -> notifications off (no error).
       if (!emails.length && !connId) return null;
       if (!triggers.length) {
-        throw new Error("Select at least one notification trigger (Failure/Success).");
+        throw new Error("Select at least one notification trigger (Failure/Success/Deadline).");
       }
       if (!emails.length) {
         throw new Error("Add at least one recipient email for notifications.");
@@ -651,9 +670,17 @@ async function studioFetch(path, options) {
         seen.add(low);
         uniqueEmails.push(addr);
       }
+      let deadlineMinutes = 0;
+      if (triggers.includes("deadline")) {
+        deadlineMinutes = parseInt(el("notify_deadline_minutes").value, 10);
+        if (!Number.isFinite(deadlineMinutes) || deadlineMinutes <= 0) {
+          throw new Error("Enter a positive Deadline (minutes) value.");
+        }
+      }
       const result = { notify_on: triggers, notify_emails: uniqueEmails, notify_conn_id: connId };
       const template = String(el("notify_template").value || "").trim();
       if (template && template !== "Default") result.notify_template = template;
+      if (deadlineMinutes > 0) result.notify_deadline_minutes = deadlineMinutes;
       return result;
     }
 
@@ -3666,6 +3693,7 @@ async function studioFetch(path, options) {
       card.querySelector(".target-schema").value = values.target_schema || "";
       card.querySelector(".target-table").value = values.target_table || "";
       card.querySelector(".load-method").value = values.load_method || "create_if_not_exists_or_truncate";
+      hydrateFileEndpointValues(card, values);
       setUpsertMatchState(card, values.upsert_match_columns || []);
       card.querySelector(".column-mapping-mode").value = values.column_mapping_mode || "source";
       card.querySelector(".mapping-content").value = values.mapping_content || "";
@@ -3696,6 +3724,7 @@ async function studioFetch(path, options) {
       ensureBindingRowForBindingTask(card);
       syncTaskTypeState(card);
       toggleSourceMode(card);
+      toggleTargetMode(card);
       if (loadedTaskGroupId) {
         card.dataset.loadedSignature = buildTaskGroupFormula(card, fallbackIndex);
       }
@@ -3713,18 +3742,61 @@ async function studioFetch(path, options) {
       const sqlWrap = card.querySelector(".source-sql-wrap");
       const sqlText = card.querySelector(".source-inline-sql");
       const sourceTableWrap = card.querySelector(".source-table-wrap");
+      const fileWrap = card.querySelector(".source-file-wrap");
       const sourceSchemaInput = card.querySelector(".source-schema");
       const sourceTableInput = card.querySelector(".source-table");
       const isSqlMode = sourceType === "sql";
+      const isFileMode = sourceType === "csv" || sourceType === "json";
       sqlWrap.classList.toggle("hidden", !isSqlMode);
-      sourceTableWrap.classList.toggle("hidden", isSqlMode);
-      if (!isSqlMode) {
-        sqlText.value = "";
-      } else {
+      sourceTableWrap.classList.toggle("hidden", isSqlMode || isFileMode);
+      if (fileWrap) {
+        fileWrap.classList.toggle("hidden", !isFileMode);
+        const jsonOpts = fileWrap.querySelector(".source-json-opts");
+        if (jsonOpts) jsonOpts.classList.toggle("hidden", sourceType !== "json");
+      }
+      // File sources are always explicit-mapping (no type inference).
+      const mappingModeSelect = card.querySelector(".column-mapping-mode");
+      if (mappingModeSelect && isFileMode) {
+        mappingModeSelect.value = "mapping_file";
+      }
+      if (mappingModeSelect) {
+        mappingModeSelect.disabled = isSqlMode || isFileMode;
+      }
+      if (isSqlMode) {
         sourceSchemaInput.value = "";
         sourceTableInput.value = "";
+      } else if (!isFileMode) {
+        sqlText.value = "";
       }
       sourceTableInput.placeholder = "Search table";
+    }
+
+    function hydrateFileEndpointValues(card, values) {
+      const setVal = (sel, v) => { const n = card.querySelector(sel); if (n) n.value = v; };
+      const setChk = (sel, v) => { const n = card.querySelector(sel); if (n) n.checked = v; };
+      setVal(".source-file-path", values.file_path || "");
+      setVal(".source-file-delimiter", values.delimiter || "");
+      setVal(".source-file-encoding", values.encoding || "");
+      setVal(".source-file-quotechar", values.quotechar || "");
+      setChk(".source-file-header", values.header !== false);
+      setVal(".source-file-json-mode", values.json_mode || "flat");
+      const targetType = String(values.target_type || "db").trim() || "db";
+      setVal(".target-type", targetType);
+      setVal(".target-file-path", values.target_file_path || "");
+      setVal(".target-file-delimiter", values.target_delimiter || "");
+      setVal(".target-file-encoding", values.target_encoding || "");
+      setChk(".target-file-header", values.target_header !== false);
+    }
+
+    function toggleTargetMode(card) {
+      const targetType = String(card.querySelector(".target-type")?.value || "db").trim() || "db";
+      const isFile = targetType === "file";
+      const dbWrap = card.querySelector(".target-db-wrap");
+      const tableWrap = card.querySelector(".target-table-wrap");
+      const fileWrap = card.querySelector(".target-file-wrap");
+      if (dbWrap) dbWrap.classList.toggle("hidden", isFile);
+      if (tableWrap) tableWrap.classList.toggle("hidden", isFile);
+      if (fileWrap) fileWrap.classList.toggle("hidden", !isFile);
     }
 
     function buildTaskGroupFormula(card, fallbackIndex) {
@@ -4126,6 +4198,18 @@ async function studioFetch(path, options) {
       };
       if (sourceType === "sql") {
         payload.inline_sql = (card.querySelector(".source-inline-sql").value || "").trim();
+      } else if (sourceType === "csv" || sourceType === "json") {
+        payload.file_path = (card.querySelector(".source-file-path")?.value || "").trim();
+        const delimiter = (card.querySelector(".source-file-delimiter")?.value || "").trim();
+        if (delimiter) payload.delimiter = delimiter;
+        const encoding = (card.querySelector(".source-file-encoding")?.value || "").trim();
+        if (encoding) payload.encoding = encoding;
+        const quotechar = (card.querySelector(".source-file-quotechar")?.value || "").trim();
+        if (quotechar) payload.quotechar = quotechar;
+        payload.header = !!card.querySelector(".source-file-header")?.checked;
+        if (sourceType === "json") {
+          payload.json_mode = String(card.querySelector(".source-file-json-mode")?.value || "flat").trim() || "flat";
+        }
       } else {
         payload.source_schema = (card.querySelector(".source-schema").value || "").trim();
         payload.source_table = (card.querySelector(".source-table").value || "").trim();
@@ -5074,6 +5158,14 @@ async function studioFetch(path, options) {
         scheduleUpsertColumnRefresh();
       });
 
+      const targetTypeSelect = card.querySelector(".target-type");
+      if (targetTypeSelect) {
+        targetTypeSelect.addEventListener("change", () => {
+          toggleTargetMode(card);
+          refreshTaskCardHeaders();
+        });
+      }
+
       sourceSchemaInput.addEventListener("input", () => {
         if (sourceTypeSelect.value === "sql") return;
         clearTimeout(sourceSchemaInput._ffTimer);
@@ -5474,14 +5566,22 @@ async function studioFetch(path, options) {
       const partitioningDistinctLimitValue = partitioningEnabled && partitioningMode === "distinct"
         ? partitioningDistinctLimit
         : undefined;
-      const normalizedSourceSchema = taskType === TASK_TYPES.SOURCE_TARGET && sourceType !== "sql" ? sourceSchemaVal : undefined;
-      const normalizedSourceTable = taskType === TASK_TYPES.SOURCE_TARGET && sourceType !== "sql" ? sourceTableVal : undefined;
-      const normalizedTargetSchema = taskType === TASK_TYPES.SOURCE_TARGET
-        ? (targetSchemaVal || undefined)
-        : (taskType === TASK_TYPES.SCRIPT_RUN ? (targetSchemaVal || "script_tgt") : undefined);
-      const normalizedTargetTable = taskType === TASK_TYPES.SOURCE_TARGET
-        ? (targetTableVal || undefined)
-        : (taskType === TASK_TYPES.SCRIPT_RUN ? (targetTableVal || "script_task") : undefined);
+      const isFileSourceType = sourceType === "csv" || sourceType === "json";
+      const targetTypeVal = String(card.querySelector(".target-type")?.value || "db").trim() || "db";
+      const isFileTargetType = targetTypeVal === "file";
+      const dbSourceRelation = taskType === TASK_TYPES.SOURCE_TARGET && sourceType !== "sql" && !isFileSourceType;
+      const normalizedSourceSchema = dbSourceRelation ? sourceSchemaVal : undefined;
+      const normalizedSourceTable = dbSourceRelation ? sourceTableVal : undefined;
+      const normalizedTargetSchema = isFileTargetType
+        ? undefined
+        : (taskType === TASK_TYPES.SOURCE_TARGET
+          ? (targetSchemaVal || undefined)
+          : (taskType === TASK_TYPES.SCRIPT_RUN ? (targetSchemaVal || "script_tgt") : undefined));
+      const normalizedTargetTable = isFileTargetType
+        ? undefined
+        : (taskType === TASK_TYPES.SOURCE_TARGET
+          ? (targetTableVal || undefined)
+          : (taskType === TASK_TYPES.SCRIPT_RUN ? (targetTableVal || "script_task") : undefined));
       const loadMethod = card.querySelector(".load-method").value;
       const upsertMatchColumns = getUpsertMatchState(card);
       if (
@@ -5544,8 +5644,37 @@ async function studioFetch(path, options) {
         partitioning_distinct_limit: partitioningDistinctLimitValue,
         partitioning_ranges: partitioningRanges,
         bindings: bindings.length ? bindings : undefined,
+        ...collectFileEndpointFields(card, taskType, sourceType, targetTypeVal),
         depends_on: dependsOn,
       };
+    }
+
+    function collectFileEndpointFields(card, taskType, sourceType, targetType) {
+      const out = {};
+      if (taskType !== TASK_TYPES.SOURCE_TARGET) return out;
+      if (sourceType === "csv" || sourceType === "json") {
+        out.file_path = (card.querySelector(".source-file-path")?.value || "").trim() || undefined;
+        const delimiter = (card.querySelector(".source-file-delimiter")?.value || "").trim();
+        if (delimiter) out.delimiter = delimiter;
+        const encoding = (card.querySelector(".source-file-encoding")?.value || "").trim();
+        if (encoding) out.encoding = encoding;
+        const quotechar = (card.querySelector(".source-file-quotechar")?.value || "").trim();
+        if (quotechar) out.quotechar = quotechar;
+        out.header = !!card.querySelector(".source-file-header")?.checked;
+        if (sourceType === "json") {
+          out.json_mode = String(card.querySelector(".source-file-json-mode")?.value || "flat").trim() || "flat";
+        }
+      }
+      if (targetType === "file") {
+        out.target_type = "file";
+        out.target_file_path = (card.querySelector(".target-file-path")?.value || "").trim() || undefined;
+        const tdelim = (card.querySelector(".target-file-delimiter")?.value || "").trim();
+        if (tdelim) out.target_delimiter = tdelim;
+        const tenc = (card.querySelector(".target-file-encoding")?.value || "").trim();
+        if (tenc) out.target_encoding = tenc;
+        out.target_header = !!card.querySelector(".target-file-header")?.checked;
+      }
+      return out;
     }
 
     function collectPayload() {
@@ -5632,6 +5761,7 @@ async function studioFetch(path, options) {
     for (const tab of document.querySelectorAll(".advanced-tab-btn")) {
       tab.addEventListener("click", () => setAdvancedTab(tab.getAttribute("data-advanced-tab") || "params"));
     }
+    el("notify_on_deadline").addEventListener("change", syncDeadlineMinutesVisibility);
     el("btn_add_dag_param").onclick = () => createAdvancedParamRow({});
     el("delete_dag_confirm_input").addEventListener("input", () => syncDeleteDagConfirmState());
     el("delete_dag_backdrop").onclick = () => closeDeleteDagModal();

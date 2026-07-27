@@ -598,6 +598,71 @@ def aggregate_partition_payloads(
 
 
 # ---------------------------------------------------------------------------
+# F1.4/F1.5 — file endpoint helpers
+# ---------------------------------------------------------------------------
+
+
+def _render_file_paths(task_config: dict, airflow_ctx: dict) -> dict:
+    """Substitute ``{{ name }}`` tokens in file_path/target_file_path (F1.5)."""
+    values: dict = {}
+    values.update(airflow_ctx.get("airflow_params") or {})
+    values.update(airflow_ctx.get("dag_run_conf") or {})
+    values.update(airflow_ctx.get("binding_values") or {})
+    for key in ("file_path", "target_file_path"):
+        raw = task_config.get(key)
+        if isinstance(raw, str) and "{{" in raw:
+            task_config[key] = _substitute_tokens(raw, values, key)
+    return task_config
+
+
+def _substitute_tokens(text: str, values: dict, field: str) -> str:
+    import re
+
+    def _sub(match):
+        name = match.group(1).strip()
+        if name not in values or values[name] is None:
+            raise ConfigError(
+                f"{field} sablonunda cozulemeyen deger: '{{{{ {name} }}}}'."
+            )
+        return str(values[name])
+
+    return re.sub(r"\{\{\s*([A-Za-z0-9_.]+)\s*\}\}", _sub, text)
+
+
+def _file_source_context(conn_id: str, params: dict, task_config: dict):
+    from ffengine.pipeline.file_transport import FileSourceContext
+
+    return FileSourceContext(
+        conn_id=conn_id,
+        conn_type=str(params.get("conn_type") or ""),
+        file_path=str(task_config.get("file_path") or ""),
+        source_type=str(task_config.get("source_type") or "csv"),
+        options={
+            "delimiter": task_config.get("delimiter"),
+            "encoding": task_config.get("encoding"),
+            "header": task_config.get("header", True),
+            "quotechar": task_config.get("quotechar"),
+            "json_mode": task_config.get("json_mode", "flat"),
+        },
+    )
+
+
+def _file_target_context(conn_id: str, params: dict, task_config: dict):
+    from ffengine.pipeline.file_transport import FileTargetContext
+
+    return FileTargetContext(
+        conn_id=conn_id,
+        conn_type=str(params.get("conn_type") or ""),
+        file_path=str(task_config.get("target_file_path") or ""),
+        options={
+            "delimiter": task_config.get("target_delimiter"),
+            "encoding": task_config.get("target_encoding"),
+            "header": task_config.get("target_header", True),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # FFEngineOperator
 # ---------------------------------------------------------------------------
 
@@ -663,8 +728,11 @@ class FFEngineOperator(BaseOperator):
         -------
         dict : Toplam sonuç (rows, duration_seconds, throughput, partitions_completed, errors).
         """
+        from contextlib import ExitStack
+
         from ffengine.config.loader import ConfigLoader
         from ffengine.config.binding_resolver import BindingResolver
+        from ffengine.config.schema import FILE_SOURCE_TYPES
         from ffengine.db.airflow_adapter import AirflowConnectionAdapter
         from ffengine.db.session import DBSession
         from ffengine.mapping import MappingResolver
@@ -728,88 +796,129 @@ class FFEngineOperator(BaseOperator):
             tgt_params = AirflowConnectionAdapter.get_connection_params(
                 self.target_conn_id
             )
-
-            # 3. Dialect çöz
-            src_dialect = resolve_dialect(src_params["conn_type"])
-            tgt_dialect = resolve_dialect(tgt_params["conn_type"])
             source_db = src_params.get("conn_type", "unknown")
             target_db = tgt_params.get("conn_type", "unknown")
 
-            # 4. Binding çöz
+            # F1.4/F1.5 — file uçları DB dialect/session çözümünü atlar.
+            source_is_file = (
+                str(task_config.get("source_type") or "").strip().lower()
+                in FILE_SOURCE_TYPES
+            )
+            target_is_file = (
+                str(task_config.get("target_type") or "db").strip().lower() == "file"
+            )
+
+            # 3. Dialect çöz (yalnız DB uçları)
+            src_dialect = (
+                None if source_is_file else resolve_dialect(src_params["conn_type"])
+            )
+            tgt_dialect = (
+                None if target_is_file else resolve_dialect(tgt_params["conn_type"])
+            )
+
+            # 4. Binding çöz (+ dosya yolu şablon/render)
             resolver = BindingResolver()
             task_config = resolver.resolve(task_config, airflow_ctx)
+            task_config = _render_file_paths(task_config, airflow_ctx)
 
-            # 5. Session'lar aç, mapping çöz, partition planla, çalıştır
-            with DBSession(src_params, src_dialect) as src_session:
-                with DBSession(tgt_params, tgt_dialect) as tgt_session:
-                    if task_config.get("bindings") or task_config.get("where"):
-                        task_config = resolver.resolve_sql_bindings(
-                            task_config,
-                            context=airflow_ctx,
-                            source_session=src_session,
-                            target_session=tgt_session,
-                            where_dialect=src_dialect,
-                        )
-                    # 6. Mapping çöz (C09 entegrasyonu)
-                    mapping = MappingResolver().resolve(
+            # 5. Session'lar aç (yalnız DB uçları), mapping/partition/çalıştır
+            with ExitStack() as stack:
+                src_session = (
+                    None
+                    if source_is_file
+                    else stack.enter_context(DBSession(src_params, src_dialect))
+                )
+                tgt_session = (
+                    None
+                    if target_is_file
+                    else stack.enter_context(DBSession(tgt_params, tgt_dialect))
+                )
+                if not source_is_file and (
+                    task_config.get("bindings") or task_config.get("where")
+                ):
+                    task_config = resolver.resolve_sql_bindings(
                         task_config,
-                        src_session.conn,
-                        src_dialect,
-                        tgt_dialect,
+                        context=airflow_ctx,
+                        source_session=src_session,
+                        target_session=tgt_session,
+                        where_dialect=src_dialect,
                     )
-                    task_config["source_columns"] = mapping.source_columns
-                    task_config["target_columns"] = mapping.target_columns
-                    task_config["target_columns_meta"] = mapping.target_columns_meta
-                    task_config["target_value_exprs"] = mapping.target_value_exprs
-                    task_config["plain_source_by_target"] = mapping.plain_source_by_target
+                # 6. Mapping çöz (C09). Dosya hedefi kaynak kolonlarını aynen taşır.
+                src_conn = None if src_session is None else src_session.conn
+                mapping = MappingResolver().resolve(
+                    task_config,
+                    src_conn,
+                    src_dialect,
+                    tgt_dialect or src_dialect,
+                )
+                task_config["source_columns"] = mapping.source_columns
+                task_config["target_columns"] = mapping.target_columns
+                task_config["target_columns_meta"] = mapping.target_columns_meta
+                task_config["target_value_exprs"] = mapping.target_value_exprs
+                task_config["plain_source_by_target"] = mapping.plain_source_by_target
 
-                    # 7. Partition planla
+                # 7. Partition planla (dosya ucu → tek partition, M=1)
+                if source_is_file or target_is_file:
+                    specs = [{"part_id": 0, "where": None}]
+                else:
                     specs = Partitioner().plan(
                         task_config, src_session.conn, src_dialect
                     )
 
-                    # ---- Phase 2: PREPARE ----
-                    _log_structured(
-                        level=logging.INFO,
-                        stage="airflow",
-                        message="Operator prepare phase.",
-                        task_group_id=self.task_group_id,
-                        source_db=source_db,
-                        target_db=target_db,
+                # Handle'lar: dosya uçları File*Context, DB uçları DBSession.
+                src_handle = (
+                    _file_source_context(self.source_conn_id, src_params, task_config)
+                    if source_is_file
+                    else src_session
+                )
+                tgt_handle = (
+                    _file_target_context(self.target_conn_id, tgt_params, task_config)
+                    if target_is_file
+                    else tgt_session
+                )
+
+                # ---- Phase 2: PREPARE (DB hedef; dosya hedef FlowManager içinde) ----
+                _log_structured(
+                    level=logging.INFO,
+                    stage="airflow",
+                    message="Operator prepare phase.",
+                    task_group_id=self.task_group_id,
+                    source_db=source_db,
+                    target_db=target_db,
+                )
+                if not target_is_file:
+                    TargetWriter(tgt_session, tgt_dialect).prepare(task_config)
+
+                # ---- Phase 3: RUN ----
+                _log_structured(
+                    level=logging.INFO,
+                    stage="airflow",
+                    message="Operator run phase.",
+                    task_group_id=self.task_group_id,
+                    source_db=source_db,
+                    target_db=target_db,
+                    partition_id=len(specs),
+                )
+                base_where = task_config.get("_resolved_where")
+                results: list[FlowResult] = []
+                manager = FlowManager()
+
+                for spec in specs:
+                    effective = dict(task_config)
+                    effective["_resolved_where"] = combine_where(
+                        base_where, spec.get("where")
                     )
-                    writer = TargetWriter(tgt_session, tgt_dialect)
-                    writer.prepare(task_config)
 
-                    # ---- Phase 3: RUN ----
-                    _log_structured(
-                        level=logging.INFO,
-                        stage="airflow",
-                        message="Operator run phase.",
-                        task_group_id=self.task_group_id,
-                        source_db=source_db,
-                        target_db=target_db,
-                        partition_id=len(specs),
+                    result = manager.run_flow_task(
+                        src_session=src_handle,
+                        tgt_session=tgt_handle,
+                        src_dialect=src_dialect,
+                        tgt_dialect=tgt_dialect,
+                        task_config=effective,
+                        partition_spec=None,
+                        skip_prepare=not target_is_file,
                     )
-                    base_where = task_config.get("_resolved_where")
-                    results: list[FlowResult] = []
-                    manager = FlowManager()
-
-                    for spec in specs:
-                        effective = dict(task_config)
-                        effective["_resolved_where"] = combine_where(
-                            base_where, spec.get("where")
-                        )
-
-                        result = manager.run_flow_task(
-                            src_session=src_session,
-                            tgt_session=tgt_session,
-                            src_dialect=src_dialect,
-                            tgt_dialect=tgt_dialect,
-                            task_config=effective,
-                            partition_spec=None,
-                            skip_prepare=True,
-                        )
-                        results.append(result)
+                    results.append(result)
 
             # ---- Aggregate + XCom ----
             aggregated = aggregate_results(results)

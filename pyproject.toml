@@ -17,6 +17,7 @@ dependencies = [
     "apache-airflow-providers-microsoft-mssql>=4.0.0",
     "apache-airflow-providers-oracle>=4.0.0",
     "apache-airflow-providers-smtp>=2.0.0",
+    "apache-airflow-providers-sftp>=4.0.0",
     "apache-airflow-providers-standard>=1.6.0",
     "flask-appbuilder>=4.3.0",
     "psycopg[binary]>=3.1.0",

@@ -22,6 +22,9 @@ from ffengine.config.schema import (
     VALID_LOAD_METHODS,
     VALID_PARTITION_MODES,
     VALID_SOURCE_TYPES,
+    FILE_SOURCE_TYPES,
+    VALID_JSON_MODES,
+    VALID_TARGET_TYPES,
 )
 from ffengine.errors import http_status_for, normalize_exception
 from ffengine.ui.studio_service import (
@@ -29,6 +32,7 @@ from ffengine.ui.studio_service import (
     create_or_update_dag,
     delete_dag_bundle,
     discover_dag_explorer_items,
+    search_dag_explorer_items,
     discover_dag_dependency_options,
     discover_timezones,
     get_airflow_default_timezone_name,
@@ -304,6 +308,18 @@ class FlowTaskPayload(BaseModel):
     partitioning_ranges: list[Any] | None = None
     bindings: list[BindingPayload] | None = None
     depends_on: list[str] | None = None
+    # F1.4/F1.5 — file source (csv/json) + file target
+    file_path: str | None = None
+    delimiter: str | None = None
+    encoding: str | None = None
+    quotechar: str | None = None
+    header: bool | None = None
+    json_mode: str | None = None
+    target_type: str = "db"
+    target_file_path: str | None = None
+    target_delimiter: str | None = None
+    target_encoding: str | None = None
+    target_header: bool | None = None
 
     @field_validator("depends_on")
     @classmethod
@@ -323,10 +339,19 @@ class FlowTaskPayload(BaseModel):
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
-        if v not in {"table", "view", "sql"}:
-            raise ValueError("source_type must be one of: 'table', 'view', or 'sql'.")
+        if v not in {"table", "view", "sql", "csv", "json"}:
+            raise ValueError(
+                "source_type must be one of: table, view, sql, csv, json."
+            )
         if v not in VALID_SOURCE_TYPES:
             raise ValueError(f"Invalid source_type: {v!r}")
+        return v
+
+    @field_validator("target_type")
+    @classmethod
+    def _v_target_type(cls, v: str) -> str:
+        if v not in VALID_TARGET_TYPES:
+            raise ValueError(f"Invalid target_type: {v!r}. Use 'db' or 'file'.")
         return v
 
     @field_validator("task_type")
@@ -367,13 +392,29 @@ class FlowTaskPayload(BaseModel):
         )
         self.upsert_match_columns = normalized_upsert_match_columns or None
         if self.task_type == "source_target":
-            if (
+            if self.target_type == "file":
+                if not (self.target_file_path or "").strip():
+                    raise ValueError(
+                        "target_file_path is required when target_type='file'."
+                    )
+            elif (
                 not (self.target_schema or "").strip()
                 or not (self.target_table or "").strip()
             ):
                 raise ValueError(
                     "target_schema and target_table are required when task_type='source_target'."
                 )
+            if self.source_type in FILE_SOURCE_TYPES:
+                if not (self.file_path or "").strip():
+                    raise ValueError(
+                        "file_path is required when source_type=csv|json."
+                    )
+                if self.source_type == "json":
+                    mode = str(self.json_mode or "flat").strip().lower()
+                    if mode not in VALID_JSON_MODES:
+                        raise ValueError(
+                            "json_mode must be 'flat' (raw not supported — F1.4b)."
+                        )
             if self.source_type == "sql" and self.column_mapping_mode != "mapping_file":
                 raise ValueError(
                     "column_mapping_mode='mapping_file' is required when source_type='sql'."
@@ -463,6 +504,7 @@ class NotificationsPayload(BaseModel):
     notify_emails: list[str] | None = None
     notify_conn_id: str | None = None
     notify_template: str | None = None
+    notify_deadline_minutes: int | None = None
 
     @model_validator(mode="after")
     def _v_notifications(self) -> "NotificationsPayload":
@@ -472,11 +514,13 @@ class NotificationsPayload(BaseModel):
             self.notify_emails = None
             self.notify_conn_id = None
             self.notify_template = None
+            self.notify_deadline_minutes = None
         else:
             self.notify_on = normalized["notify_on"]
             self.notify_emails = normalized["notify_emails"]
             self.notify_conn_id = normalized["notify_conn_id"]
             self.notify_template = normalized.get("notify_template")
+            self.notify_deadline_minutes = normalized.get("notify_deadline_minutes")
         return self
 
 
@@ -652,6 +696,18 @@ class DagUpsertPayload(BaseModel):
     partitioning_distinct_limit: int | None = Field(default=None, ge=1, le=1_000_000)
     partitioning_ranges: list[Any] | None = None
     bindings: list[BindingPayload] | None = None
+    # F1.4/F1.5 — file source (csv/json) + file target (single-task DAG path)
+    file_path: str | None = None
+    delimiter: str | None = None
+    encoding: str | None = None
+    quotechar: str | None = None
+    header: bool | None = None
+    json_mode: str | None = None
+    target_type: str = "db"
+    target_file_path: str | None = None
+    target_delimiter: str | None = None
+    target_encoding: str | None = None
+    target_header: bool | None = None
     task_group_id: str | None = Field(default=None, min_length=1)
     flow_tasks: list[FlowTaskPayload] | None = None
     custom_tags: list[str] | None = None
@@ -668,10 +724,19 @@ class DagUpsertPayload(BaseModel):
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
-        if v not in {"table", "view", "sql"}:
-            raise ValueError("source_type must be one of: 'table', 'view', or 'sql'.")
+        if v not in {"table", "view", "sql", "csv", "json"}:
+            raise ValueError(
+                "source_type must be one of: table, view, sql, csv, json."
+            )
         if v not in VALID_SOURCE_TYPES:
             raise ValueError(f"Invalid source_type: {v!r}")
+        return v
+
+    @field_validator("target_type")
+    @classmethod
+    def _v_target_type(cls, v: str) -> str:
+        if v not in VALID_TARGET_TYPES:
+            raise ValueError(f"Invalid target_type: {v!r}. Use 'db' or 'file'.")
         return v
 
     @field_validator("task_type")
@@ -787,7 +852,9 @@ class DagUpsertPayload(BaseModel):
             )
             return self
 
-        target_required_ok = all(
+        if self.target_type == "file" and not (self.target_file_path or "").strip():
+            raise ValueError("target_file_path is required when target_type='file'.")
+        target_required_ok = (self.target_type == "file") or all(
             [(self.target_schema or "").strip(), (self.target_table or "").strip()]
         )
         if self.source_type in {"table", "view"}:
@@ -798,6 +865,13 @@ class DagUpsertPayload(BaseModel):
                 raise ValueError(
                     "When flow_tasks is not provided and source_type=table|view, "
                     "source_schema/source_table/target_schema/target_table are required."
+                )
+        elif self.source_type in FILE_SOURCE_TYPES:
+            if not (self.file_path or "").strip():
+                raise ValueError("file_path is required when source_type=csv|json.")
+            if not target_required_ok:
+                raise ValueError(
+                    "target_schema/target_table (or target_type='file') are required."
                 )
         elif not target_required_ok:
             raise ValueError(
@@ -840,6 +914,13 @@ class MappingGeneratePayload(BaseModel):
     task_group_id: str | None = Field(default=None, min_length=1)
     task_no: int = Field(1, ge=1)
     version: str = "v1.1"
+    # F1.4/F1.5 — file source preview inputs
+    file_path: str | None = None
+    delimiter: str | None = None
+    encoding: str | None = None
+    quotechar: str | None = None
+    header: bool | None = None
+    json_mode: str | None = None
 
     @field_validator("project", "domain", "level", "flow", mode="before")
     @classmethod
@@ -849,8 +930,10 @@ class MappingGeneratePayload(BaseModel):
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
-        if v not in {"table", "view", "sql"}:
-            raise ValueError("source_type must be one of: 'table', 'view', or 'sql'.")
+        if v not in {"table", "view", "sql", "csv", "json"}:
+            raise ValueError(
+                "source_type must be one of: table, view, sql, csv, json."
+            )
         if v not in VALID_SOURCE_TYPES:
             raise ValueError(f"Invalid source_type: {v!r}")
         return v
@@ -867,6 +950,8 @@ class MappingGeneratePayload(BaseModel):
                 )
         if self.source_type == "sql" and not (self.inline_sql or "").strip():
             raise ValueError("inline_sql is required when source_type='sql'.")
+        if self.source_type in FILE_SOURCE_TYPES and not (self.file_path or "").strip():
+            raise ValueError("file_path is required when source_type=csv|json.")
         return self
 
 
@@ -985,6 +1070,16 @@ def health() -> dict[str, Any]:
 def api_dag_explorer() -> dict[str, Any]:
     try:
         data = discover_dag_explorer_items()
+        return {"ok": True, **data}
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@flow_studio_app.get("/api/dag-search")
+def api_dag_search(q: str | None = None) -> dict[str, Any]:
+    """Case-insensitive keyword search inside each DAG's content (.py + YAML)."""
+    try:
+        data = search_dag_explorer_items(q or "")
         return {"ok": True, **data}
     except Exception as exc:
         _raise_http_from_exception(exc)

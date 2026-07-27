@@ -29,7 +29,11 @@ from ffengine.config.dag_param_flow import (
     compile_dag_parameter_flow,
     validate_binding_target_is_custom,
 )
-from ffengine.config.schema import VALID_NOTIFY_TRIGGERS
+from ffengine.config.schema import (
+    VALID_NOTIFY_TRIGGERS,
+    FILE_SOURCE_TYPES,
+    VALID_JSON_MODES,
+)
 from ffengine.config.validator import ConfigValidator
 from ffengine.db.airflow_adapter import AirflowConnectionAdapter
 from ffengine.db.session import DBSession
@@ -443,6 +447,15 @@ def normalize_notifications(raw: Any) -> dict[str, Any] | None:
     emails = _normalize_notify_emails(raw.get("notify_emails"))
     conn_id = str(raw.get("notify_conn_id") or "").strip()
     template = str(raw.get("notify_template") or "").strip()
+    deadline_raw = raw.get("notify_deadline_minutes")
+    try:
+        deadline_minutes = (
+            int(deadline_raw) if deadline_raw not in (None, "") else 0
+        )
+    except (TypeError, ValueError):
+        raise ValueError(
+            "notifications.notify_deadline_minutes must be an integer (minutes)."
+        )
 
     if not triggers and not emails and not conn_id:
         return None
@@ -460,6 +473,11 @@ def normalize_notifications(raw: Any) -> dict[str, Any] | None:
         raise ValueError(
             "notifications.notify_conn_id (SMTP Airflow Connection) is required."
         )
+    if "deadline" in triggers and deadline_minutes <= 0:
+        raise ValueError(
+            "notifications.notify_deadline_minutes must be a positive integer "
+            "(minutes) when the 'deadline' trigger is selected."
+        )
 
     result: dict[str, Any] = {
         "notify_on": triggers,
@@ -470,6 +488,59 @@ def normalize_notifications(raw: Any) -> dict[str, Any] | None:
     # so existing configs stay byte-identical (backward compatible).
     if template and template != "Default":
         result["notify_template"] = template
+    # Deadline minutes persisted only when the deadline trigger is on.
+    if "deadline" in triggers and deadline_minutes > 0:
+        result["notify_deadline_minutes"] = deadline_minutes
+    return result
+
+
+def normalize_file_source(item: dict[str, Any], source_type: str) -> dict[str, Any] | None:
+    """F1.4/F1.5 — extract + validate csv/json file-source fields.
+
+    Returns None for non-file sources (byte-identical DB configs). File sources
+    require an explicit ``file_path``; ``json`` accepts only ``flat`` this slice.
+    """
+    if source_type not in FILE_SOURCE_TYPES:
+        return None
+    file_path = str(item.get("file_path") or "").strip()
+    if not file_path:
+        raise ValueError("file_path is required for a csv/json file source.")
+    result: dict[str, Any] = {"file_path": file_path}
+    for key in ("delimiter", "encoding", "quotechar"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            result[key] = value
+    if "header" in item:
+        result["header"] = bool(item.get("header"))
+    if source_type == "json":
+        json_mode = str(item.get("json_mode") or "flat").strip().lower()
+        if json_mode not in VALID_JSON_MODES:
+            raise ValueError(
+                f"json_mode must be one of {sorted(VALID_JSON_MODES)} "
+                "('raw' is not supported yet — F1.4b)."
+            )
+        result["json_mode"] = json_mode
+    return result
+
+
+def normalize_file_target(item: dict[str, Any]) -> dict[str, Any] | None:
+    """F1.5 — extract + validate file-target fields (target_type='file')."""
+    target_type = str(item.get("target_type") or "db").strip().lower()
+    if target_type != "file":
+        return None
+    path = str(item.get("target_file_path") or "").strip()
+    if not path:
+        raise ValueError("target_file_path is required when target_type='file'.")
+    result: dict[str, Any] = {"target_type": "file", "target_file_path": path}
+    for src_key, dst_key in (
+        ("target_delimiter", "target_delimiter"),
+        ("target_encoding", "target_encoding"),
+    ):
+        value = str(item.get(src_key) or "").strip()
+        if value:
+            result[dst_key] = value
+    if "target_header" in item:
+        result["target_header"] = bool(item.get("target_header"))
     return result
 
 
@@ -1729,6 +1800,11 @@ def _generate_mapping_content_for_task(
         preview_payload["source_table"] = str(task.get("source_table") or "").strip()
     elif source_type == "sql":
         preview_payload["inline_sql"] = str(task.get("inline_sql") or "").strip()
+    elif source_type in FILE_SOURCE_TYPES:
+        preview_payload["file_path"] = str(task.get("file_path") or "").strip()
+        for key in ("delimiter", "encoding", "quotechar", "header", "json_mode"):
+            if task.get(key) is not None:
+                preview_payload[key] = task.get(key)
 
     preview = generate_mapping_preview(preview_payload)
     mapping_content = str(preview.get("mapping_content") or "")
@@ -2220,6 +2296,19 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                 ),
                 "partitioning_ranges": partitioning.get("ranges") or [],
                 "bindings": _normalize_bindings(task.get("bindings")),
+                # F1.4/F1.5 — file source/target fields (preload for edit).
+                "file_path": str(task.get("file_path") or "").strip() or None,
+                "delimiter": task.get("delimiter"),
+                "encoding": task.get("encoding"),
+                "quotechar": task.get("quotechar"),
+                "header": task.get("header"),
+                "json_mode": task.get("json_mode"),
+                "target_type": str(task.get("target_type") or "db").strip() or "db",
+                "target_file_path": str(task.get("target_file_path") or "").strip()
+                or None,
+                "target_delimiter": task.get("target_delimiter"),
+                "target_encoding": task.get("target_encoding"),
+                "target_header": task.get("target_header"),
             }
         )
 
@@ -2268,6 +2357,17 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "partitioning_distinct_limit": first_task["partitioning_distinct_limit"],
         "partitioning_ranges": first_task["partitioning_ranges"],
         "bindings": first_task["bindings"],
+        "file_path": first_task["file_path"],
+        "delimiter": first_task["delimiter"],
+        "encoding": first_task["encoding"],
+        "quotechar": first_task["quotechar"],
+        "header": first_task["header"],
+        "json_mode": first_task["json_mode"],
+        "target_type": first_task["target_type"],
+        "target_file_path": first_task["target_file_path"],
+        "target_delimiter": first_task["target_delimiter"],
+        "target_encoding": first_task["target_encoding"],
+        "target_header": first_task["target_header"],
         "flow_tasks": normalized_tasks,
     }
 
@@ -3025,7 +3125,30 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "upsert_match_columns is only supported when task_type='source_target'."
         )
+    _apply_file_endpoints(task, payload, source_type, str(task_group_id), 1)
     return task
+
+
+def _apply_file_endpoints(
+    task: dict[str, Any],
+    item: dict[str, Any],
+    source_type: str,
+    task_group_id: str,
+    task_index: int,
+) -> None:
+    """F1.4/F1.5 — merge validated file source/target fields into a task dict."""
+    if task.get("task_type") != STUDIO_TASK_TYPE_SOURCE_TARGET:
+        return
+    file_source = normalize_file_source(item, source_type)
+    if file_source is not None:
+        task["column_mapping_mode"] = "mapping_file"
+        task["mapping_file"] = _auto_mapping_relative_file(task_index, task_group_id)
+        task["source_schema"] = ""
+        task["source_table"] = ""
+        task.update(file_source)
+    file_target = normalize_file_target(item)
+    if file_target is not None:
+        task.update(file_target)
 
 
 def build_task_dict_for_validation_from_task(
@@ -3123,6 +3246,9 @@ def build_task_dict_for_validation_from_task(
         raise ValueError(
             "upsert_match_columns is only supported when task_type='source_target'."
         )
+    _apply_file_endpoints(
+        task, task_payload, source_type, str(task_group_id), task_index
+    )
     return task
 
 
@@ -3507,6 +3633,60 @@ def discover_dag_explorer_items() -> dict[str, Any]:
     }
 
 
+def search_dag_explorer_items(query: str) -> dict[str, Any]:
+    """DAG Explorer content search.
+
+    Case-insensitive keyword match over each DAG's on-disk content — the
+    generated `.py` plus its `config.yaml` and mapping YAML (where source_type/
+    file_path/tables/where/etc. live). Returns the same item shape as
+    `discover_dag_explorer_items` so the right panel renders identically.
+    Empty query ⇒ all items (unfiltered).
+    """
+    base = discover_dag_explorer_items()
+    needle = str(query or "").strip().lower()
+    if not needle:
+        return base
+    matched = [
+        item for item in base.get("items", []) if _dag_item_matches(item, needle)
+    ]
+    return {"root": base.get("root"), "items": matched, "count": len(matched)}
+
+
+def _dag_item_matches(item: dict[str, Any], needle: str) -> bool:
+    """A cheap dag_id match, then a content scan for studio DAGs only."""
+    if needle in str(item.get("dag_id") or "").lower():
+        return True
+    if str(item.get("bucket") or "") != "dags_root":
+        return False  # external DAGs carry no config → dag_id match only
+    return needle in _dag_searchable_text(item).lower()
+
+
+def _dag_searchable_text(item: dict[str, Any]) -> str:
+    """Best-effort full text of one studio DAG (.py + config.yaml + mapping).
+
+    Never raises: a malformed/non-studio/unreadable DAG falls back to the `.py`
+    text alone (or ""), so it simply won't content-match. Path reads are guarded
+    under the DAG root / projects root (traversal-safe).
+    """
+    fileloc = str(item.get("fileloc") or "").strip()
+    if not fileloc:
+        return ""
+    try:
+        dag_path = _ensure_path_under_root(Path(fileloc), _generated_dag_root())
+        dag_text = dag_path.read_text(encoding="utf-8")
+    except (ValueError, OSError):
+        return ""
+    try:
+        config_path = _extract_config_path_from_dag_source(dag_path)
+        config_path = _ensure_path_under_root(config_path, _projects_root())
+        bundle = _read_active_bundle(dag_path, config_path, config_path.parent)
+        parts = [bundle["dag_text"], bundle["config_text"]]
+        parts.extend(bundle["mapping_texts"].values())
+        return "\n".join(parts)
+    except Exception:
+        return dag_text
+
+
 def discover_connections() -> list[dict[str, str]]:
     """Returns the configured connection list from Airflow metadata."""
     from airflow.models.connection import Connection
@@ -3771,12 +3951,118 @@ def discover_columns(conn_id: str, schema: str, table: str) -> list[dict[str, An
     ]
 
 
+def _detect_file_columns(
+    conn_id: str,
+    conn_type: str,
+    file_path: str,
+    source_type: str,
+    options: dict[str, Any],
+    sample_limit: int = 5,
+) -> tuple[list[str], list[list[Any]]]:
+    """Read a file's header/first-object keys + a few sample rows (preview)."""
+    import csv as _csv
+    import json as _json
+
+    from ffengine.pipeline.file_transport import open_read, resolve_read_paths
+
+    paths = resolve_read_paths(conn_id, conn_type, file_path)
+    handle = open_read(conn_id, conn_type, paths[0])
+    encoding = str(options.get("encoding") or "utf-8")
+    names: list[str] = []
+    sample_rows: list[list[Any]] = []
+    try:
+        lines = (raw.decode(encoding) for raw in handle.stream)
+        if source_type == "csv":
+            reader = _csv.reader(
+                lines,
+                delimiter=str(options.get("delimiter") or ","),
+                quotechar=str(options.get("quotechar") or '"'),
+            )
+            header = next(reader, [])
+            if options.get("header", True):
+                names = [str(h) for h in header]
+            else:
+                names = [str(i + 1) for i in range(len(header))]
+                sample_rows.append(list(header))
+            for _, row in zip(range(sample_limit), reader):
+                sample_rows.append(list(row))
+        else:
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                obj = _json.loads(stripped)
+                if not isinstance(obj, dict):
+                    raise ValueError(
+                        "JSON flat preview bir JSON obje bekler (JSONL)."
+                    )
+                if not names:
+                    names = list(obj.keys())
+                sample_rows.append([obj.get(n) for n in names])
+                if len(sample_rows) >= sample_limit:
+                    break
+    finally:
+        handle.close()
+    if not names:
+        raise ValueError(f"Dosyadan kolon algilanamadi: {file_path}")
+    return names, sample_rows
+
+
+def _file_source_mapping_preview(
+    payload: dict[str, Any], source_type: str, source_conn_id: str
+) -> dict[str, Any]:
+    """F1.4 — draft mapping from a file's detected columns (untyped → editable)."""
+    src_params = AirflowConnectionAdapter.get_connection_params(source_conn_id)
+    conn_type = str(src_params.get("conn_type") or "")
+    file_path = str(payload.get("file_path") or "").strip()
+    if not file_path:
+        raise ValueError("file_path is required for a csv/json source preview.")
+    options = {
+        "delimiter": payload.get("delimiter"),
+        "encoding": payload.get("encoding"),
+        "header": payload.get("header", True),
+        "quotechar": payload.get("quotechar"),
+        "json_mode": payload.get("json_mode", "flat"),
+    }
+    names, sample_rows = _detect_file_columns(
+        source_conn_id, conn_type, file_path, source_type, options
+    )
+    version = str(payload.get("version") or "v1.1").strip() or "v1.1"
+    task_no = max(1, int(payload.get("task_no") or 1))
+    task_group_id = str(payload.get("task_group_id") or "").strip() or f"task_{task_no}"
+    columns = [
+        {
+            "source_name": name,
+            "target_name": name,
+            "target_type": "varchar(255)",
+            "nullable": True,
+        }
+        for name in names
+    ]
+    mapping_obj = {"version": version, "columns": columns}
+    return {
+        "mapping_content": _mapping_dump_text(mapping_obj),
+        "generated_mapping_file": _auto_mapping_relative_file(task_no, task_group_id),
+        "warnings": [
+            "Dosya kaynaklarinda tip algilanamaz; target_type varsayilani "
+            "'varchar(255)' — mapping editorunden duzenleyin."
+        ],
+        "column_count": len(columns),
+        "version": version,
+        "columns": columns,
+        "sample_rows": sample_rows,
+    }
+
+
 def generate_mapping_preview(payload: dict[str, Any]) -> dict[str, Any]:
     source_type = str(payload.get("source_type") or "table").strip() or "table"
     source_conn_id = str(payload.get("source_conn_id") or "").strip()
     target_conn_id = str(payload.get("target_conn_id") or "").strip()
     if not source_conn_id or not target_conn_id:
         raise ValueError("source_conn_id and target_conn_id are required.")
+
+    if source_type in FILE_SOURCE_TYPES:
+        return _file_source_mapping_preview(payload, source_type, source_conn_id)
 
     src_params = AirflowConnectionAdapter.get_connection_params(source_conn_id)
     tgt_params = AirflowConnectionAdapter.get_connection_params(target_conn_id)
@@ -3991,16 +4277,28 @@ def create_or_update_dag(
             )
             script_sql = str(item.get("script_sql") or "").strip() or None
             dag_task_dag_id = str(item.get("dag_task_dag_id") or "").strip() or None
+            file_source = None
+            file_target = None
 
             if task_type == STUDIO_TASK_TYPE_SOURCE_TARGET:
-                normalized_source_schema = source_schema or (
-                    "sql" if source_type == "sql" else ""
-                )
-                normalized_source_table = source_table or (
-                    "query" if source_type == "sql" else ""
-                )
-                auto_source_schema = normalized_source_schema
-                auto_source_table = normalized_source_table
+                file_source = normalize_file_source(item, source_type)
+                file_target = normalize_file_target(item)
+                if file_source is not None:
+                    normalized_source_schema = ""
+                    normalized_source_table = ""
+                    auto_source_schema = "file"
+                    auto_source_table = _slugify(
+                        os.path.basename(file_source["file_path"]) or "file", "file"
+                    )
+                else:
+                    normalized_source_schema = source_schema or (
+                        "sql" if source_type == "sql" else ""
+                    )
+                    normalized_source_table = source_table or (
+                        "query" if source_type == "sql" else ""
+                    )
+                    auto_source_schema = normalized_source_schema
+                    auto_source_table = normalized_source_table
                 auto_load_method = load_method
             elif task_type == STUDIO_TASK_TYPE_SCRIPT_RUN:
                 if script_run_environment not in STUDIO_VALID_SCRIPT_RUN_ENVIRONMENTS:
@@ -4108,6 +4406,11 @@ def create_or_update_dag(
                 task_cfg["bindings"] = bindings
             if upsert_match_columns:
                 task_cfg["upsert_match_columns"] = upsert_match_columns
+            if file_source is not None:
+                task_cfg["column_mapping_mode"] = "mapping_file"
+                task_cfg.update(file_source)
+            if file_target is not None:
+                task_cfg.update(file_target)
             mode = str(task_cfg.get("column_mapping_mode") or "source")
             mapping_content = str(item.get("mapping_content") or "")
             if mapping_content.strip() and save_src_dialect and save_tgt_dialect:

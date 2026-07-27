@@ -4,242 +4,149 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DAG Explorer</title>
+  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=95">
   <style>
+    /* DAG Explorer — restyled on the Flow Studio design system (self-sufficient
+       tokens with Flow Studio fallbacks so it holds with or without the sheet). */
     :root {
       color-scheme: light dark;
-      --bg: #f6f8fb;
-      --card: #ffffff;
-      --line: #d9e0ea;
-      --text: #17212b;
-      --muted: #5a6a7d;
-      --accent: #0b57d0;
-      --ok: #198754;
-      --warn: #9c7a00;
+      --bg: var(--color-bg-main, #f5f7fb);
+      --card: var(--color-bg-1, #ffffff);
+      --line: var(--color-border, #dbe2ea);
+      --text: var(--color-text, #0f172a);
+      --muted: var(--color-text-secondary, #64748b);
+      --accent: var(--bs-primary, #0175ff);
+      --accent-soft: rgba(1, 117, 255, 0.10);
+      --ok: #16a34a;
+      --ok-soft: #e8f7ee;
+      --warn: #b45309;
+      --warn-soft: #fdf3d6;
+      --radius: 10px;
+      --ctrl-radius: 6px;
     }
     :root[data-theme="dark"] {
-      --bg: #0f172a;
-      --card: #111827;
-      --line: #2a3952;
-      --text: #e5eefb;
-      --muted: #9db0cb;
-      --accent: #7cb2ff;
-      --ok: #22c55e;
-      --warn: #f59e0b;
+      --bg: #0b1220;
+      --card: #111a2b;
+      --line: #24344d;
+      --text: #e6eefc;
+      --muted: #9fb2cf;
+      --accent: #4c9bff;
+      --accent-soft: rgba(76, 155, 255, 0.16);
+      --ok: #34d399;
+      --ok-soft: #12351f;
+      --warn: #fbbf24;
+      --warn-soft: #3a2e0b;
     }
     @media (prefers-color-scheme: dark) {
       :root:not([data-theme="light"]) {
-        --bg: #0f172a;
-        --card: #111827;
-        --line: #2a3952;
-        --text: #e5eefb;
-        --muted: #9db0cb;
-        --accent: #7cb2ff;
-        --ok: #22c55e;
-        --warn: #f59e0b;
+        --bg: #0b1220;
+        --card: #111a2b;
+        --line: #24344d;
+        --text: #e6eefc;
+        --muted: #9fb2cf;
+        --accent: #4c9bff;
+        --accent-soft: rgba(76, 155, 255, 0.16);
+        --ok: #34d399;
+        --ok-soft: #12351f;
+        --warn: #fbbf24;
+        --warn-soft: #3a2e0b;
       }
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: "Segoe UI", Arial, sans-serif;
+      font-family: var(--font-family-base, "Segoe UI", Arial, sans-serif);
       color: var(--text);
       background: var(--bg);
     }
-    .page {
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 16px;
+    .page { max-width: 1340px; margin: 0 auto; padding: 20px; }
+    .app-header { margin-bottom: 16px; }
+    .app-header h1 { margin: 0 0 4px; font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
+    .app-header p { margin: 0; color: var(--muted); font-size: 14px; }
+    .root-info { margin-top: 6px; color: var(--muted); font-size: 12px; }
+    .root-info code { font-family: var(--font-family-mono, Consolas, "Courier New", monospace); }
+
+    /* Search bar */
+    .searchbar {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: var(--ctrl-radius); padding: 0 12px; height: 44px;
+      margin: 14px 0 18px; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      transition: border-color .12s, box-shadow .12s;
     }
-    .header {
-      margin-bottom: 12px;
+    .searchbar:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .searchbar-icon { color: var(--muted); font-size: 18px; line-height: 1; }
+    .searchbar-input {
+      flex: 1; border: 0; background: transparent; color: var(--text);
+      font-size: 14px; outline: none; height: 100%; min-width: 0;
     }
-    .header h1 {
-      margin: 0 0 4px;
-      font-size: 24px;
+    .searchbar-input::placeholder { color: var(--muted); }
+    .searchbar-clear {
+      border: 0; background: transparent; color: var(--muted);
+      font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px;
     }
-    .header p {
-      margin: 0;
-      color: var(--muted);
-    }
-    .root-info {
-      margin-top: 8px;
-      color: var(--muted);
-      font-size: 13px;
-    }
+    .searchbar-clear:hover { color: var(--text); }
+
     .layout {
-      display: grid;
-      grid-template-columns: 320px 1fr;
-      gap: 16px;
-      min-height: 560px;
+      display: grid; grid-template-columns: 320px 1fr; gap: 16px; min-height: 560px;
     }
     .panel {
-      background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      padding: 12px;
-    }
-    .panel h2 {
-      margin: 0 0 10px;
-      font-size: 16px;
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: var(--radius); padding: 14px;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
     }
     .panel-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      margin-bottom: 8px;
-    }
-    .panel-head h2 {
-      margin: 0;
-    }
-    .folder-actions {
-      display: flex;
-      gap: 6px;
-    }
-    .folder-btn {
-      border: 1px solid var(--line);
-      background: transparent;
-      color: var(--text);
-      border-radius: 6px;
-      padding: 2px 8px;
-      font-size: 12px;
-      cursor: pointer;
-    }
-    .folder-btn:hover {
-      background: #eef4ff;
-      border-color: #c8dafc;
-    }
-    .tree-list {
-      list-style: none;
-      margin: 0;
-      padding: 0 0 0 12px;
-    }
-    .tree-list.root {
-      padding-left: 0;
-    }
-    .tree-item {
-      margin: 2px 0;
-    }
-    .tree-row {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .tree-toggle {
-      width: 18px;
-      height: 18px;
-      border: 1px solid transparent;
-      background: transparent;
-      color: var(--muted);
-      border-radius: 4px;
-      cursor: pointer;
-      line-height: 1;
-      padding: 0;
-      font-size: 11px;
-    }
-    .tree-toggle:hover {
-      background: #eef4ff;
-      border-color: #c8dafc;
-      color: var(--text);
-    }
-    .tree-toggle.placeholder {
-      cursor: default;
-      pointer-events: none;
-    }
-    .tree-btn {
-      display: inline-block;
-      border: 1px solid transparent;
-      background: transparent;
-      color: var(--text);
-      font-size: 13px;
-      text-align: left;
-      border-radius: 6px;
-      padding: 4px 6px;
-      cursor: pointer;
-      width: 100%;
-    }
-    .tree-btn:hover {
-      background: #eef4ff;
-      border-color: #c8dafc;
-    }
-    .tree-btn.active {
-      background: #dce9ff;
-      border-color: #b3ccfa;
-      color: #083f9f;
-      font-weight: 600;
-    }
-    :root[data-theme="dark"] .folder-btn:hover,
-    :root[data-theme="dark"] .tree-toggle:hover,
-    :root[data-theme="dark"] .tree-btn:hover {
-      background: #1a2a44;
-      border-color: #31507f;
-    }
-    :root[data-theme="dark"] .tree-btn.active {
-      background: #173153;
-      border-color: #2d5a93;
-      color: #b8d7ff;
-    }
-    .status {
-      margin: 8px 0;
-      color: var(--muted);
-      font-size: 13px;
-    }
-    .status.error {
-      color: #b42318;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-    }
-    th, td {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; margin-bottom: 10px; padding-bottom: 10px;
       border-bottom: 1px solid var(--line);
-      padding: 8px 6px;
-      vertical-align: top;
-      text-align: left;
     }
-    th {
-      color: var(--muted);
-      font-weight: 600;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.02em;
+    .panel h2 { margin: 0; font-size: 15px; font-weight: 700; }
+    .folder-actions { display: flex; gap: 6px; }
+    .folder-btn {
+      border: 1px solid var(--line); background: var(--card); color: var(--text);
+      border-radius: var(--ctrl-radius); padding: 5px 10px; font-size: 12px;
+      font-weight: 600; cursor: pointer; transition: all .12s;
     }
-    .dag-link {
-      color: var(--accent);
-      text-decoration: none;
-      font-weight: 600;
+    .folder-btn:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+    /* Folder tree */
+    .tree-list { list-style: none; margin: 0; padding: 0 0 0 14px; }
+    .tree-list.root { padding-left: 0; }
+    .tree-item { margin: 1px 0; }
+    .tree-row { display: flex; align-items: center; gap: 4px; }
+    .tree-toggle {
+      width: 20px; height: 24px; border: 0; background: transparent;
+      color: var(--muted); border-radius: 5px; cursor: pointer;
+      line-height: 1; padding: 0; font-size: 11px; flex: none;
     }
-    .dag-link:hover {
-      text-decoration: underline;
+    .tree-toggle:hover { background: var(--accent-soft); color: var(--accent); }
+    .tree-toggle.placeholder { cursor: default; pointer-events: none; }
+    .tree-btn {
+      display: inline-block; border: 1px solid transparent; background: transparent;
+      color: var(--text); font-size: 13px; text-align: left; border-radius: 6px;
+      padding: 5px 8px; cursor: pointer; width: 100%;
     }
-    .badge {
-      display: inline-block;
-      border-radius: 999px;
-      padding: 2px 8px;
-      font-size: 11px;
-      font-weight: 600;
-      border: 1px solid transparent;
+    .tree-btn:hover { background: var(--accent-soft); }
+    .tree-btn.active {
+      background: var(--accent-soft); border-color: var(--accent);
+      color: var(--accent); font-weight: 600;
     }
-    .badge.on {
-      color: var(--warn);
-      background: #fff6d6;
-      border-color: #ffe39c;
-    }
-    .badge.off {
-      color: var(--ok);
-      background: #e8f7ee;
-      border-color: #bfe8cd;
-    }
-    .empty {
-      color: var(--muted);
-      padding: 12px 4px;
-    }
-    .mono {
-      font-family: Consolas, "Courier New", monospace;
-      font-size: 12px;
-      word-break: break-all;
-    }
+
+    .status { margin: 8px 0; color: var(--muted); font-size: 13px; }
+    .status.error { color: #dc2626; }
+
+    /* DAG table */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 9px 8px; vertical-align: top; text-align: left; }
+    th { color: var(--muted); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+    tbody tr:hover { background: var(--accent-soft); }
+    .dag-link { color: var(--accent); text-decoration: none; font-weight: 600; }
+    .dag-link:hover { text-decoration: underline; }
+    .badge { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 11px; font-weight: 600; border: 1px solid transparent; }
+    .badge.on { color: var(--warn); background: var(--warn-soft); border-color: var(--warn); }
+    .badge.off { color: var(--ok); background: var(--ok-soft); border-color: var(--ok); }
+    .empty { color: var(--muted); padding: 16px 4px; }
+
     @media (max-width: 980px) {
       .layout { grid-template-columns: 1fr; }
     }
@@ -247,10 +154,17 @@
 </head>
 <body>
   <div class="page">
-    <div class="header">
+    <div class="app-header">
       <h1>DAG Explorer</h1>
-      <p>Browse DAGs by folder hierarchy. Select a DAG to open its Airflow page.</p>
+      <p>Browse DAGs by folder hierarchy, or search inside DAG content. Select a DAG to open its Airflow page.</p>
       <div id="root_info" class="root-info">Root: -</div>
+    </div>
+
+    <div class="searchbar">
+      <span class="searchbar-icon" aria-hidden="true">&#9906;</span>
+      <input id="dag_search" type="text" class="searchbar-input" autocomplete="off"
+             placeholder="Search inside DAG content &mdash; config/yaml included (case-insensitive)&hellip;">
+      <button id="dag_search_clear" class="searchbar-clear" type="button" title="Clear" style="display:none">&times;</button>
     </div>
 
     <div class="layout">
@@ -267,8 +181,10 @@
       </section>
 
       <section class="panel">
-        <h2 id="list_title">DAGs</h2>
-        <div id="list_status" class="status"></div>
+        <div class="panel-head">
+          <h2 id="list_title">DAGs</h2>
+          <span id="list_status" class="status" style="margin:0"></span>
+        </div>
         <div id="list_container"></div>
       </section>
     </div>
@@ -284,11 +200,15 @@
       const rootInfo = document.getElementById("root_info");
       const expandAllBtn = document.getElementById("expand_all_btn");
       const collapseAllBtn = document.getElementById("collapse_all_btn");
+      const dagSearch = document.getElementById("dag_search");
+      const dagSearchClear = document.getElementById("dag_search_clear");
 
       let currentSelection = { bucket: "dags_root", key: "" };
       let dagItems = [];
       let treeMap = new Map();
       let collapsedKeys = new Set();
+      let searchMode = false;
+      let searchTimer = null;
 
       function resolveTheme() {
         let explicit = "";
@@ -318,6 +238,16 @@
         return (parts || []).join("/");
       }
 
+      function fmtDate(value) {
+        const text = String(value || "").trim();
+        if (!text) return "-";
+        const d = new Date(text);
+        if (!Number.isNaN(d.getTime())) {
+          return d.toLocaleString();
+        }
+        return text;
+      }
+
       function expandAncestors(key) {
         if (!key) return;
         const parts = key.split("/");
@@ -330,7 +260,16 @@
         }
       }
 
+      function clearSearchSilently() {
+        if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
+        searchMode = false;
+        if (dagSearch) dagSearch.value = "";
+        if (dagSearchClear) dagSearchClear.style.display = "none";
+        if (listStatus) listStatus.classList.remove("error");
+      }
+
       function selectNode(bucket, key) {
+        clearSearchSilently();
         if (bucket === "dags_root") {
           expandAncestors(key || "");
         }
@@ -472,31 +411,20 @@
         });
       }
 
-      function renderList() {
-        const items = filteredItems();
-        const title = currentSelection.bucket === "external"
-          ? "DAGs / external"
-          : "DAGs / " + (currentSelection.key || "/");
-        listTitle.textContent = title;
+      // Shared right-panel renderer — reused by folder view and search results,
+      // so the DAG link + status badge behave identically in both.
+      function renderDagTable(items, titleText, statusText) {
+        listStatus.classList.remove("error");
+        listTitle.textContent = titleText;
+        listStatus.textContent = statusText;
         listContainer.innerHTML = "";
-        listStatus.textContent = items.length + " DAG(s)";
 
-        if (items.length === 0) {
+        if (!items.length) {
           const empty = document.createElement("div");
           empty.className = "empty";
-          empty.textContent = "No DAG in this folder.";
+          empty.textContent = searchMode ? "No DAG matched your search." : "No DAG in this folder.";
           listContainer.appendChild(empty);
           return;
-        }
-
-        function fmtDate(value) {
-          const text = String(value || "").trim();
-          if (!text) return "-";
-          const d = new Date(text);
-          if (!Number.isNaN(d.getTime())) {
-            return d.toLocaleString();
-          }
-          return text;
         }
 
         const table = document.createElement("table");
@@ -553,6 +481,57 @@
         listContainer.appendChild(table);
       }
 
+      function renderList() {
+        const items = filteredItems();
+        const title = currentSelection.bucket === "external"
+          ? "DAGs / external"
+          : "DAGs / " + (currentSelection.key || "/");
+        renderDagTable(items, title, items.length + " DAG(s)");
+      }
+
+      async function runSearch(query) {
+        searchMode = true;
+        listStatus.classList.remove("error");
+        listTitle.textContent = 'Search: "' + query + '"';
+        listStatus.textContent = "Searching…";
+        listContainer.innerHTML = "";
+        try {
+          const response = await fetch(
+            basePath() + "/api/dag-search?q=" + encodeURIComponent(query),
+            { headers: { "Accept": "application/json" }, credentials: "same-origin" }
+          );
+          const data = await response.json();
+          if (!response.ok || !data.ok) {
+            throw new Error(data.detail || "Search failed.");
+          }
+          // Ignore stale responses (user kept typing).
+          if (String(dagSearch.value || "").trim() !== query) return;
+          const items = Array.isArray(data.items) ? data.items : [];
+          renderDagTable(
+            items,
+            'Search: "' + query + '"',
+            items.length + " result(s)"
+          );
+        } catch (error) {
+          listStatus.textContent = String((error && error.message) || error);
+          listStatus.classList.add("error");
+          listContainer.innerHTML = "";
+        }
+      }
+
+      function onSearchInput() {
+        const raw = String(dagSearch.value || "");
+        dagSearchClear.style.display = raw ? "" : "none";
+        if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
+        const query = raw.trim();
+        if (!query) {
+          searchMode = false;
+          renderList();
+          return;
+        }
+        searchTimer = setTimeout(() => runSearch(query), 250);
+      }
+
       async function loadData() {
         treeStatus.textContent = "Loading...";
         treeStatus.classList.remove("error");
@@ -579,12 +558,19 @@
           for (const key of Array.from(folderKeySet).sort((a, b) => a.localeCompare(b))) {
             treeMap.set(key, true);
           }
-          rootInfo.textContent = "Root: " + (data.root || "-");
+          // Collapsed by default: seed every folder key as collapsed (root stays
+          // visible; child folders start closed). Expand/Collapse All still work.
+          collapsedKeys = new Set(Array.from(treeMap.keys()));
+          rootInfo.textContent = "";
+          rootInfo.appendChild(document.createTextNode("Root: "));
+          const rootCode = document.createElement("code");
+          rootCode.textContent = String(data.root || "-");
+          rootInfo.appendChild(rootCode);
           treeStatus.textContent = "Ready";
           renderTree();
           renderList();
         } catch (error) {
-          treeStatus.textContent = String(error && error.message || error);
+          treeStatus.textContent = String((error && error.message) || error);
           treeStatus.classList.add("error");
           listContainer.innerHTML = "";
           listStatus.textContent = "";
@@ -593,6 +579,12 @@
 
       expandAllBtn.onclick = expandAllFolders;
       collapseAllBtn.onclick = collapseAllFolders;
+      dagSearch.addEventListener("input", onSearchInput);
+      dagSearchClear.onclick = () => {
+        dagSearch.value = "";
+        onSearchInput();
+        dagSearch.focus();
+      };
       applyTheme();
       try {
         const darkMedia = window.matchMedia("(prefers-color-scheme: dark)");

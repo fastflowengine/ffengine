@@ -22,7 +22,10 @@ from ffengine.airflow.operator import (
     prepare_target_for_task,
     run_partition_for_task,
 )
-from ffengine.airflow.notifications import build_notification_callbacks
+from ffengine.airflow.notifications import (
+    build_deadline_alert,
+    build_notification_callbacks,
+)
 from ffengine.config.dag_param_flow import (
     TRIGGER_SOURCE,
     compile_dag_parameter_flow,
@@ -393,6 +396,8 @@ def build_generated_dag(
         scheduler = {}
     # F1.3 — flow-level operational notification (Airflow-native callbacks).
     notify_kwargs = build_notification_callbacks(raw.get("notifications"))
+    # F1.3c — deadline trigger (None unless configured + Airflow 3.2+).
+    deadline_alert = build_deadline_alert(raw.get("notifications"))
 
     if not source_conn_id or not target_conn_id:
         raise ValueError("source_db_var and target_db_var are required.")
@@ -466,6 +471,7 @@ def build_generated_dag(
         tags=list(dag_tags or []),
         params=dag_params,
         is_paused_upon_creation=not dag_active,
+        deadline=deadline_alert,
         **notify_kwargs,
     ) as dag:
         task_groups: dict[str, Any] = {}

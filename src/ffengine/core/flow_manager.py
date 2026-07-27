@@ -13,6 +13,7 @@ import logging
 import time
 from datetime import UTC, datetime
 
+from ffengine.config.schema import FILE_SOURCE_TYPES
 from ffengine.core.base_engine import BaseEngine, FlowResult
 from ffengine.errors import FFEngineError, error_payload, normalize_exception
 from ffengine.pipeline.source_reader import SourceReader
@@ -24,8 +25,40 @@ _log = logging.getLogger(__name__)
 
 
 def _dialect_name(dialect) -> str:
+    if dialect is None:
+        return "file"
     raw = type(dialect).__name__.lower()
     return raw.replace("dialect", "") or raw
+
+
+def build_source_reader(src_handle, config: dict, src_dialect):
+    """Pick the reader for this source: file (csv/json) vs DB cursor."""
+    source_type = str(config.get("source_type") or "table").strip().lower()
+    if source_type in FILE_SOURCE_TYPES:
+        from ffengine.pipeline.file_source_reader import FileSourceReader
+
+        return FileSourceReader(src_handle, config)
+    return SourceReader(src_handle, config, src_dialect)
+
+
+def build_target_writer(tgt_handle, tgt_dialect, config: dict):
+    """Pick the writer for this target: file (delimited) vs DB executemany."""
+    if str(config.get("target_type") or "db").strip().lower() == "file":
+        from ffengine.pipeline.file_target_writer import FileTargetWriter
+
+        return FileTargetWriter(tgt_handle)
+    return TargetWriter(tgt_handle, tgt_dialect)
+
+
+def _abort_writer_quietly(writer) -> None:
+    """Best-effort file-writer cleanup on failure (DB writers have no abort)."""
+    abort = getattr(writer, "abort", None)
+    if not callable(abort):
+        return
+    try:
+        abort()
+    except Exception:
+        pass
 
 
 def _log_structured(
@@ -109,8 +142,8 @@ class FlowManager:
         if partition_spec and partition_spec.get("where"):
             effective_config["_resolved_where"] = partition_spec["where"]
 
-        reader = SourceReader(src_session, effective_config, src_dialect)
-        writer = TargetWriter(tgt_session, tgt_dialect)
+        reader = build_source_reader(src_session, effective_config, src_dialect)
+        writer = build_target_writer(tgt_session, tgt_dialect, effective_config)
         transformer = Transformer()
         streamer = Streamer()
 
@@ -127,6 +160,9 @@ class FlowManager:
                 task_config=effective_config,
             )
         except Exception as exc:
+            # Ensure a file target's temp is dropped even when the failure
+            # happened during source iteration (before any write_batch).
+            _abort_writer_quietly(writer)
             norm = normalize_exception(exc)
             if isinstance(norm, FFEngineError):
                 norm.details.setdefault(

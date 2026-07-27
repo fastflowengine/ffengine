@@ -60,6 +60,12 @@ class Streamer:
                 writer.rollback_batch()
                 raise
 
+        # F1.5 — file targets promote temp→final atomically after the last
+        # batch. DB writers have no finalize (per-batch commit) → no-op.
+        finalize = getattr(writer, "finalize", None)
+        if callable(finalize):
+            finalize()
+
         return {"rows": total_rows}
 
     # ------------------------------------------------------------------

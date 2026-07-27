@@ -5,8 +5,14 @@ CONFIG_SCHEMA.md ile senkronize edilmiştir.
 """
 
 VALID_SOURCE_TYPES: frozenset[str] = frozenset(
-    {"table", "view", "sql", "csv", "script"}
+    {"table", "view", "sql", "csv", "json", "script"}
 )
+
+# F1.4/F1.5 — file source/target (transport ⟂ format).
+# source_type ∈ {csv, json} = FILE source; json_mode "flat" only ("raw" → F1.4b).
+FILE_SOURCE_TYPES: frozenset[str] = frozenset({"csv", "json"})
+VALID_JSON_MODES: frozenset[str] = frozenset({"flat"})  # "raw" deferred (F1.4b)
+VALID_TARGET_TYPES: frozenset[str] = frozenset({"db", "file"})
 
 VALID_LOAD_METHODS: frozenset[str] = frozenset(
     {
@@ -38,8 +44,9 @@ VALID_PARTITION_MODES: frozenset[str] = frozenset(
 )
 
 # F1.3 — Operasyonel bildirim (Community): desteklenen tetikleyiciler.
-# deadline/reconciliation/threshold bu dilimde YOK (Enterprise / sonraki dalga).
-VALID_NOTIFY_TRIGGERS: frozenset[str] = frozenset({"failure", "success"})
+# F1.3c — deadline eklendi (Airflow 3.2+ DeadlineAlert; süre = notify_deadline_minutes).
+# reconciliation/threshold bu dilimde YOK (Enterprise / sonraki dalga).
+VALID_NOTIFY_TRIGGERS: frozenset[str] = frozenset({"failure", "success", "deadline"})
 
 # Root seviyesinde zorunlu alanlar
 REQUIRED_ROOT_FIELDS: tuple[str, ...] = ("source_db_var", "target_db_var", "flow_tasks")

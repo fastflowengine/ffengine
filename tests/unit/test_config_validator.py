@@ -66,7 +66,7 @@ class TestRequiredFields:
 
 
 class TestSourceType:
-    @pytest.mark.parametrize("st", ["table", "view", "csv", "script"])
+    @pytest.mark.parametrize("st", ["table", "view", "script"])
     def test_valid_source_types_pass(self, st):
         ConfigValidator().validate(_task(source_type=st))
 
@@ -97,6 +97,86 @@ class TestSourceType:
     def test_empty_string_source_type_raises(self):
         with pytest.raises(ValidationError, match="source_type"):
             ConfigValidator().validate(_task(source_type=""))
+
+
+# ---------------------------------------------------------------------------
+# F1.4/F1.5 — file source (csv/json) + file target
+# ---------------------------------------------------------------------------
+
+
+def _file_source_task(**overrides) -> dict:
+    """A valid csv/json file-source task (explicit mapping, no source_schema)."""
+    t = _task(
+        source_type="csv",
+        source_schema=None,
+        source_table=None,
+        file_path="/incoming/orders.csv",
+        column_mapping_mode="mapping_file",
+        mapping_file="/maps/orders.yaml",
+    )
+    t.update(overrides)
+    return t
+
+
+class TestFileSource:
+    def test_csv_with_file_path_and_mapping_passes(self):
+        ConfigValidator().validate(_file_source_task())
+
+    def test_json_flat_passes(self):
+        ConfigValidator().validate(
+            _file_source_task(source_type="json", json_mode="flat")
+        )
+
+    def test_json_defaults_to_flat(self):
+        ConfigValidator().validate(_file_source_task(source_type="json"))
+
+    def test_csv_requires_file_path_not_source_table(self):
+        # T-F1.4-3: csv needs file_path; a source_table alone is not enough.
+        with pytest.raises(ValidationError, match="file_path"):
+            ConfigValidator().validate(
+                _file_source_task(file_path=None, source_table="orders")
+            )
+
+    def test_file_source_requires_explicit_mapping(self):
+        with pytest.raises(ValidationError, match="mapping"):
+            ConfigValidator().validate(
+                _file_source_task(column_mapping_mode="source")
+            )
+
+    def test_json_raw_mode_rejected_this_slice(self):
+        with pytest.raises(ValidationError, match="json_mode"):
+            ConfigValidator().validate(
+                _file_source_task(source_type="json", json_mode="raw")
+            )
+
+    def test_file_source_without_source_schema_passes(self):
+        # source_schema is not required for a file source.
+        ConfigValidator().validate(_file_source_task(source_schema=None))
+
+
+class TestTargetType:
+    def test_default_target_type_is_db(self):
+        ConfigValidator().validate(_task())  # no target_type ⇒ db
+
+    def test_invalid_target_type_raises(self):
+        with pytest.raises(ValidationError, match="target_type"):
+            ConfigValidator().validate(_task(target_type="s3"))
+
+    def test_file_target_requires_path(self):
+        with pytest.raises(ValidationError, match="target_file_path"):
+            ConfigValidator().validate(
+                _task(target_type="file", target_schema=None, target_table=None)
+            )
+
+    def test_file_target_with_path_passes(self):
+        ConfigValidator().validate(
+            _task(
+                target_type="file",
+                target_schema=None,
+                target_table=None,
+                target_file_path="/out/orders.csv",
+            )
+        )
 
 
 # ---------------------------------------------------------------------------

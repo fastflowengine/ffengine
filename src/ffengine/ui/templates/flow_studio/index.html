@@ -204,9 +204,11 @@
             <div class="source-target-fields">
             <label>
               <span class="global-control-label">Source Type</span>
-              <select class="source-type" title="Choose table data or a custom SQL query.">
+              <select class="source-type" title="Choose table data, a custom SQL query, or a file.">
                 <option value="table">Table</option>
                 <option value="sql">SQL Query</option>
+                <option value="csv">CSV File</option>
+                <option value="json">JSON File (flat)</option>
               </select>
             </label>
             <label class="source-sql-wrap hidden">
@@ -225,6 +227,38 @@
               <label>
                 <span class="global-control-label">Source Table</span>
                 <input class="source-table" list="source_table_options" value="orders" placeholder="Search table" title="Type at least 3 characters to search.">
+              </label>
+            </div>
+            <div class="source-file-wrap hidden">
+              <label>
+                <span class="global-control-label">File Path / Glob</span>
+                <input class="source-file-path" placeholder="/incoming/orders_{{ run_date }}.csv or orders_*.csv">
+              </label>
+              <div class="row-2 source-csv-opts">
+                <label>
+                  <span class="global-control-label">Delimiter</span>
+                  <input class="source-file-delimiter" maxlength="4" placeholder=",">
+                </label>
+                <label>
+                  <span class="global-control-label">Encoding</span>
+                  <input class="source-file-encoding" placeholder="utf-8">
+                </label>
+              </div>
+              <div class="row-2">
+                <label class="source-csv-opts">
+                  <span class="global-control-label">Quote Char</span>
+                  <input class="source-file-quotechar" maxlength="2" placeholder="&quot;">
+                </label>
+                <label class="source-json-opts hidden">
+                  <span class="global-control-label">JSON Mode</span>
+                  <select class="source-file-json-mode">
+                    <option value="flat">flat (JSONL)</option>
+                    <option value="raw" disabled>raw (coming soon — F1.4b)</option>
+                  </select>
+                </label>
+              </div>
+              <label class="notify-check source-csv-opts">
+                <input type="checkbox" class="source-file-header" checked> First row is header
               </label>
             </div>
             </div>
@@ -257,6 +291,13 @@
             <div class="sub-card target-card">
             <h4>Target</h4>
             <label>
+              <span class="global-control-label">Target Type</span>
+              <select class="target-type" title="Write to a database table or a delimited file (SFTP/local).">
+                <option value="db">Database Table</option>
+                <option value="file">File (CSV → SFTP/local)</option>
+              </select>
+            </label>
+            <label class="target-db-wrap">
               <span class="global-control-label">Load Method</span>
               <select class="load-method" title="Select how data is written to the target.">
                 <option value="create_if_not_exists_or_truncate">Create if not exists or truncate</option>
@@ -266,7 +307,7 @@
                 <option value="script">script</option>
               </select>
             </label>
-            <div class="row-2">
+            <div class="row-2 target-table-wrap">
               <label>
                 <span class="global-control-label">Target Schema</span>
                 <input class="target-schema" list="target_schema_options" value="dwh" placeholder="Search schema" title="Type at least 3 characters to search.">
@@ -274,6 +315,25 @@
               <label>
                 <span class="global-control-label">Target Table</span>
                 <input class="target-table" list="target_table_options" value="orders_stg" placeholder="Search table" title="Type at least 3 characters to search.">
+              </label>
+            </div>
+            <div class="target-file-wrap hidden">
+              <label>
+                <span class="global-control-label">Target File Path</span>
+                <input class="target-file-path" placeholder="/outgoing/orders_{{ run_date }}.csv">
+              </label>
+              <div class="row-2">
+                <label>
+                  <span class="global-control-label">Delimiter</span>
+                  <input class="target-file-delimiter" maxlength="4" placeholder=",">
+                </label>
+                <label>
+                  <span class="global-control-label">Encoding</span>
+                  <input class="target-file-encoding" placeholder="utf-8">
+                </label>
+              </div>
+              <label class="notify-check">
+                <input type="checkbox" class="target-file-header" checked> Write header row
               </label>
             </div>
             <div class="upsert-match-wrap hidden">
@@ -632,7 +692,12 @@
             <div class="notify-triggers">
               <label class="notify-check"><input type="checkbox" id="notify_on_failure"> Failure</label>
               <label class="notify-check"><input type="checkbox" id="notify_on_success"> Success</label>
+              <label class="notify-check"><input type="checkbox" id="notify_on_deadline"> Deadline</label>
             </div>
+            <label id="notify_deadline_minutes_row" style="display:none">
+              Deadline (minutes)
+              <input type="number" id="notify_deadline_minutes" class="scheduler-control-input" min="1" step="1" placeholder="e.g. 45">
+            </label>
             <label>
               Recipients
               <textarea id="notify_emails" class="scheduler-control-input" rows="2" placeholder="ops@bank.example, dev@bank.example"></textarea>
@@ -651,7 +716,6 @@
                 <option value="email">Email</option>
               </select>
             </label>
-            <div class="muted-note">Bildirimler yalnız durum/metadata taşır (iş, run, durum, süre, satır sayısı, hata özeti, log linki); veri satırları e-postaya konmaz. SMTP kimlik bilgileri yalnızca seçtiğiniz Airflow Connection'da tutulur; bildirim hatası aktarımı düşürmez.</div>
           </div>
         </div>
       </div>
@@ -723,6 +787,6 @@
   </div>
   <datalist id="mapping_editor_source_options"></datalist>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=93"></script>
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=95"></script>
 </body>
 </html>

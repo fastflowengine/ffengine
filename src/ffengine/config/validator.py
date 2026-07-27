@@ -15,6 +15,9 @@ from ffengine.config.schema import (
     VALID_COLUMN_MAPPING_MODES,
     VALID_EXTRACTION_METHODS,
     VALID_PARTITION_MODES,
+    FILE_SOURCE_TYPES,
+    VALID_JSON_MODES,
+    VALID_TARGET_TYPES,
 )
 
 _log = logging.getLogger(__name__)
@@ -39,6 +42,7 @@ class ConfigValidator:
     def validate(self, task: dict) -> None:
         self._check_required(task)
         self._check_source_type(task)
+        self._check_target_type(task)
         self._check_load_method(task)
         self._check_upsert_config(task)
         self._check_column_mapping_mode(task)
@@ -54,8 +58,17 @@ class ConfigValidator:
 
     def _check_required(self, task: dict) -> None:
         required_fields = list(REQUIRED_TASK_FIELDS)
-        if task.get("source_type") == "sql":
+        source_type = task.get("source_type")
+        # sql and file sources carry no source_schema.
+        if source_type == "sql" or source_type in FILE_SOURCE_TYPES:
             required_fields = [f for f in required_fields if f != "source_schema"]
+        # A file target is a path, not a schema.table.
+        if task.get("target_type") == "file":
+            required_fields = [
+                f
+                for f in required_fields
+                if f not in ("target_schema", "target_table")
+            ]
         for field in required_fields:
             if task.get(field) is None:
                 raise ConfigError(f"Zorunlu alan eksik: '{field}'")
@@ -130,7 +143,9 @@ class ConfigValidator:
             )
 
     def _check_sql_source(self, task: dict) -> None:
-        if task.get("source_type") == "sql":
+        source_type = task.get("source_type")
+
+        if source_type == "sql":
             has_sql = task.get("sql_file") or task.get("inline_sql")
             if not has_sql:
                 raise ValidationError(
@@ -138,11 +153,51 @@ class ConfigValidator:
                 )
             return
 
+        if source_type in FILE_SOURCE_TYPES:
+            self._check_file_source(task)
+            return
+
         source_table = str(task.get("source_table") or "").strip()
         if not source_table:
             raise ValidationError(
-                "source_type='table|view|csv|script' icin 'source_table' zorunludur."
+                "source_type='table|view|script' icin 'source_table' zorunludur."
             )
+
+    def _check_file_source(self, task: dict) -> None:
+        """F1.4/F1.5 — csv/json file source: file_path + explicit mapping."""
+        file_path = str(task.get("file_path") or "").strip()
+        if not file_path:
+            raise ValidationError(
+                "source_type='csv|json' icin 'file_path' zorunludur "
+                "('source_table' degil)."
+            )
+        if task.get("column_mapping_mode") != "mapping_file":
+            raise ValidationError(
+                "Dosya kaynagi (csv/json) explicit mapping gerektirir: "
+                "column_mapping_mode='mapping_file' olmali (tip cikarimi yok)."
+            )
+        if task.get("source_type") == "json":
+            json_mode = str(task.get("json_mode") or "flat").strip().lower()
+            if json_mode not in VALID_JSON_MODES:
+                raise ValidationError(
+                    f"Gecersiz json_mode: '{json_mode}'. "
+                    f"Desteklenen: {sorted(VALID_JSON_MODES)} "
+                    "('raw' bu surumde yok — F1.4b)."
+                )
+
+    def _check_target_type(self, task: dict) -> None:
+        """F1.5 — target_type db|file; file target needs a path."""
+        target_type = task.get("target_type", "db")
+        if target_type not in VALID_TARGET_TYPES:
+            raise ValidationError(
+                f"Gecersiz target_type: '{target_type}'. "
+                f"Gecerli degerler: {sorted(VALID_TARGET_TYPES)}"
+            )
+        if target_type == "file":
+            if not str(task.get("target_file_path") or "").strip():
+                raise ValidationError(
+                    "target_type='file' icin 'target_file_path' zorunludur."
+                )
 
     def _check_mapping_file(self, task: dict) -> None:
         if task.get("column_mapping_mode") == "mapping_file":
@@ -155,6 +210,15 @@ class ConfigValidator:
         part = task.get("partitioning")
         if not isinstance(part, dict) or not part.get("enabled"):
             return
+
+        # File endpoints stream as a single writer (M=1) → no partitioning.
+        if (
+            task.get("source_type") in FILE_SOURCE_TYPES
+            or task.get("target_type") == "file"
+        ):
+            raise ValidationError(
+                "Dosya kaynagi/hedefi partitioning desteklemez (tek akis, M=1)."
+            )
 
         mode = part.get("mode", "auto_numeric")
         if mode not in VALID_PARTITION_MODES:

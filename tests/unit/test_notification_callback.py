@@ -8,6 +8,7 @@ from unittest.mock import patch
 from ffengine.airflow.notifications import (
     _build_message,
     build_notification_callbacks,
+    deadline_notification_callback,
 )
 
 _SMTP_NOTIFIER = "airflow.providers.smtp.notifications.smtp.SmtpNotifier"
@@ -182,3 +183,52 @@ def test_callback_uses_named_template():
 
     loader.assert_called_once_with("Banka-Kritik")
     assert notifier_cls.call_args.kwargs["subject"].startswith("CUSTOM FAILED")
+
+
+# ---- F1.3c deadline SyncCallback target -----------------------------------
+
+def _deadline_context():
+    return {
+        "dag_run": {
+            "dag_id": "orders_dag",
+            "run_id": "manual__2026-07-26T00:00:00",
+            "logical_date": "2026-07-26T00:00:00+00:00",
+            "queued_at": "2026-07-26T00:00:00+00:00",
+        },
+        "deadline": {"id": "abc", "deadline_time": "2026-07-26T00:45:00+00:00"},
+    }
+
+
+def test_deadline_callback_sends_status_first_and_secret_free():
+    with patch(_SMTP_NOTIFIER) as notifier_cls:
+        result = deadline_notification_callback(
+            context=_deadline_context(),
+            emails=["ops@bank.example"],
+            conn_id="smtp_default",
+            template_name="",
+        )
+    assert result is None
+    notifier_cls.assert_called_once()
+    kwargs = notifier_cls.call_args.kwargs
+    assert kwargs["to"] == ["ops@bank.example"]
+    assert kwargs["smtp_conn_id"] == "smtp_default"
+    assert kwargs["subject"].startswith("DEADLINE ")
+    assert "orders_dag" in kwargs["subject"]
+    assert "orders_dag" in kwargs["html_content"]
+    assert "no data rows" in kwargs["html_content"].lower()
+    assert "password" not in str(kwargs).lower()
+    notifier_cls.return_value.notify.assert_called_once()
+
+
+def test_deadline_callback_swallows_send_error(caplog):
+    with patch(_SMTP_NOTIFIER) as notifier_cls:
+        notifier_cls.return_value.notify.side_effect = RuntimeError("smtp down")
+        with caplog.at_level(logging.WARNING):
+            result = deadline_notification_callback(
+                context=_deadline_context(),
+                emails=["a@x.com"],
+                conn_id="smtp_default",
+            )
+    assert result is None  # must never raise
+    assert any("deadline_send_failed" in r.getMessage() for r in caplog.records)
+    assert all("smtp down" not in r.getMessage() for r in caplog.records)

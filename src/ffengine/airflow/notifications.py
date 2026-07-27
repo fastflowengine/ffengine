@@ -50,6 +50,121 @@ def build_notification_callbacks(notifications: Any) -> dict[str, Any]:
     return callbacks
 
 
+_DEADLINE_CALLBACK_PATH = (
+    "ffengine.airflow.notifications.deadline_notification_callback"
+)
+
+
+def build_deadline_alert(notifications: Any) -> Any:
+    """Return a DAG-level ``DeadlineAlert`` for the policy, or ``None``.
+
+    F1.3c — "notify if the run doesn't finish within N minutes of starting".
+    Uses Airflow 3.2's ``SyncCallback`` (runs on the existing executor — **no
+    triggerer needed**). Requires Airflow 3.2+; on an older Airflow the deadline
+    SDK is absent/incompatible, so we log a warning and return ``None`` — DAG
+    parsing never breaks (graceful degradation).
+    """
+    if not isinstance(notifications, dict):
+        return None
+    triggers = notifications.get("notify_on") or []
+    if "deadline" not in triggers:
+        return None
+    try:
+        minutes = int(notifications.get("notify_deadline_minutes") or 0)
+    except (TypeError, ValueError):
+        minutes = 0
+    emails = [
+        str(item).strip()
+        for item in (notifications.get("notify_emails") or [])
+        if str(item).strip()
+    ]
+    conn_id = str(notifications.get("notify_conn_id") or "").strip()
+    if minutes <= 0 or not emails or not conn_id:
+        return None
+    template_name = str(notifications.get("notify_template") or "").strip()
+
+    try:
+        from datetime import timedelta
+
+        from airflow.sdk.definitions.callback import SyncCallback
+        from airflow.sdk.definitions.deadline import (
+            DeadlineAlert,
+            DeadlineReference,
+        )
+
+        return DeadlineAlert(
+            reference=DeadlineReference.DAGRUN_QUEUED_AT,
+            interval=timedelta(minutes=minutes),
+            callback=SyncCallback(
+                _DEADLINE_CALLBACK_PATH,
+                kwargs={
+                    "emails": emails,
+                    "conn_id": conn_id,
+                    "template_name": template_name,
+                },
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade on Airflow < 3.2
+        _log.warning(
+            "ffengine.notification.deadline_unavailable error_type=%s "
+            "(deadline notifications require Airflow 3.2+)",
+            type(exc).__name__,
+        )
+        return None
+
+
+def deadline_notification_callback(
+    context: Any = None,
+    emails: Any = None,
+    conn_id: str = "",
+    template_name: str = "",
+) -> None:
+    """Airflow deadline ``SyncCallback`` target (runs on the executor at miss).
+
+    Top-level + importable (Airflow re-imports it by dotpath). Sends a
+    metadata-only deadline email; any failure is logged and swallowed so it can
+    never propagate (INV-1/6). The deadline context is a plain dict (no TI/XCom),
+    so ``rows``/``error``/``log_url`` are unavailable and render empty.
+    """
+    try:
+        meta = _deadline_meta(context)
+        subject, html_content = render_template(
+            load_template(template_name), meta, "DEADLINE"
+        )
+        from airflow.providers.smtp.notifications.smtp import SmtpNotifier
+
+        SmtpNotifier(
+            to=list(emails or []),
+            smtp_conn_id=conn_id,
+            subject=subject,
+            html_content=html_content,
+        ).notify({})
+    except Exception as exc:  # noqa: BLE001 - alerting must never raise
+        _log.warning(
+            "ffengine.notification.deadline_send_failed conn_id=%s error_type=%s",
+            conn_id,
+            type(exc).__name__,
+        )
+
+
+def _deadline_meta(context: Any) -> dict[str, Any]:
+    ctx = context if isinstance(context, dict) else {}
+    dag_run = ctx.get("dag_run") if isinstance(ctx.get("dag_run"), dict) else {}
+    return {
+        "dag_id": _safe_str(dag_run.get("dag_id")),
+        "run_id": _safe_str(dag_run.get("run_id")),
+        "state": "deadline_missed",
+        "started": _safe_str(
+            dag_run.get("queued_at") or dag_run.get("start_date")
+        ),
+        "ended": "-",
+        "logical_date": _safe_str(dag_run.get("logical_date")),
+        "rows": None,
+        "log_url": "",
+        "error": None,
+    }
+
+
 def _make_callback(
     kind: str, emails: list[str], conn_id: str, template_name: str
 ) -> Callable[[Any], None]:
