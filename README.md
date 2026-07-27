@@ -12,8 +12,8 @@ It includes the community runtime, shared contracts, and Airflow-native orchestr
 
 ## Current Baseline
 
-- Community Wave baseline: Wave 15
-- Latest completed epic: `C22` (Airflow 3.2.1 upgrade)
+- Community Wave baseline: Wave 16
+- Latest completed epic: `C23` (Airflow 3.2.2 upgrade)
 - Canonical planning source: `handbook/wbs/WBS_COMMUNITY.md`
 
 ## Version Compatibility
@@ -21,7 +21,7 @@ It includes the community runtime, shared contracts, and Airflow-native orchestr
 | Component | Minimum | Tested |
 | --- | --- | --- |
 | Python | 3.12 | 3.12.x |
-| Apache Airflow | 3.2.1 | 3.2.1 |
+| Apache Airflow | 3.2.2 | 3.2.2 |
 | psycopg (Postgres) | 3.1 | 3.3.x |
 | pyodbc (MSSQL) | 5.0 | 5.0.x |
 | oracledb (Oracle) | 2.0 | 3.x |
@@ -38,26 +38,36 @@ It includes the community runtime, shared contracts, and Airflow-native orchestr
   - `core-airflow-dag-processor`
   - `core-postgres` (`localhost:5436`)
 
-## Airflow Login Defaults (Dev)
+## Airflow Login Users
 
-| Username | Role | Default password | Env var |
-| --- | --- | --- | --- |
-| `admin` | Admin | `admin` | `FFENGINE_AIRFLOW_ADMIN_PASSWORD` |
-| `breakglass` | Admin | `breakglass` | `FFENGINE_AIRFLOW_BREAKGLASS_PASSWORD` |
-| `operator` | Op | `operator` | `FFENGINE_AIRFLOW_OP_PASSWORD` |
-| `viewer` | Viewer | `viewer` | `FFENGINE_AIRFLOW_VIEWER_PASSWORD` |
+FFEngine Community uses Airflow `FabAuthManager` with FAB database auth
+(`AUTH_DB`). Users are stored in the Airflow metadata database `ab_user`
+tables. The Docker image sets `AIRFLOW__CORE__AUTH_MANAGER` to
+`airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager` by
+default; containerized runtime must not fall back to Airflow simple/default
+auth.
 
-Production note: set all `FFENGINE_AIRFLOW_*_PASSWORD` values explicitly.
+Airflow users are seeded during `airflow-init`. Passwords are not embedded in
+the image; set them in `.env` before starting the stack.
+
+| Username | Role | Password env var |
+| --- | --- | --- |
+| `admin` | Admin | `FFENGINE_AIRFLOW_ADMIN_PASSWORD` |
+| `breakglass` | Admin | `FFENGINE_AIRFLOW_BREAKGLASS_PASSWORD` |
+| `operator` | Op | `FFENGINE_AIRFLOW_OP_PASSWORD` |
+| `viewer` | Viewer | `FFENGINE_AIRFLOW_VIEWER_PASSWORD` |
+
+If any password variable is missing or empty, user seeding fails intentionally.
 
 ## Docker Commands
 
-Start core Airflow stack:
+Build and start the local Airflow stack:
 
 ```bash
 docker compose -f docker/docker-compose.yml --env-file .env up -d --remove-orphans
 ```
 
-Recreate after compose/env changes:
+Recreate local stack after compose/env changes:
 
 ```bash
 docker compose -f docker/docker-compose.yml --env-file .env up -d --force-recreate --remove-orphans
@@ -130,6 +140,7 @@ Use `docker/docker-compose.local.debug.yml` for local debug overrides, not produ
   - `handbook/context/C13_DEBUGPY_UAT.md`
   - `handbook/context/C14_UAT_RELEASE_GATES.md`
   - `handbook/context/C22_AIRFLOW_3_2_UPGRADE.md`
+  - `handbook/context/C23_AIRFLOW_3_2_2_UPGRADE.md`
 
 ## Governance
 
@@ -139,3 +150,17 @@ Use `docker/docker-compose.local.debug.yml` for local debug overrides, not produ
 
 Organization runbook:
 - `handbook/reference/GITHUB_ORGANIZATION_RUNBOOK.md`
+
+## License and Commercial Offerings
+
+FFEngine Community is licensed under the [Apache License 2.0](LICENSE). It may
+be used freely for development, testing, data warehouse workloads, and
+production deployments without a data-volume restriction.
+
+Future Enterprise capabilities may be distributed separately under commercial
+terms and are not part of the FFEngine Community license or distribution.
+Professional support and commercial offerings are available from the FFEngine
+team.
+
+- Website: https://www.ffengine.com
+- Contact: contact@ffengine.com

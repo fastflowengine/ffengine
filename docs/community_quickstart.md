@@ -15,6 +15,14 @@ py -3.12 -m pip install -e ".[dev]"
 
 ## 2) Test Veritabanlarını Başlat
 
+Önce örnek dosyayı kopyala:
+
+```bash
+copy .env.example .env
+```
+
+Sonra test DB stack'ini ayağa kaldır:
+
 ```bash
 docker-compose -p ffengine-test -f docker/docker-compose.test.yml --env-file .env up -d --remove-orphans
 ```
@@ -94,25 +102,86 @@ py -3.12 -m pytest tests/unit/ -q
 py -3.12 -m pytest tests/integration/test_pg_to_pg.py -v
 
 # 9 cross-DB kombinasyonu
-py -3.12 -m pytest tests/integration/test_cross_db_etl.py -v
+py -3.12 -m pytest tests/integration/test_cross_db_flow.py -v
 
 # Mapping zinciri (MappingGenerator → DAG → Operator → verify)
 py -3.12 -m pytest tests/integration/test_mapping_chain.py -v
 
 # Zorunlu gate komutları (Wave 6)
-py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/integration/test_cross_db_etl.py::test_pg_to_mssql tests/integration/test_cross_db_etl.py::test_pg_to_oracle tests/integration/test_mapping_chain.py -q
+py -3.12 -m pytest tests/integration/test_cross_db_flow.py -q
+py -3.12 -m pytest tests/integration/test_mapping_chain.py -q
 ```
 
 ## 6) Release Kontrol Listesi (Community)
 
 - [x] `ff_test_data` tablosu 3 DB'de mevcut (100 satır, 3 kolon)
 - [x] `FFENGINE_ENABLE_PG_TESTS=1` ile `test_pg_to_pg.py` 4/4 PASS
-- [x] `FFENGINE_ENABLE_CROSS_DB_TESTS=1` ile `test_cross_db_etl.py` 9/9 PASS
+- [x] `FFENGINE_ENABLE_CROSS_DB_TESTS=1` ile `test_cross_db_flow.py` 9/9 PASS
 - [x] `FFENGINE_ENABLE_CROSS_DB_TESTS=1` ile `test_mapping_chain.py` 1/1 PASS
 - [x] Unit testler 466+ PASS, 0 FAIL
 - [x] `README.md` durumu güncel
 
 > Not: Bu baseline tamamlandi. Sonraki gelisimler yeni epic/story/task'ler ile planlanacaktir.
+
+## 7) MSSQL Airline Large Seed Dataset (4.5-5.0 GB)
+
+Bu adim sadece `test-mssql / ffengine_test` icindir. Sentetik (PII olmayan) 1 yillik
+havayolu verisi uretir:
+
+- `ffe_customers` (yalnizca musteri bilgileri)
+- `ffe_airports`, `ffe_routes`, `ffe_flights`
+- `ffe_fare_classes`, `ffe_flight_requests`, `ffe_bookings`, `ffe_ticket_prices`
+
+MSSQL tarafinda bu dataset `ffengine` schema'si altinda uretilir.
+Flow Studio'da `Source Schema` icin `ffengine` kullan.
+
+### Calistirma
+
+```bash
+# SQL dosyasini container icine kopyala
+docker cp scripts/dev/sql/seed_mssql_airline_dataset.sql test-mssql:/tmp/seed_mssql_airline_dataset.sql
+
+# Scripti calistir
+docker exec test-mssql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Mssql_password123!" -C -d ffengine_test -i /tmp/seed_mssql_airline_dataset.sql
+```
+
+> Not: Script idempotenttir. Her calistirmada `TRUNCATE + refill` uygular.
+> Varsayilan hedef boyut `4.8 GB` (aralik: `4.5-5.0 GB`).
+
+### Boyut ve Kalite Dogrulama
+
+```bash
+# Toplam ffe_* tablo boyutu (GB)
+docker exec test-mssql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Mssql_password123!" -C -d ffengine_test -Q "
+SELECT CAST(SUM(ps.reserved_page_count) * 8.0 / 1024 / 1024 AS DECIMAL(18,3)) AS total_ffe_size_gb
+FROM sys.dm_db_partition_stats ps
+JOIN sys.tables t ON t.object_id = ps.object_id
+WHERE t.name LIKE 'ffe[_]%';"
+
+# ffe_customers sadece musteri bilgisi icerdigini kontrol et
+docker exec test-mssql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Mssql_password123!" -C -d ffengine_test -Q "
+SELECT TOP 5 customer_id, customer_ref, first_name, last_name, email, loyalty_tier
+FROM ffengine.ffe_customers;"
+
+# Son 365 gun disi veri olmamali
+docker exec test-mssql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Mssql_password123!" -C -d ffengine_test -Q "
+SELECT MIN(CAST(request_ts AS DATE)) AS min_day, MAX(CAST(request_ts AS DATE)) AS max_day
+FROM ffengine.ffe_flight_requests;"
+
+# Gun bazinda binlerce request dagilimi
+docker exec test-mssql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Mssql_password123!" -C -d ffengine_test -Q "
+SELECT TOP 10 CAST(request_ts AS DATE) AS request_day, COUNT(*) AS request_count
+FROM ffengine.ffe_flight_requests
+GROUP BY CAST(request_ts AS DATE)
+ORDER BY request_count DESC;"
+
+# Booking -> pricing iliski butunlugu
+docker exec test-mssql /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "Mssql_password123!" -C -d ffengine_test -Q "
+SELECT COUNT(*) AS orphan_price_rows
+FROM ffengine.ffe_ticket_prices p
+LEFT JOIN ffengine.ffe_bookings b ON b.booking_id = p.booking_id
+WHERE b.booking_id IS NULL;"
+```
 
 
 ## Airflow Runtime Model (Current)
@@ -156,11 +225,19 @@ py -3.12 -m pytest tests/integration/test_cross_db_etl.py::test_pg_to_pg tests/i
 - Schema/table autocomplete case-insensitive calisir.
 - MSSQL baglantilarinda schema genelde `dbo` olur.
 - `Target Table` alaninda listede olmayan adlar manuel yazilabilir.
-- `Airflow Variable` listesi sadece `Filter & Bindings` altindaki binding kaynagi icindir; DB connection listesiyle ayni sey degildir.
+- `Source Connection` ve `Target Connection` secicileri Airflow Connection kimligini ve tipini (`conn_id (conn_type)`) gosterir; task tipinin desteklemedigi connector tipleri icin sessiz fallback yapilmaz.
+- `Airflow Variable` listesi sadece `Filter & Bindings` altindaki binding kaynagi icindir; Source/Target Connection listesiyle ayni sey degildir.
+- `Binding` task karti kaynak tablo/script alani tasimadigi icin task-level `Source` kartini gostermez; `DAG Parameter Bindings` ve `Dependencies` alanlari dogrudan kullanilir.
+- Advanced custom DAG parameter alanlari yalniz `name`, `Parameter Type` ve aciklamadir; custom `default`, `required` veya `enum` kabul edilmez. Built-in `log_level` ayri default kontrolunu korur.
+- Trigger DAG girdisi parametrenin run baslangic degeridir. Sirali bir `Binding` task yeni degeri assignment-only XCom'a yazar; bu deger normal tasklar uzerinden sonraki tasklara tasinir ve daha sonraki bir Binding tarafindan yeniden atanabilir.
+- `{{ dag.name }}` en son applicable Binding XCom degerini, Binding yoksa normalized Trigger degerini kullanir. Farkli deger ureten branch'ler bir consumer'da birlesirse explicit bir merge Binding olmadan kayit fail-loud olur.
+- Load Method UI label'i `Create if not exists or truncate`; YAML/API degeri `create_if_not_exists_or_truncate` olarak kalir.
+- Bu load method hedef tablo yoksa olusturur, load oncesinde hedef tabloyu truncate eder.
+- `Upsert (insert/update)` icin UI'da `Match Columns (Upsert)` secimi zorunludur.
+- `upsert_match_columns` degeri target kolon adlariyla kaydedilir (YAML/API).
+- `load_method: upsert` + bos `upsert_match_columns` kombinasyonu 422 validation hatasi verir.
 
 ## Debug UAT (Opsiyonel)
 
 - Debugpy ile UI -> service -> scheduler asamali UAT icin:
   `docs/debugpy-uat-playbook.md`
-
-

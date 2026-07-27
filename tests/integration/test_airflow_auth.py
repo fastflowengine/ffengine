@@ -6,6 +6,7 @@ Docker stack (docker/docker-compose.yml) up oldugu varsayilir. Test:
 - HTTP login 3 rol icin 200.
 - Role enforcement (viewer trigger 403, op trigger 200, admin security 200).
 - SimpleAuthManager artefaktlari image icinde yok.
+- Public image default auth manager FabAuthManager.
 
 Calistirma:
   FFENGINE_ENABLE_AIRFLOW_AUTH_TESTS=1 pytest tests/integration/test_airflow_auth.py -v
@@ -32,6 +33,11 @@ if os.getenv("FFENGINE_ENABLE_AIRFLOW_AUTH_TESTS", "0").strip() != "1":
 
 AIRFLOW_BASE_URL = os.getenv("AIRFLOW_BASE_URL", "http://localhost:8085")
 WEBSERVER_CONTAINER = os.getenv("AIRFLOW_WEBSERVER_CONTAINER", "core-airflow-webserver")
+FFENGINE_AIRFLOW_IMAGE = os.getenv(
+    "FFENGINE_AIRFLOW_IMAGE",
+    "caglarsahin/ffengine:0.1.0-airflow3.2.2",
+)
+FAB_AUTH_MANAGER = "airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager"
 
 USERS = {
     "admin": os.getenv("FFENGINE_AIRFLOW_ADMIN_PASSWORD", "admin"),
@@ -137,6 +143,44 @@ def test_simple_auth_manager_artifacts_absent():
     assert (
         result.returncode == 0
     ), "simple_auth_manager_passwords.json hala image icinde; C18 sokum eksik."
+
+
+def test_public_image_defaults_to_fab_auth_manager():
+    result = subprocess.run(
+        [
+            "docker",
+            "image",
+            "inspect",
+            FFENGINE_AIRFLOW_IMAGE,
+            "--format",
+            "{{range .Config.Env}}{{println .}}{{end}}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        f"AIRFLOW__CORE__AUTH_MANAGER={FAB_AUTH_MANAGER}" in result.stdout
+    ), f"Public image default auth manager FAB degil:\n{result.stdout}"
+
+
+def test_running_stack_uses_fab_auth_manager():
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            WEBSERVER_CONTAINER,
+            "airflow",
+            "config",
+            "get-value",
+            "core",
+            "auth_manager",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == FAB_AUTH_MANAGER
 
 
 def test_fab_user_table_populated():

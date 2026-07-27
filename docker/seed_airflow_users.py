@@ -1,9 +1,9 @@
-"""Seed Airflow FAB users for C18.
+"""Seed Airflow FAB users for FFEngine public/runtime images.
 
 Airflow 3.x'te `airflow users create` CLI komutu kaldirildi. FAB provider'in
 SecurityManager API'sini dogrudan kullanarak idempotent user seed yapar.
 
-Parolalar env var'dan okunur; eksikse dev default kullanilir.
+Parolalar env var'dan okunur; eksikse islem bilincli olarak fail eder.
 Yeniden calistirildiginda mevcut kullanicilari dokunmadan gecer.
 """
 from __future__ import annotations
@@ -25,7 +25,6 @@ USERS = [
         "email": "admin@ffengine.local",
         "role": "Admin",
         "password_env": "FFENGINE_AIRFLOW_ADMIN_PASSWORD",
-        "password_default": "admin",
     },
     {
         "username": "breakglass",
@@ -34,7 +33,6 @@ USERS = [
         "email": "breakglass@ffengine.local",
         "role": "Admin",
         "password_env": "FFENGINE_AIRFLOW_BREAKGLASS_PASSWORD",
-        "password_default": "breakglass",
     },
     {
         "username": "operator",
@@ -43,7 +41,6 @@ USERS = [
         "email": "operator@ffengine.local",
         "role": "Op",
         "password_env": "FFENGINE_AIRFLOW_OP_PASSWORD",
-        "password_default": "operator",
     },
     {
         "username": "viewer",
@@ -52,7 +49,6 @@ USERS = [
         "email": "viewer@ffengine.local",
         "role": "Viewer",
         "password_env": "FFENGINE_AIRFLOW_VIEWER_PASSWORD",
-        "password_default": "viewer",
     },
 ]
 
@@ -109,7 +105,14 @@ def main() -> int:
                 log.warning("role %s not found, skipping %s", spec["role"], spec["username"])
                 continue
 
-            password = os.environ.get(spec["password_env"], spec["password_default"])
+            password = os.environ.get(spec["password_env"])
+            if not password:
+                log.error(
+                    "required password env var is missing or empty: %s",
+                    spec["password_env"],
+                )
+                return 2
+
             existing = sm.find_user(username=spec["username"])
             if existing is not None:
                 log.info("exists: %s (%s)", spec["username"], spec["role"])

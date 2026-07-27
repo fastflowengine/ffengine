@@ -1,0 +1,116 @@
+version: '3.8'
+
+name: ffengine-community
+
+x-ffengine-image: &ffengine-image fastflowengine/ffengine:0.1.0-airflow3.2.2
+
+x-airflow-env: &airflow-env
+  TZ: ${TZ:-Europe/Istanbul}
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+  AIRFLOW__CORE__DEFAULT_TIMEZONE: ${TZ:-Europe/Istanbul}
+  AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
+  AIRFLOW__CORE__PLUGINS_FOLDER: /opt/airflow/plugins
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?AIRFLOW_FERNET_KEY is required}
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://ffengine-api-server:8080/execution/
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg://airflow:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/airflow
+  AIRFLOW__API__BASE_URL: http://localhost:8085
+  AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?AIRFLOW_API_SECRET_KEY is required}
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_API_AUTH_JWT_SECRET:?AIRFLOW_API_AUTH_JWT_SECRET is required}
+  AIRFLOW__CORE__PARALLELISM: ${AIRFLOW_PARALLELISM:-8}
+  AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: ${AIRFLOW_MAX_ACTIVE_TASKS_PER_DAG:-4}
+  AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: ${AIRFLOW_MAX_ACTIVE_RUNS_PER_DAG:-2}
+  AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: ${AIRFLOW_DAG_REFRESH_INTERVAL:-30}
+  FFENGINE_STUDIO_PROMOTE_VERIFY_TIMEOUT_SECONDS: ${FFENGINE_STUDIO_PROMOTE_VERIFY_TIMEOUT_SECONDS:-15}
+
+x-airflow-volumes: &airflow-volumes
+  - ./runtime/dags:/opt/airflow/dags
+  - ./runtime/projects:/opt/airflow/projects
+  - ffengine-logs:/opt/airflow/logs
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: ffengine-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: airflow
+    ports:
+      - "${POSTGRES_HOST_PORT:-5436}:5432"
+    volumes:
+      - ffengine-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  airflow-init:
+    image: *ffengine-image
+    container_name: ffengine-airflow-init
+    restart: "no"
+    environment:
+      <<: *airflow-env
+      FFENGINE_AIRFLOW_ADMIN_PASSWORD: ${FFENGINE_AIRFLOW_ADMIN_PASSWORD:?FFENGINE_AIRFLOW_ADMIN_PASSWORD is required}
+      FFENGINE_AIRFLOW_BREAKGLASS_PASSWORD: ${FFENGINE_AIRFLOW_BREAKGLASS_PASSWORD:?FFENGINE_AIRFLOW_BREAKGLASS_PASSWORD is required}
+      FFENGINE_AIRFLOW_OP_PASSWORD: ${FFENGINE_AIRFLOW_OP_PASSWORD:?FFENGINE_AIRFLOW_OP_PASSWORD is required}
+      FFENGINE_AIRFLOW_VIEWER_PASSWORD: ${FFENGINE_AIRFLOW_VIEWER_PASSWORD:?FFENGINE_AIRFLOW_VIEWER_PASSWORD is required}
+    command: >
+      bash -lc "airflow db migrate && airflow fab-db migrate && python /opt/airflow/seed_airflow_users.py"
+    volumes: *airflow-volumes
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  airflow-api-server:
+    image: *ffengine-image
+    container_name: ffengine-api-server
+    restart: unless-stopped
+    environment:
+      <<: *airflow-env
+    ports:
+      - "${AIRFLOW_API_HOST_PORT:-8085}:8080"
+    command: airflow api-server
+    volumes: *airflow-volumes
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  airflow-scheduler:
+    image: *ffengine-image
+    container_name: ffengine-scheduler
+    restart: unless-stopped
+    environment:
+      <<: *airflow-env
+      AIRFLOW__CORE__INTERNAL_API_URL: http://ffengine-api-server:8080
+    command: airflow scheduler
+    volumes: *airflow-volumes
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  airflow-dag-processor:
+    image: *ffengine-image
+    container_name: ffengine-dag-processor
+    restart: unless-stopped
+    environment:
+      <<: *airflow-env
+      AIRFLOW__CORE__INTERNAL_API_URL: http://ffengine-api-server:8080
+    command: airflow dag-processor
+    volumes: *airflow-volumes
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+volumes:
+  ffengine-pgdata:
+  ffengine-logs:
