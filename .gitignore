@@ -14,6 +14,14 @@ logs/
 tempdir/
 tempdir_ready/
 handbook/
+# Flow Studio generated runtime artifacts — regenerated at runtime, not tracked
+# (same policy as handbook/ and logs/). Hand-authored example DAGs at the dags/
+# root (e.g. dags/*.py) stay tracked; only generated project sub-trees are ignored.
+/dags/*/
+/projects/
+/checkpoints/
+/backup/
+*.rar
 # Local debug override file must stay untracked.
 /docker/docker-compose.local.debug.yml
 /.vscode/
