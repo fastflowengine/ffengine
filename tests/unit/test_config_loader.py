@@ -80,10 +80,12 @@ class TestConfigLoaderValid:
         p.write_text(_VALID_YAML)
         assert ConfigLoader().load(str(p), "t1")["reader_workers"] == 3
 
-    def test_default_writer_workers_applied(self, tmp_path):
+    def test_default_writer_workers_is_auto_none(self, tmp_path):
+        # F2.1 — default writer_workers is auto (None), NOT the legacy 5; a bare
+        # default must not be treated as an explicit M override (review §8).
         p = tmp_path / "cfg.yaml"
         p.write_text(_VALID_YAML)
-        assert ConfigLoader().load(str(p), "t1")["writer_workers"] == 5
+        assert ConfigLoader().load(str(p), "t1")["writer_workers"] is None
 
     def test_default_pipe_queue_max_applied(self, tmp_path):
         p = tmp_path / "cfg.yaml"

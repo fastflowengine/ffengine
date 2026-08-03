@@ -35,6 +35,17 @@ class BaseDialect(ABC):
         """Create a cursor; if server_side=True, use a streaming cursor."""
         ...
 
+    def configure_write_cursor(self, cursor: Any) -> None:
+        """Tune a freshly created cursor for the executemany write path.
+
+        Default no-op. Overridden by dialects whose driver needs per-write-cursor
+        tuning — e.g. MSSQL sets ``fast_executemany`` here. Kept separate from
+        ``create_cursor`` on purpose: that cursor is also used for reads and
+        validation, where write tuning is inappropriate. Community always applies
+        this on the executemany path, independent of ``use_bulk_api``.
+        """
+        return None
+
     # ------------------------------------------------------------------
     # Schema Discovery
     # ------------------------------------------------------------------
@@ -64,9 +75,26 @@ class BaseDialect(ABC):
         ...
 
     @abstractmethod
-    def generate_bulk_insert_query(self, table: str, columns: list[str]) -> str:
-        """Generate a parameterized INSERT statement for bulk loading."""
+    def generate_insert_query(self, table: str, columns: list[str]) -> str:
+        """Generate a parameterized INSERT statement for the executemany path."""
         ...
+
+    def generate_bulk_insert_query(self, table: str, columns: list[str]) -> str:
+        """Deprecated alias for :meth:`generate_insert_query` (F2.1, A6.4#6).
+
+        The old name misleadingly implied a native bulk-API load; this only
+        builds a plain parameterized INSERT for executemany. Kept for a >=2
+        minor deprecation window; prefer ``generate_insert_query``.
+        """
+        import warnings
+
+        warnings.warn(
+            "generate_bulk_insert_query() is deprecated; "
+            "use generate_insert_query().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.generate_insert_query(table, columns)
 
     @abstractmethod
     def generate_upsert_query(

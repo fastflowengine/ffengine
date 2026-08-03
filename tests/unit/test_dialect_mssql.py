@@ -193,9 +193,20 @@ def test_generate_ddl_deterministic(dialect):
     assert dialect.generate_ddl("t", columns) == dialect.generate_ddl("t", columns)
 
 
-def test_generate_bulk_insert_query(dialect):
-    query = dialect.generate_bulk_insert_query("Orders", ["id", "name"])
+def test_generate_insert_query(dialect):
+    query = dialect.generate_insert_query("Orders", ["id", "name"])
     assert query == "INSERT INTO Orders ([id], [name]) VALUES (?, ?)"
+
+
+def test_configure_write_cursor_enables_fast_executemany(dialect):
+    # F2.1: MSSQL tunes only the write cursor; create_cursor stays untouched so
+    # read/validation cursors do not get fast_executemany.
+    class _Cursor:
+        pass
+
+    cursor = _Cursor()
+    dialect.configure_write_cursor(cursor)
+    assert cursor.fast_executemany is True
 
 
 def test_generate_upsert_query_with_update_columns(dialect):

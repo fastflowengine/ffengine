@@ -42,11 +42,21 @@ def build_source_reader(src_handle, config: dict, src_dialect):
 
 
 def build_target_writer(tgt_handle, tgt_dialect, config: dict):
-    """Pick the writer for this target: file (delimited) vs DB executemany."""
+    """Pick the writer for this target: file (delimited) vs native bulk API
+    (Enterprise providers) vs DB executemany.
+
+    ``use_bulk_api`` is off by default; when on, a registered bulk provider is
+    required or the build fails loud (no silent fallback to executemany). The
+    executemany path (``use_bulk_api=False``) uses the unchanged ``TargetWriter``.
+    """
     if str(config.get("target_type") or "db").strip().lower() == "file":
         from ffengine.pipeline.file_target_writer import FileTargetWriter
 
         return FileTargetWriter(tgt_handle)
+    if config.get("use_bulk_api"):
+        from ffengine.pipeline.bulk_target_writer import build_bulk_target_writer
+
+        return build_bulk_target_writer(tgt_handle, tgt_dialect, config)
     return TargetWriter(tgt_handle, tgt_dialect)
 
 

@@ -65,8 +65,20 @@ REQUIRED_TASK_FIELDS: tuple[str, ...] = (
 TASK_DEFAULTS: dict = {
     "batch_size": 10_000,
     "reader_workers": 3,
-    "writer_workers": 5,
+    # F2.1 — writer count (M). Default None = auto-from-target-capability
+    # (bulk: PG COPY / Oracle direct-path force M=1). A concrete value is an
+    # EXPLICIT developer override; the legacy default 5 must NOT be treated as an
+    # explicit M (review §8; TAD A6.4#1 "writer_workers -> hedeften otomatik").
+    # Full reader_workers/parallel_degree cleanup stays a separate task.
+    "writer_workers": None,
     "pipe_queue_max": 8,
+    # F2.1 — Native bulk API (Enterprise providers). Default OFF. Method is
+    # EXPLICIT (no "auto" — INV-7 developer-controlled, TAD v26.5 A4.3): when
+    # use_bulk_api is True a concrete bulk_api_method (e.g. "postgres_copy") must
+    # be given. Valid methods are capability-driven from the bulk provider
+    # registry (ffengine.pipeline.bulk_registry), NOT a static enum.
+    "use_bulk_api": False,
+    "bulk_api_method": None,
     "extraction_method": "auto",
     "passthrough_format": "binary",
     "passthrough_full": True,

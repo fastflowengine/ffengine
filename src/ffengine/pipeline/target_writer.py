@@ -127,7 +127,7 @@ class TargetWriter:
                     update_columns,
                 )
             else:
-                sql = self.dialect.generate_bulk_insert_query(qualified, columns)
+                sql = self.dialect.generate_insert_query(qualified, columns)
         except Exception as exc:
             raise DialectError.wrap(
                 exc,
@@ -136,6 +136,7 @@ class TargetWriter:
             ) from exc
 
         cursor = self.session.cursor(server_side=False)
+        self.dialect.configure_write_cursor(cursor)
         column_types = self._target_column_types(task_config, columns)
         adapted_rows = self._adapt_rows_for_insert(rows, column_types)
         try:
@@ -215,6 +216,7 @@ class TargetWriter:
         ]
         adapted_rows = self._adapt_rows_for_insert(bind_rows)
         cursor = self.session.cursor(server_side=False)
+        self.dialect.configure_write_cursor(cursor)
         try:
             cursor.executemany(sql, adapted_rows)
             self.session.conn.commit()

@@ -6,7 +6,7 @@
   <title>Flow Studio</title>
   <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=65">
 </head>
-<body class="flow-studio-root" data-ui-variant="current">
+<body class="flow-studio-root" data-ui-variant="current" data-ffengine-edition="__FFENGINE_EDITION__">
   <div id="operation_progress" class="operation-progress hidden" role="status" aria-live="polite" aria-busy="false">
     <div class="operation-progress-bar"></div>
     <span id="operation_progress_label" class="operation-progress-label"></span>
@@ -420,6 +420,19 @@
               </label>
               <div class="muted-note">
                 Community engine runs single-threaded; worker/extraction settings were removed from the v2 form.
+              </div>
+              <div class="bulk-api-wrap enterprise-only">
+                <label>
+                  <input class="use-bulk-api" type="checkbox" style="width:auto; margin-right:8px;">
+                  Use Native Bulk API (Enterprise)
+                </label>
+                <label class="bulk-api-method-wrap">
+                  Bulk API Method
+                  <input class="bulk-api-method" type="text" placeholder="e.g. postgres_copy">
+                </label>
+                <div class="muted-note">
+                  Native bulk load path (Enterprise). The method must match a bulk provider registered for the target database; unsupported load-method combinations are rejected before save.
+                </div>
               </div>
             </div>
             <div class="tab-panel" data-tab-panel="mapping">

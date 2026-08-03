@@ -12,7 +12,7 @@ def dialect():
     d = MagicMock()
     d.quote_identifier.side_effect = lambda n: f'"{n}"'
     d.generate_ddl.return_value = "CREATE TABLE ..."
-    d.generate_bulk_insert_query.return_value = "INSERT INTO ..."
+    d.generate_insert_query.return_value = "INSERT INTO ..."
     d.generate_upsert_query.return_value = "UPSERT INTO ..."
     return d
 
@@ -344,7 +344,7 @@ def test_write_batch_upsert_rejects_null_match_value(writer):
 def test_write_batch_error_details_include_root_cause_and_sql_preview(
     writer, session, dialect
 ):
-    dialect.generate_bulk_insert_query.return_value = (
+    dialect.generate_insert_query.return_value = (
         "INSERT INTO t (a) VALUES ('secret-token-value')"
     )
     session.cursor.return_value.executemany.side_effect = RuntimeError(
@@ -364,7 +364,7 @@ def test_write_batch_error_details_include_root_cause_and_sql_preview(
 
 def test_write_batch_sql_preview_truncates_to_300_chars(writer, session, dialect):
     long_value = "x" * 500
-    dialect.generate_bulk_insert_query.return_value = (
+    dialect.generate_insert_query.return_value = (
         f"INSERT INTO t (a) VALUES ({long_value})"
     )
     session.cursor.return_value.executemany.side_effect = RuntimeError(
@@ -385,8 +385,11 @@ def test_write_batch_adapts_postgres_dict_values_for_json(writer, session):
         def quote_identifier(self, name):
             return f'"{name}"'
 
-        def generate_bulk_insert_query(self, table, columns):
+        def generate_insert_query(self, table, columns):
             return "INSERT INTO ..."
+
+        def configure_write_cursor(self, cursor):
+            pass
 
     class FakeJsonb:
         def __init__(self, value):
@@ -422,8 +425,11 @@ def test_write_batch_postgres_list_uses_target_type(session):
         def quote_identifier(self, name):
             return f'"{name}"'
 
-        def generate_bulk_insert_query(self, table, columns):
+        def generate_insert_query(self, table, columns):
             return "INSERT INTO ..."
+
+        def configure_write_cursor(self, cursor):
+            pass
 
     class FakeJsonb:
         def __init__(self, value):

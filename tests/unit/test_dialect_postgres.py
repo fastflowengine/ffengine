@@ -197,9 +197,17 @@ def test_generate_ddl_deterministic(dialect):
     assert ddl1 == ddl2
 
 
-def test_generate_bulk_insert_query(dialect):
-    query = dialect.generate_bulk_insert_query("orders", ["id", "amount", "name"])
+def test_generate_insert_query(dialect):
+    query = dialect.generate_insert_query("orders", ["id", "amount", "name"])
     assert query == ('INSERT INTO orders ("id", "amount", "name") VALUES (%s, %s, %s)')
+
+
+def test_generate_bulk_insert_query_alias_is_deprecated(dialect):
+    # F2.1 A6.4#6: the old name stays as a deprecating alias (>=2 minor window)
+    # and must return exactly what generate_insert_query() produces.
+    with pytest.warns(DeprecationWarning):
+        aliased = dialect.generate_bulk_insert_query("orders", ["id", "amount"])
+    assert aliased == dialect.generate_insert_query("orders", ["id", "amount"])
 
 
 def test_generate_upsert_query_with_update_columns(dialect):

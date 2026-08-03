@@ -47,6 +47,7 @@ class ConfigValidator:
         self._check_upsert_config(task)
         self._check_column_mapping_mode(task)
         self._check_extraction_method(task)
+        self._check_bulk_api(task)
         self._check_sql_source(task)
         self._check_mapping_file(task)
         self._check_partitioning(task)
@@ -140,6 +141,51 @@ class ConfigValidator:
             _log.warning(
                 "extraction_method=copy_binary Community modunda etkin degildir; "
                 "cursor modu kullanilacak."
+            )
+
+    def _check_bulk_api(self, task: dict) -> None:
+        """F2.1 — native bulk API: Enterprise + developer-controlled (TAD v26.5 A4.3).
+
+        Off by default. When on: the method is EXPLICIT (no 'auto'), the edition
+        must be Enterprise, and the method must be a *registered* provider method
+        (capability-driven, not a static enum). Unsupported -> fail-loud; never a
+        silent fallback to executemany.
+        """
+        use_bulk = bool(task.get("use_bulk_api", False))
+        method = str(task.get("bulk_api_method") or "").strip()
+
+        if not use_bulk:
+            if method:
+                raise ValidationError(
+                    "bulk_api_method verildi ama use_bulk_api=False. "
+                    "Bulk API acmak icin use_bulk_api=True yapin ya da "
+                    "bulk_api_method'i bos birakin."
+                )
+            return
+
+        # Imported here (not at function top) so the common off-path — hit on
+        # every DAG-parse validate() — does zero import/registry work.
+        from ffengine.core.edition import is_enterprise_enabled
+        from ffengine.pipeline.bulk_registry import registered_methods
+
+        if not is_enterprise_enabled():
+            raise ValidationError(
+                "Native bulk API Enterprise gerektirir "
+                "(FFENGINE_EDITION=enterprise). Community executemany kullanir."
+            )
+
+        available = sorted(registered_methods())
+        listing = available or "(hicbir bulk provider kurulu degil)"
+        if not method:
+            raise ValidationError(
+                "use_bulk_api=True icin bulk_api_method zorunludur "
+                f"(explicit; 'auto' yok). Kayitli yontemler: {listing}."
+            )
+        if method.lower() not in registered_methods():
+            raise ValidationError(
+                f"Desteklenmeyen bulk_api_method: '{method}'. "
+                f"Kayitli yontemler: {listing}. "
+                "Sessizce executemany'e dusulmez (fail-loud)."
             )
 
     def _check_sql_source(self, task: dict) -> None:

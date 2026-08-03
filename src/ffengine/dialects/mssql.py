@@ -43,6 +43,12 @@ class MSSQLDialect(BaseDialect):
         # pyodbc does not support named / server-side cursors
         return conn.cursor()
 
+    def configure_write_cursor(self, cursor: Any) -> None:
+        # pyodbc: collapse the executemany round-trips into one batched TDS
+        # call. Applied only to write cursors — create_cursor() is shared with
+        # read/validation paths where fast_executemany must not be set.
+        cursor.fast_executemany = True
+
     # ------------------------------------------------------------------
     # Schema Discovery
     # ------------------------------------------------------------------
@@ -142,7 +148,7 @@ class MSSQLDialect(BaseDialect):
             f"CREATE TABLE {table_name} (\n{cols_sql}\n);"
         )
 
-    def generate_bulk_insert_query(self, table: str, columns: list[str]) -> str:
+    def generate_insert_query(self, table: str, columns: list[str]) -> str:
         quoted = ", ".join(self.quote_identifier(c) for c in columns)
         placeholders = ", ".join(["?"] * len(columns))
         return f"INSERT INTO {table} ({quoted}) VALUES ({placeholders})"

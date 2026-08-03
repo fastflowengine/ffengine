@@ -3699,6 +3699,8 @@ async function studioFetch(path, options) {
       card.querySelector(".mapping-content").value = values.mapping_content || "";
       card.querySelector(".where").value = values.where || "";
       card.querySelector(".batch-size").value = String(values.batch_size || 10000);
+      card.querySelector(".use-bulk-api").checked = !!values.use_bulk_api;
+      card.querySelector(".bulk-api-method").value = values.bulk_api_method || "";
       card.querySelector(".partitioning-enabled").checked = !!values.partitioning_enabled;
       const partitioningModeSelect = card.querySelector(".partitioning-mode");
       partitioningModeSelect.value = partitioningMode;
@@ -5637,6 +5639,9 @@ async function studioFetch(path, options) {
           : undefined,
         where: taskType === TASK_TYPES.SOURCE_TARGET ? (card.querySelector(".where").value.trim() || undefined) : undefined,
         batch_size: Number(card.querySelector(".batch-size").value || 10000),
+        use_bulk_api: !!card.querySelector(".use-bulk-api").checked,
+        bulk_api_method:
+          (card.querySelector(".bulk-api-method").value || "").trim() || undefined,
         partitioning_enabled: partitioningEnabled,
         partitioning_mode: partitioningMode,
         partitioning_column: partitioningColumn,
@@ -5707,6 +5712,8 @@ async function studioFetch(path, options) {
         column_mapping_mode: firstTask.column_mapping_mode,
         where: firstTask.where,
         batch_size: firstTask.batch_size,
+        use_bulk_api: firstTask.use_bulk_api,
+        bulk_api_method: firstTask.bulk_api_method,
         partitioning_enabled: firstTask.partitioning_enabled,
         partitioning_mode: firstTask.partitioning_mode,
         partitioning_column: firstTask.partitioning_column,

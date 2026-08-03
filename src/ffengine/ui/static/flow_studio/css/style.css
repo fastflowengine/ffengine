@@ -1783,6 +1783,16 @@
       display: none;
     }
 
+    /* F2.1 — edition gating (INV-8 layer 1): Enterprise-only surfaces are hidden
+       unless the server injected data-ffengine-edition="enterprise" on <body>. */
+    .enterprise-only {
+      display: none;
+    }
+
+    body[data-ffengine-edition="enterprise"] .enterprise-only {
+      display: block;
+    }
+
     .confirm-modal {
       position: fixed;
       inset: 0;

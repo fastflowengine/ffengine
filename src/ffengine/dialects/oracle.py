@@ -124,7 +124,7 @@ class OracleDialect(BaseDialect):
             f"END;"
         )
 
-    def generate_bulk_insert_query(self, table: str, columns: list[str]) -> str:
+    def generate_insert_query(self, table: str, columns: list[str]) -> str:
         quoted = ", ".join(self.quote_identifier(c) for c in columns)
         placeholders = ", ".join([f":{i + 1}" for i in range(len(columns))])
         return f"INSERT INTO {table} ({quoted}) VALUES ({placeholders})"

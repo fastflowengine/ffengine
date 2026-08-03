@@ -300,6 +300,10 @@ class FlowTaskPayload(BaseModel):
     mapping_content: str | None = None
     where: str | None = None
     batch_size: int = Field(10000, ge=1, le=1_000_000)
+    # F2.1 — native bulk API (Enterprise). Off by default; method is explicit
+    # (no "auto") and validated against the bulk-provider registry + edition.
+    use_bulk_api: bool = False
+    bulk_api_method: str | None = None
     partitioning_enabled: bool = False
     partitioning_mode: str = "auto_numeric"
     partitioning_column: str | None = None
@@ -689,6 +693,10 @@ class DagUpsertPayload(BaseModel):
     mapping_content: str | None = None
     where: str | None = None
     batch_size: int = Field(10000, ge=1, le=1_000_000)
+    # F2.1 — native bulk API (Enterprise). Off by default; method is explicit
+    # (no "auto") and validated against the bulk-provider registry + edition.
+    use_bulk_api: bool = False
+    bulk_api_method: str | None = None
     partitioning_enabled: bool = False
     partitioning_mode: str = "auto_numeric"
     partitioning_column: str | None = None
@@ -980,7 +988,11 @@ def _load_dag_explorer_html() -> str:
 @flow_studio_app.get("/", response_class=HTMLResponse)
 def studio_index(response: Response) -> str:
     response.headers["Cache-Control"] = "no-store"
-    return _load_index_html()
+    # F2.1 — inject the edition so the UI can gate Enterprise-only surfaces
+    # (INV-8 layer 1). Community hides use_bulk_api; the backend still rejects it.
+    from ffengine.core.edition import edition
+
+    return _load_index_html().replace("__FFENGINE_EDITION__", edition())
 
 
 @flow_studio_app.get("/dag-explorer", response_class=HTMLResponse)

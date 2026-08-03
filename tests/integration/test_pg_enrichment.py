@@ -222,7 +222,7 @@ def test_one_step_vs_two_step_value_equality(sessions, pg_dialect, tmp_path):
     TargetWriter(tgt, pg_dialect).write_batch(list(src_rows), single_cfg)
 
     # two-step: fill raw staging by ordinary insert, then promotion SELECT
-    stg_insert = pg_dialect.generate_bulk_insert_query(
+    stg_insert = pg_dialect.generate_insert_query(
         "public.ff_enr_stg", ["first_name", "last_name", "email"]
     )
     cur = tgt.cursor()

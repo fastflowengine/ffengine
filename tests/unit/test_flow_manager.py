@@ -14,7 +14,7 @@ from ffengine.errors.exceptions import ConnectionError
 def dialect():
     d = MagicMock()
     d.quote_identifier.side_effect = lambda n: f'"{n}"'
-    d.generate_bulk_insert_query.return_value = "INSERT INTO ..."
+    d.generate_insert_query.return_value = "INSERT INTO ..."
     d.generate_ddl.return_value = "CREATE TABLE ..."
     return d
 

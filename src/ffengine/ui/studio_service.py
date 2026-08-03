@@ -2283,6 +2283,9 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                 ),
                 "where": str(task.get("where") or "").strip() or None,
                 "batch_size": int(task.get("batch_size") or 10000),
+                "use_bulk_api": _coerce_bool(task.get("use_bulk_api"), default=False),
+                "bulk_api_method": str(task.get("bulk_api_method") or "").strip()
+                or None,
                 "partitioning_enabled": bool(partitioning.get("enabled", False)),
                 "partitioning_mode": str(
                     partitioning.get("mode") or "auto_numeric"
@@ -2350,6 +2353,8 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "mapping_content": first_task["mapping_content"],
         "where": first_task["where"],
         "batch_size": first_task["batch_size"],
+        "use_bulk_api": first_task["use_bulk_api"],
+        "bulk_api_method": first_task["bulk_api_method"],
         "partitioning_enabled": first_task["partitioning_enabled"],
         "partitioning_mode": first_task["partitioning_mode"],
         "partitioning_column": first_task["partitioning_column"],
@@ -3092,6 +3097,10 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
         "load_method": load_method,
         "where": payload.get("where"),
         "batch_size": int(payload.get("batch_size", 10000)),
+        # F2.1 — bulk fields flow into ConfigValidator._check_bulk_api so studio
+        # save rejects use_bulk_api in Community / unregistered methods (fail-loud).
+        "use_bulk_api": _coerce_bool(payload.get("use_bulk_api"), default=False),
+        "bulk_api_method": str(payload.get("bulk_api_method") or "").strip() or None,
         "partitioning": {
             "enabled": bool(payload.get("partitioning_enabled", False)),
             "mode": payload.get("partitioning_mode", "auto_numeric"),
@@ -3211,6 +3220,10 @@ def build_task_dict_for_validation_from_task(
         "load_method": load_method,
         "where": task_payload.get("where"),
         "batch_size": int(task_payload.get("batch_size", 10000)),
+        # F2.1 — bulk fields flow into ConfigValidator._check_bulk_api (fail-loud).
+        "use_bulk_api": _coerce_bool(task_payload.get("use_bulk_api"), default=False),
+        "bulk_api_method": str(task_payload.get("bulk_api_method") or "").strip()
+        or None,
         "partitioning": {
             "enabled": bool(task_payload.get("partitioning_enabled", False)),
             "mode": task_payload.get("partitioning_mode", "auto_numeric"),
@@ -4406,6 +4419,15 @@ def create_or_update_dag(
                 task_cfg["bindings"] = bindings
             if upsert_match_columns:
                 task_cfg["upsert_match_columns"] = upsert_match_columns
+            # F2.1 — emit bulk fields only for source_target tasks and only when
+            # enabled, so existing off-path YAML stays byte-identical.
+            if task_type == STUDIO_TASK_TYPE_SOURCE_TARGET and _coerce_bool(
+                item.get("use_bulk_api"), default=False
+            ):
+                task_cfg["use_bulk_api"] = True
+                bulk_method = str(item.get("bulk_api_method") or "").strip()
+                if bulk_method:
+                    task_cfg["bulk_api_method"] = bulk_method
             if file_source is not None:
                 task_cfg["column_mapping_mode"] = "mapping_file"
                 task_cfg.update(file_source)
