@@ -281,3 +281,7 @@ class PythonEngine(BaseEngine):
         from ffengine.config.loader import ConfigLoader
 
         return ConfigLoader().load(config_path, task_group_id)
+
+
+# F2.3 — canonical engine name (A6.2 rename, additive alias; PythonEngine korunur).
+StandardEngine = PythonEngine

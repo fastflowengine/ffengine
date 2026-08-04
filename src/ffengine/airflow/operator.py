@@ -739,8 +739,23 @@ class FFEngineOperator(BaseOperator):
         from ffengine.partition import Partitioner
         from ffengine.pipeline.target_writer import TargetWriter
         from ffengine.core.flow_manager import FlowManager
+        from ffengine.core.runtime_guard import run_runtime_guards
 
         context = context or {}
+        # F2.3 runtime guard seam: no-op in Community; Enterprise registers
+        # its license guard via the "ffengine.runtime_guards" entry point.
+        # Runs before any real work; a raising guard stops the task
+        # fail-loud. Metadata only — no DB/LDAP/network on this path.
+        dag_run = context.get("dag_run")
+        run_runtime_guards(
+            {
+                "dag_id": getattr(dag_run, "dag_id", None)
+                or context.get("dag_id"),
+                "task_id": getattr(self, "task_id", None),
+                "run_id": getattr(dag_run, "run_id", None),
+                "dag_run_start_date": getattr(dag_run, "start_date", None),
+            }
+        )
         airflow_ctx = build_runtime_binding_context(
             context,
             airflow_variables=self._airflow_context,
