@@ -187,11 +187,13 @@
               <button class="task-type-chip" type="button" data-task-type="script_run" aria-pressed="false">Script</button>
               <button class="task-type-chip" type="button" data-task-type="dag" aria-pressed="false">DAG</button>
               <button class="task-type-chip" type="button" data-task-type="binding" aria-pressed="false">Binding</button>
+              <button class="task-type-chip enterprise-only" type="button" data-task-type="dbt" aria-pressed="false">dbt</button>
               <select class="task-type task-type-native" title="Choose task behavior type.">
                 <option value="source_target">Source Target</option>
                 <option value="script_run">Script</option>
                 <option value="dag">DAG</option>
                 <option value="binding">Binding</option>
+                <option value="dbt" class="enterprise-only">dbt</option>
               </select>
             </div>
             <button class="btn btn-danger btn-delete-task" type="button">Delete</button>
@@ -285,6 +287,44 @@
                 <select class="dag-task-dag-id" title="Select DAG to trigger.">
                   <option value="">Select DAG</option>
                 </select>
+              </label>
+            </div>
+            <div class="dbt-fields enterprise-only hidden">
+              <label>
+                <span class="global-control-label">Project Ref</span>
+                <input class="dbt-project-ref" placeholder="finance" title="Relative path under FFENGINE_DBT_PROJECT_ROOT.">
+              </label>
+              <div class="row-2">
+                <label>
+                  <span class="global-control-label">Command</span>
+                  <select class="dbt-command" title="dbt command to run.">
+                    <option value="run">run</option>
+                    <option value="build">build</option>
+                    <option value="test">test</option>
+                  </select>
+                </label>
+                <label>
+                  <span class="global-control-label">Select</span>
+                  <input class="dbt-select" placeholder="tag:nightly" title="dbt --select value (required).">
+                </label>
+              </div>
+              <div class="row-2">
+                <label>
+                  <span class="global-control-label">Target (profiles.yml)</span>
+                  <input class="dbt-target" placeholder="prod" title="Optional target name in the deployment profiles.yml (not a Connection ID).">
+                </label>
+                <label>
+                  <span class="global-control-label">Threads</span>
+                  <input class="dbt-threads" type="number" min="1" step="1" placeholder="1" title="dbt --threads (positive integer; default 1).">
+                </label>
+              </div>
+              <label>
+                Vars (flat JSON object)
+                <textarea
+                  class="dbt-vars"
+                  rows="5"
+                  placeholder='{"run_date": "{{ dag.run_date }}", "full_refresh": false}'
+                ></textarea>
               </label>
             </div>
             </div>
@@ -800,6 +840,6 @@
   </div>
   <datalist id="mapping_editor_source_options"></datalist>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=95"></script>
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=96"></script>
 </body>
 </html>

@@ -225,7 +225,7 @@ def test_binding_task_hides_empty_source_card_and_uses_advanced_only_layout():
     )
     assert ".task-card.binding-task .task-layout" in style_css
     assert 'grid-template-areas: "advanced";' in style_css
-    assert "app.js?v=95" in index_html
+    assert "app.js?v=96" in index_html
 
 
 def test_advanced_dag_parameter_uses_parameter_type_label():
@@ -254,7 +254,7 @@ def test_connection_selector_uses_generic_source_and_target_labels():
     assert "Select Target Connection" in app_js
     assert "DB Connection" not in app_js
     assert "database connection" not in index_html
-    assert "app.js?v=95" in index_html
+    assert "app.js?v=96" in index_html
 
 
 def test_binding_ui_has_conditional_default_and_searchable_variable_selector():
@@ -332,7 +332,7 @@ def test_folder_path_ui_requires_explicit_selection():
     assert '(el("level").value || "").trim() || "level1"' not in app_js
     assert 'el("flow").value.trim() || "src_to_stg"' not in app_js
     assert '(el("flow").value || "").trim() || "src_to_stg"' not in app_js
-    assert "app.js?v=95" in index_html
+    assert "app.js?v=96" in index_html
 
 
 def test_dag_explorer_html_ok(client):
@@ -4016,3 +4016,277 @@ def test_api_key_required_when_env_set(client, studio_paths, monkeypatch):
         headers={"X-Flow-Studio-API-Key": "secret123"},
     )
     assert r4.status_code == 200
+
+
+# --- F3.2: dbt task type (Enterprise-run; Community seam + 422 gate) ---------
+
+
+@pytest.fixture
+def dbt_provider():
+    from ffengine.airflow import task_type_registry as reg
+
+    reg.clear_task_type_providers()
+    reg.register_task_type_provider("dbt", lambda **kwargs: None)
+    yield reg
+    reg.clear_task_type_providers()
+
+
+@pytest.fixture
+def no_dbt_provider():
+    from ffengine.airflow import task_type_registry as reg
+
+    reg.clear_task_type_providers()
+    yield reg
+    reg.clear_task_type_providers()
+
+
+def _dbt_flow_task(**overrides) -> dict:
+    task = {
+        "task_type": "dbt",
+        "task_group_id": "dbt_build",
+        "dbt_project_ref": "finance",
+        "dbt_command": "build",
+        "dbt_select": "tag:nightly",
+        "depends_on": [],
+    }
+    task.update(overrides)
+    return task
+
+
+def _dbt_dag_payload(**task_overrides) -> dict:
+    payload = _minimal_table_payload()
+    payload["flow_tasks"] = [_dbt_flow_task(**task_overrides)]
+    return payload
+
+
+@pytest.mark.parametrize(
+    "missing", ["dbt_project_ref", "dbt_command", "dbt_select"]
+)
+def test_dag_payload_dbt_requires_ref_command_select(dbt_provider, missing):
+    from ffengine.ui.api_app import FlowTaskPayload
+
+    task = _dbt_flow_task()
+    task.pop(missing)
+    with pytest.raises(ValidationError, match=missing):
+        FlowTaskPayload(**task)
+
+
+def test_dag_payload_dbt_rejects_invalid_command(dbt_provider):
+    from ffengine.ui.api_app import FlowTaskPayload
+
+    with pytest.raises(ValidationError, match="dbt_command"):
+        FlowTaskPayload(**_dbt_flow_task(dbt_command="snapshot"))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("script_sql", "SELECT 1"),
+        ("script_run_environment", "target"),
+        ("dag_task_dag_id", "other_dag"),
+        ("where", "x = 1"),
+        ("inline_sql", "SELECT 1"),
+        ("mapping_file", "m.yaml"),
+        (
+            "bindings",
+            [{"variable_name": "x", "binding_source": "default",
+              "default_value": "1"}],
+        ),
+        ("partitioning_enabled", True),
+        ("use_bulk_api", True),
+        ("load_method", "upsert"),
+    ],
+)
+def test_dag_payload_dbt_rejects_incompatible_fields(
+    dbt_provider, field, value
+):
+    from ffengine.ui.api_app import FlowTaskPayload
+
+    with pytest.raises(ValidationError):
+        FlowTaskPayload(**_dbt_flow_task(**{field: value}))
+
+
+def test_dag_payload_dbt_vars_reference_requires_declared_param(dbt_provider):
+    payload = _dbt_dag_payload(
+        dbt_vars={"run_date": "{{ dag.missing_param }}"}
+    )
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"},
+    ]
+    with pytest.raises(ValidationError, match="not declared"):
+        DagUpsertPayload(**payload)
+
+
+def test_create_dag_dbt_rejected_with_422_when_no_provider(
+    client, studio_paths, no_dbt_provider
+):
+    r = client.post("/api/create-dag", json=_dbt_dag_payload())
+    assert r.status_code == 422, r.text
+    assert "Enterprise" in r.text
+
+
+def test_create_dag_dbt_task_persists_narrow_yaml_and_roundtrips(
+    client, studio_paths, dbt_provider
+):
+    payload = _dbt_dag_payload(
+        depends_on=["bind_run_date"],
+        dbt_vars={"run_date": "{{ dag.run_date }}", "full_refresh": False},
+        dbt_target="prod",
+        dbt_threads=2,
+    )
+    payload["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"},
+        {"name": "run_date", "type": "string"},
+    ]
+    payload["flow_tasks"].insert(0, {
+        "task_type": "binding",
+        "task_group_id": "bind_run_date",
+        "depends_on": [],
+        "bindings": [{
+            "variable_name": "run_date",
+            "binding_source": "default",
+            "default_value": "2026-01-02",
+        }],
+    })
+
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    body = r.json()
+    config_path = Path(body["config_path"])
+    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    dbt_tasks = [
+        t for t in cfg["flow_tasks"] if t.get("task_type") == "dbt"
+    ]
+    assert len(dbt_tasks) == 1
+    task = dbt_tasks[0]
+    # Narrow YAML: only the dbt contract keys, no engine fields.
+    assert set(task) == {
+        "task_type", "task_group_id", "depends_on", "tags",
+        "dbt_project_ref", "dbt_command", "dbt_select", "dbt_target",
+        "dbt_threads", "dbt_vars",
+    }
+    assert task["dbt_project_ref"] == "finance"
+    assert task["dbt_vars"] == {
+        "run_date": "{{ dag.run_date }}", "full_refresh": False,
+    }
+    assert task["depends_on"] == ["bind_run_date"]
+
+    dag_id = Path(body["dag_path"]).stem
+    r2 = client.get(f"/api/dag-config?dag_id={dag_id}")
+    assert r2.status_code == 200, r2.text
+    preload = r2.json().get("payload") or {}
+    preload_dbt = [
+        t for t in (preload.get("flow_tasks") or [])
+        if t.get("task_type") == "dbt"
+    ][0]
+    assert preload_dbt["dbt_project_ref"] == "finance"
+    assert preload_dbt["dbt_command"] == "build"
+    assert preload_dbt["dbt_select"] == "tag:nightly"
+    assert preload_dbt["dbt_target"] == "prod"
+    assert preload_dbt["dbt_threads"] == 2
+    assert preload_dbt["dbt_vars"] == {
+        "run_date": "{{ dag.run_date }}", "full_refresh": False,
+    }
+
+    # Resave rebuilt from the PRELOAD (the UI pattern): if
+    # resolve_dag_config_for_update had dropped any dbt key, this rebuild
+    # would lose it and the YAML asserts below would fail.
+    def _clean_task(raw: dict) -> dict:
+        keep = {
+            "task_type", "task_group_id", "depends_on", "bindings",
+            "dbt_project_ref", "dbt_command", "dbt_select", "dbt_target",
+            "dbt_threads", "dbt_vars",
+        }
+        return {
+            key: value
+            for key, value in raw.items()
+            if key in keep and value not in (None, "", [])
+        }
+
+    update_payload = _minimal_table_payload()
+    update_payload["dag_params"] = payload["dag_params"]
+    update_payload["flow_tasks"] = [
+        _clean_task(t) for t in (preload.get("flow_tasks") or [])
+    ]
+    r3 = client.post(f"/api/update-dag?dag_id={dag_id}", json=update_payload)
+    assert r3.status_code == 200, r3.text
+    cfg2 = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    task2 = [
+        t for t in cfg2["flow_tasks"] if t.get("task_type") == "dbt"
+    ][0]
+    assert task2["dbt_project_ref"] == "finance"
+    assert task2["dbt_select"] == "tag:nightly"
+    assert task2["dbt_target"] == "prod"
+    assert task2["dbt_threads"] == 2
+    assert task2["dbt_vars"] == {
+        "run_date": "{{ dag.run_date }}", "full_refresh": False,
+    }
+
+
+def test_legacy_payload_without_dbt_fields_accepted_and_yaml_has_no_dbt_keys(
+    client, studio_paths
+):
+    r = client.post("/api/create-dag", json=_minimal_table_payload())
+    assert r.status_code == 201, r.text
+    cfg = yaml.safe_load(
+        Path(r.json()["config_path"]).read_text(encoding="utf-8")
+    )
+    for task in cfg["flow_tasks"]:
+        assert not any(key.startswith("dbt_") for key in task)
+
+
+# --- F3.2: dbt card source-contract + edition gate (automated Studio smoke) --
+
+
+def test_dbt_ui_card_markup_is_enterprise_gated():
+    ui_root = Path(api_app_module.__file__).parent
+    index_html = (
+        ui_root / "templates" / "flow_studio" / "index.html"
+    ).read_text(encoding="utf-8")
+    style_css = (
+        ui_root / "static" / "flow_studio" / "css" / "style.css"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        '<button class="task-type-chip enterprise-only" type="button" '
+        'data-task-type="dbt"' in index_html
+    )
+    assert '<option value="dbt" class="enterprise-only">dbt</option>' in index_html
+    assert 'class="dbt-fields enterprise-only hidden"' in index_html
+    for control in (
+        "dbt-project-ref", "dbt-command", "dbt-select",
+        "dbt-target", "dbt-threads", "dbt-vars",
+    ):
+        assert control in index_html
+    # Edition gate CSS (F2.1 layer 1): enterprise-only surfaces stay hidden
+    # unless the server stamped data-ffengine-edition="enterprise" on <body>.
+    assert ".enterprise-only {" in style_css
+    assert 'body[data-ffengine-edition="enterprise"] .enterprise-only' in style_css
+    assert "app.js?v=96" in index_html
+
+
+def test_dbt_ui_js_wiring_contract():
+    app_js = (
+        Path(api_app_module.__file__).parent
+        / "static" / "flow_studio" / "js" / "app.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'DBT: "dbt"' in app_js
+    assert (
+        'dbtFields?.classList.toggle("hidden", taskType !== TASK_TYPES.DBT);'
+        in app_js
+    )
+    assert "function collectDbtFields(card, taskType)" in app_js
+    assert "function taskParamExpression(task)" in app_js
+    assert "function cardParamExpression(card)" in app_js
+    assert "dbt Vars must be a flat JSON object" in app_js
+
+
+def test_served_studio_page_hides_dbt_in_community_edition(client):
+    r = client.get("/")
+    assert r.status_code == 200, r.text
+    html = r.text
+    assert "__FFENGINE_EDITION__" not in html  # placeholder substituted
+    assert 'data-ffengine-edition="community"' in html  # Community default
+    assert 'data-ffengine-edition="enterprise"' not in html
+    assert 'data-task-type="dbt"' in html  # markup shipped, CSS-gated

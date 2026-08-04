@@ -63,12 +63,25 @@ STUDIO_TASK_TYPE_SOURCE_TARGET = "source_target"
 STUDIO_TASK_TYPE_SCRIPT_RUN = "script_run"
 STUDIO_TASK_TYPE_DAG = "dag"
 STUDIO_TASK_TYPE_BINDING = "binding"
+STUDIO_TASK_TYPE_DBT = "dbt"
 STUDIO_VALID_TASK_TYPES = {
     STUDIO_TASK_TYPE_SOURCE_TARGET,
     STUDIO_TASK_TYPE_SCRIPT_RUN,
     STUDIO_TASK_TYPE_DAG,
     STUDIO_TASK_TYPE_BINDING,
+    STUDIO_TASK_TYPE_DBT,
 }
+# F3.2 — dbt task contract keys (the runner is Enterprise; Community owns the
+# shape). Extracted narrowly so engine-field defaults never leak into the
+# dbt contract validation.
+_DBT_FIELD_KEYS = (
+    "dbt_project_ref",
+    "dbt_command",
+    "dbt_select",
+    "dbt_target",
+    "dbt_threads",
+    "dbt_vars",
+)
 STUDIO_VALID_SCRIPT_RUN_ENVIRONMENTS = {"source", "target"}
 _BINDING_PARAM_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 _OBSOLETE_BINDING_PARAM_RE = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
@@ -173,9 +186,41 @@ def _normalize_task_type(raw_task_type: Any) -> str:
     task_type = str(raw_task_type or STUDIO_TASK_TYPE_SOURCE_TARGET).strip().lower()
     if task_type not in STUDIO_VALID_TASK_TYPES:
         raise ValueError(
-            "task_type must be source_target, script_run, dag, or binding."
+            "task_type must be source_target, script_run, dag, binding, "
+            "or dbt."
         )
     return task_type
+
+
+def _extract_dbt_fields(source: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: source.get(key)
+        for key in _DBT_FIELD_KEYS
+        if source.get(key) is not None
+    }
+
+
+def _validated_dbt_fields(source: dict[str, Any]) -> dict[str, Any]:
+    """Validate + normalize dbt_* fields; Enterprise-provider gate included.
+
+    The provider check is the backend half of the edition gate: it also
+    blocks direct service calls that bypass the API (F2.1/F2.2 precedent).
+    """
+    from ffengine.airflow.task_type_registry import has_task_type_provider
+    from ffengine.config.dbt_contract import validate_dbt_task_fields
+
+    if not has_task_type_provider("dbt"):
+        raise ValueError(
+            "task_type='dbt' requires the Enterprise dbt provider (entry "
+            "point 'ffengine.task_type_providers'); it is not installed in "
+            "this environment."
+        )
+    if _normalize_bindings(source.get("bindings")):
+        raise ValueError(
+            "dbt tasks do not support local bindings; assign DAG parameters "
+            "with an upstream 'binding' task."
+        )
+    return validate_dbt_task_fields(_extract_dbt_fields(source))
 
 
 def _extract_binding_params(expression: Any) -> set[str]:
@@ -2312,6 +2357,26 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                 "target_delimiter": task.get("target_delimiter"),
                 "target_encoding": task.get("target_encoding"),
                 "target_header": task.get("target_header"),
+                # F3.2 — dbt fields (preload for edit). This dict is an
+                # EXPLICIT key list: any persisted dbt key missing here is
+                # silently dropped on the next resave (round-trip trap).
+                "dbt_project_ref": str(task.get("dbt_project_ref") or "").strip()
+                or None,
+                "dbt_command": str(task.get("dbt_command") or "").strip() or None,
+                "dbt_select": str(task.get("dbt_select") or "").strip() or None,
+                "dbt_target": str(task.get("dbt_target") or "").strip() or None,
+                "dbt_threads": (
+                    task.get("dbt_threads")
+                    if isinstance(task.get("dbt_threads"), int)
+                    and not isinstance(task.get("dbt_threads"), bool)
+                    else None
+                ),
+                "dbt_vars": (
+                    dict(task.get("dbt_vars"))
+                    if isinstance(task.get("dbt_vars"), dict)
+                    and task.get("dbt_vars")
+                    else None
+                ),
             }
         )
 
@@ -3134,6 +3199,8 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "upsert_match_columns is only supported when task_type='source_target'."
         )
+    if task_type == STUDIO_TASK_TYPE_DBT:
+        task.update(_validated_dbt_fields(payload))
     _apply_file_endpoints(task, payload, source_type, str(task_group_id), 1)
     return task
 
@@ -3259,6 +3326,8 @@ def build_task_dict_for_validation_from_task(
         raise ValueError(
             "upsert_match_columns is only supported when task_type='source_target'."
         )
+    if task_type == STUDIO_TASK_TYPE_DBT:
+        task.update(_validated_dbt_fields(task_payload))
     _apply_file_endpoints(
         task, task_payload, source_type, str(task_group_id), task_index
     )
@@ -3292,6 +3361,9 @@ def _validate_non_source_target_task(task: dict[str, Any]) -> None:
     if task_type == STUDIO_TASK_TYPE_BINDING:
         if not _normalize_bindings(task.get("bindings")):
             raise ValueError("bindings is required when task_type='binding'.")
+        return
+    if task_type == STUDIO_TASK_TYPE_DBT:
+        _validated_dbt_fields(task)
         return
     raise ValueError(f"Unsupported task_type: {task_type}")
 
@@ -4292,6 +4364,7 @@ def create_or_update_dag(
             dag_task_dag_id = str(item.get("dag_task_dag_id") or "").strip() or None
             file_source = None
             file_target = None
+            dbt_cfg: dict[str, Any] = {}
 
             if task_type == STUDIO_TASK_TYPE_SOURCE_TARGET:
                 file_source = normalize_file_source(item, source_type)
@@ -4333,6 +4406,17 @@ def create_or_update_dag(
                 auto_source_schema = "binding"
                 auto_source_table = str(idx)
                 auto_load_method = "binding"
+            elif task_type == STUDIO_TASK_TYPE_DBT:
+                # F3.2 — validate + normalize the dbt contract fields; the
+                # Enterprise-provider gate lives inside (fail-loud in
+                # Community). NOTE: this elif must stay BEFORE the implicit
+                # 'dag' else-branch below.
+                dbt_cfg = _validated_dbt_fields(item)
+                normalized_source_schema = ""
+                normalized_source_table = ""
+                auto_source_schema = "dbt"
+                auto_source_table = dbt_cfg["dbt_command"]
+                auto_load_method = "dbt"
             else:
                 if not dag_task_dag_id:
                     raise ValueError(
@@ -4412,6 +4496,16 @@ def create_or_update_dag(
                     "task_type": task_type,
                     "task_group_id": task_group_id,
                     "depends_on": task_cfg["depends_on"],
+                    "tags": tags,
+                }
+            if task_type == STUDIO_TASK_TYPE_DBT:
+                # F3.2 — narrow YAML: only the dbt contract keys travel to
+                # disk (binding-task precedent); engine fields never leak.
+                task_cfg = {
+                    "task_type": task_type,
+                    "task_group_id": task_group_id,
+                    "depends_on": task_cfg["depends_on"],
+                    **dbt_cfg,
                     "tags": tags,
                 }
             bindings = _normalize_bindings(item.get("bindings"))

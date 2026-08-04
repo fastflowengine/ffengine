@@ -139,3 +139,55 @@ def test_binding_task_rejects_builtin_log_level_target():
         match="Built-in DAG parameter 'log_level' cannot be assigned",
     ):
         compile_dag_parameter_flow(_params(), [binding])
+
+
+# --- F3.2: dbt task param references come from dbt_vars ----------------------
+
+def _dbt(task_id: str, depends_on: list[str], vars_map: dict) -> dict:
+    return {
+        "task_group_id": task_id,
+        "task_type": "dbt",
+        "depends_on": depends_on,
+        "dbt_project_ref": "finance",
+        "dbt_command": "build",
+        "dbt_select": "tag:nightly",
+        "dbt_vars": vars_map,
+    }
+
+
+def test_dbt_task_references_extracted_from_dbt_vars():
+    tasks = [
+        _binding("bind_1", "1", []),
+        _dbt("dbt_build", ["bind_1"], {"test1": "{{ dag.test1 }}"}),
+    ]
+
+    plan = compile_dag_parameter_flow(_params(), tasks)
+
+    assert plan.input_sources["dbt_build"]["test1"] == "bind_1"
+    assert plan.binding_sources_for("dbt_build") == {"test1": "bind_1"}
+
+
+def test_dbt_task_without_vars_references_nothing():
+    tasks = [_binding("bind_1", "1", []), _dbt("dbt_build", ["bind_1"], {})]
+
+    plan = compile_dag_parameter_flow(_params(), tasks)
+
+    assert plan.binding_sources_for("dbt_build") == {}
+
+
+def test_dbt_task_undeclared_param_in_vars_fails_loud():
+    tasks = [_dbt("dbt_build", [], {"missing": "{{ dag.missing }}"})]
+
+    with pytest.raises(ValueError, match="not declared"):
+        compile_dag_parameter_flow(_params(), tasks)
+
+
+def test_dbt_task_ambiguous_parameter_source_fails_loud():
+    tasks = [
+        _binding("bind_a", "1", []),
+        _binding("bind_b", "2", []),
+        _dbt("dbt_build", ["bind_a", "bind_b"], {"test1": "{{ dag.test1 }}"}),
+    ]
+
+    with pytest.raises(ValueError, match="Ambiguous"):
+        compile_dag_parameter_flow(_params(), tasks)

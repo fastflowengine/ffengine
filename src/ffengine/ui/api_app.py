@@ -13,9 +13,14 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from ffengine.airflow.task_type_registry import has_task_type_provider
 from ffengine.config.dag_param_flow import (
     compile_dag_parameter_flow,
     validate_binding_target_is_custom,
+)
+from ffengine.config.dbt_contract import (
+    dbt_vars_expression_text,
+    validate_dbt_task_fields,
 )
 from ffengine.config.schema import (
     VALID_COLUMN_MAPPING_MODES,
@@ -103,7 +108,7 @@ _DAG_PARAM_RE = re.compile(r"\{\{\s*dag\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 _AIRFLOW_PARAM_RE = re.compile(r"\{\{\s*airflow\.([^\s{}]+)\s*\}\}")
 _OBSOLETE_BINDING_PARAM_RE = re.compile(r"(?<!:):([A-Za-z_][A-Za-z0-9_]*)")
 _CUSTOM_TAG_MAX_COUNT = 10
-_VALID_TASK_TYPES = {"source_target", "script_run", "dag", "binding"}
+_VALID_TASK_TYPES = {"source_target", "script_run", "dag", "binding", "dbt"}
 _VALID_SCRIPT_RUN_ENVIRONMENTS = {"source", "target"}
 _VALID_DAG_PARAM_TYPES = {"string", "integer", "number", "boolean"}
 
@@ -160,6 +165,58 @@ def _validate_bindings_expression_contract(
             f"Binding definition exists but parameter(s) are unused in {expression_label}: "
             + ", ".join(unused)
         )
+
+
+def _dbt_vars_text(dbt_vars: dict | None) -> str:
+    return dbt_vars_expression_text({"dbt_vars": dict(dbt_vars or {})})
+
+
+def _validate_dbt_task_payload(payload: Any) -> None:
+    """F3.2 — dbt task payload rules (shared by both payload models).
+
+    The dbt runner is Enterprise-only: without a registered task-type
+    provider the request is rejected (HTTP 422), which is the backend half
+    of the edition gate (the UI half hides the option).
+    """
+    if not has_task_type_provider("dbt"):
+        raise ValueError(
+            "task_type='dbt' requires the Enterprise dbt provider (entry "
+            "point 'ffengine.task_type_providers'); it is not installed in "
+            "this environment."
+        )
+    conflicts = {
+        "script_run_environment": payload.script_run_environment,
+        "script_sql": payload.script_sql,
+        "dag_task_dag_id": payload.dag_task_dag_id,
+        "inline_sql": payload.inline_sql,
+        "mapping_file": payload.mapping_file,
+        "mapping_content": payload.mapping_content,
+        "where": payload.where,
+    }
+    for field_name, value in conflicts.items():
+        if str(value or "").strip():
+            raise ValueError(
+                f"{field_name} is not allowed when task_type='dbt'."
+            )
+    if payload.bindings:
+        raise ValueError(
+            "dbt tasks do not support local bindings; assign DAG parameters "
+            "with an upstream 'binding' task."
+        )
+    if payload.partitioning_enabled:
+        raise ValueError("partitioning is not allowed when task_type='dbt'.")
+    if payload.use_bulk_api:
+        raise ValueError("use_bulk_api is not allowed when task_type='dbt'.")
+    validate_dbt_task_fields(
+        {
+            "dbt_project_ref": payload.dbt_project_ref,
+            "dbt_command": payload.dbt_command,
+            "dbt_select": payload.dbt_select,
+            "dbt_target": payload.dbt_target,
+            "dbt_threads": payload.dbt_threads,
+            "dbt_vars": payload.dbt_vars,
+        }
+    )
 
 
 def _dag_param_value_matches(value: Any, param_type: str) -> bool:
@@ -312,6 +369,13 @@ class FlowTaskPayload(BaseModel):
     partitioning_ranges: list[Any] | None = None
     bindings: list[BindingPayload] | None = None
     depends_on: list[str] | None = None
+    # F3.2 — dbt task (Enterprise-run; Community carries the contract only)
+    dbt_project_ref: str | None = None
+    dbt_command: str | None = None
+    dbt_select: str | None = None
+    dbt_target: str | None = None
+    dbt_threads: int | None = None
+    dbt_vars: dict[str, Any] | None = None
     # F1.4/F1.5 — file source (csv/json) + file target
     file_path: str | None = None
     delimiter: str | None = None
@@ -364,7 +428,8 @@ class FlowTaskPayload(BaseModel):
         value = str(v or "").strip()
         if value not in _VALID_TASK_TYPES:
             raise ValueError(
-                "task_type must be source_target, script_run, dag, or binding."
+                "task_type must be source_target, script_run, dag, binding, "
+                "or dbt."
             )
         return value
 
@@ -455,6 +520,8 @@ class FlowTaskPayload(BaseModel):
             dag_id = str(self.dag_task_dag_id or "").strip()
             if not dag_id:
                 raise ValueError("dag_task_dag_id is required when task_type='dag'.")
+        elif self.task_type == "dbt":
+            _validate_dbt_task_payload(self)
         items = list(self.bindings or [])
         names = [item.variable_name for item in items]
         if len(names) != len(set(names)):
@@ -475,6 +542,9 @@ class FlowTaskPayload(BaseModel):
         if self.task_type == "script_run":
             binding_expression = self.script_sql
             binding_expression_label = "Script SQL / Stored Procedure"
+        elif self.task_type == "dbt":
+            binding_expression = _dbt_vars_text(self.dbt_vars)
+            binding_expression_label = "dbt vars"
         _validate_bindings_expression_contract(
             binding_expression,
             items,
@@ -626,7 +696,13 @@ def _validate_dag_params_and_binding_tasks(
         if task.task_type == "binding":
             continue
         local = {item.variable_name for item in list(task.bindings or [])}
-        expression = task.script_sql if task.task_type == "script_run" else task.where
+        if task.task_type == "script_run":
+            expression = task.script_sql
+        elif task.task_type == "dbt":
+            # Mirror of dag_param_flow._reference_expression (F3.2).
+            expression = _dbt_vars_text(task.dbt_vars)
+        else:
+            expression = task.where
         simple_refs = _extract_binding_params(expression)
         legacy_dag_refs = (simple_refs - local) & declared
         missing = sorted(simple_refs - local - declared)
@@ -704,6 +780,13 @@ class DagUpsertPayload(BaseModel):
     partitioning_distinct_limit: int | None = Field(default=None, ge=1, le=1_000_000)
     partitioning_ranges: list[Any] | None = None
     bindings: list[BindingPayload] | None = None
+    # F3.2 — dbt task (single-task DAG path)
+    dbt_project_ref: str | None = None
+    dbt_command: str | None = None
+    dbt_select: str | None = None
+    dbt_target: str | None = None
+    dbt_threads: int | None = None
+    dbt_vars: dict[str, Any] | None = None
     # F1.4/F1.5 — file source (csv/json) + file target (single-task DAG path)
     file_path: str | None = None
     delimiter: str | None = None
@@ -753,7 +836,8 @@ class DagUpsertPayload(BaseModel):
         value = str(v or "").strip()
         if value not in _VALID_TASK_TYPES:
             raise ValueError(
-                "task_type must be source_target, script_run, dag, or binding."
+                "task_type must be source_target, script_run, dag, binding, "
+                "or dbt."
             )
         return value
 
@@ -858,6 +942,21 @@ class DagUpsertPayload(BaseModel):
             _validate_single_task_params(
                 self.where, items, list(self.dag_params or [])
             )
+            return self
+
+        if parsed_task_type == "dbt":
+            _validate_dbt_task_payload(self)
+            vars_text = _dbt_vars_text(self.dbt_vars)
+            _validate_single_task_params(
+                vars_text, [], list(self.dag_params or [])
+            )
+            declared = {item.name for item in list(self.dag_params or [])}
+            undeclared = sorted(_extract_dag_params(vars_text) - declared)
+            if undeclared:
+                raise ValueError(
+                    "DAG parameter reference is not declared: "
+                    + ", ".join(undeclared)
+                )
             return self
 
         if self.target_type == "file" and not (self.target_file_path or "").strip():

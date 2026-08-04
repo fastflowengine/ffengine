@@ -754,3 +754,126 @@ def test_airflow_namespace_does_not_read_variable_at_parse_time():
         )
 
     variable_get.assert_not_called()
+
+
+# --- F3.2: dbt task via the task-type provider seam --------------------------
+
+@pytest.fixture
+def dbt_provider_registry():
+    from ffengine.airflow import task_type_registry as reg
+
+    reg.clear_task_type_providers()
+    yield reg
+    reg.clear_task_type_providers()
+
+
+def _dbt_task_def(task_id="dbt_build", depends_on=None, vars_map=None) -> dict:
+    task = {
+        "task_group_id": task_id,
+        "task_type": "dbt",
+        "depends_on": list(depends_on or []),
+        "dbt_project_ref": "finance",
+        "dbt_command": "build",
+        "dbt_select": "tag:nightly",
+    }
+    if vars_map is not None:
+        task["dbt_vars"] = vars_map
+    return task
+
+
+def test_build_generated_dag_dbt_task_is_thin_wrapper_and_wires_depends_on(
+    dbt_provider_registry,
+):
+    from airflow.providers.standard.operators.empty import EmptyOperator
+
+    captured = {}
+
+    def provider(**kwargs):
+        captured.update(kwargs)
+        return EmptyOperator(task_id=kwargs["task_id"])
+
+    dbt_provider_registry.register_task_type_provider("dbt", provider)
+
+    raw = _base_raw_config()
+    raw["flow_tasks"] = [
+        {
+            "task_group_id": "orders_task",
+            "task_type": "source_target",
+            "depends_on": [],
+            "partitioning": {"enabled": False},
+        },
+        _dbt_task_def(depends_on=["orders_task"]),
+    ]
+
+    dag = build_generated_dag(
+        dag_id="demo_dbt",
+        dag_tags=["demo"],
+        upstream_dag_ids=[],
+        raw_config_snapshot=raw,
+    )
+
+    assert "dbt__dbt_build" in dag.task_dict
+    assert captured["task_id"] == "dbt__dbt_build"
+    assert captured["source_conn_id"] == "src_conn"
+    assert captured["target_conn_id"] == "tgt_conn"
+    assert captured["task_def"]["dbt_project_ref"] == "finance"
+    assert captured["binding_sources"] == {}
+    assert not isinstance(dag.task_dict["dbt__dbt_build"], FFEngineOperator)
+    assert "dbt__dbt_build" in dag.task_dict["run_orders_task"].downstream_task_ids
+
+
+def test_dbt_task_receives_compiled_binding_sources(dbt_provider_registry):
+    from airflow.providers.standard.operators.empty import EmptyOperator
+
+    captured = {}
+
+    def provider(**kwargs):
+        captured.update(kwargs)
+        return EmptyOperator(task_id=kwargs["task_id"])
+
+    dbt_provider_registry.register_task_type_provider("dbt", provider)
+
+    raw = _base_raw_config()
+    raw["dag_params"] = [{"name": "run_date", "type": "string"}]
+    raw["flow_tasks"] = [
+        {
+            "task_group_id": "bind_run_date",
+            "task_type": "binding",
+            "depends_on": [],
+            "bindings": [
+                {
+                    "variable_name": "run_date",
+                    "binding_source": "default",
+                    "default_value": "2026-01-02",
+                }
+            ],
+        },
+        _dbt_task_def(
+            depends_on=["bind_run_date"],
+            vars_map={"run_date": "{{ dag.run_date }}"},
+        ),
+    ]
+
+    build_generated_dag(
+        dag_id="demo_dbt_vars",
+        dag_tags=["demo"],
+        upstream_dag_ids=[],
+        raw_config_snapshot=raw,
+    )
+
+    assert captured["binding_sources"] == {"run_date": "binding__bind_run_date"}
+
+
+def test_generated_dag_dbt_without_provider_fails_loud_at_parse(
+    dbt_provider_registry,
+):
+    raw = _base_raw_config()
+    raw["flow_tasks"] = [_dbt_task_def()]
+
+    with pytest.raises(ValueError, match="task-type provider"):
+        build_generated_dag(
+            dag_id="demo_dbt_no_provider",
+            dag_tags=["demo"],
+            upstream_dag_ids=[],
+            raw_config_snapshot=raw,
+        )

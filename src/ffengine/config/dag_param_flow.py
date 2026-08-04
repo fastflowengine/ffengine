@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ffengine.config.dbt_contract import dbt_vars_expression_text
+
 
 TRIGGER_SOURCE = "__dag_run_conf__"
 AMBIGUOUS_SOURCE = "__ambiguous__"
@@ -122,14 +124,25 @@ def _binding_assignments(
     return assigned
 
 
+def _reference_expression(task: dict[str, Any]) -> str:
+    """Per-type text scanned for {{ p }} / {{ dag.p }} param references.
+
+    Every task type that consumes DAG parameters MUST contribute its
+    expression source here (mirrored in api_app and app.js); otherwise its
+    compiled binding sources are silently empty (F3.2 / INV-6).
+    """
+    task_type = str(task.get("task_type") or "")
+    if task_type == "script_run":
+        return str(task.get("script_sql") or "")
+    if task_type == "dbt":
+        return dbt_vars_expression_text(task)
+    return str(task.get("where") or "")
+
+
 def _task_references(task: dict[str, Any], declared: set[str]) -> set[str]:
     if str(task.get("task_type") or "") == "binding":
         return set()
-    expression = str(
-        task.get("script_sql")
-        if str(task.get("task_type") or "") == "script_run"
-        else task.get("where") or ""
-    )
+    expression = _reference_expression(task)
     local = {
         str(item.get("variable_name") or "").strip()
         for item in list(task.get("bindings") or [])

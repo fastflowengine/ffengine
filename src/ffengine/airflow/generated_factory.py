@@ -551,6 +551,34 @@ def build_generated_dag(
                     skip_when_already_exists=False,
                 )
                 continue
+            if task_type == "dbt":
+                # F3.2: dbt is an Enterprise-run task type behind the
+                # Community provider seam. The provider owns operator
+                # construction; parse reads no project/profile/executable/
+                # license (no parse-time I/O — registry lookup is in-process
+                # package metadata, same as the bulk-provider registry).
+                from ffengine.airflow.task_type_registry import (
+                    get_task_type_provider,
+                )
+
+                provider = get_task_type_provider("dbt")
+                if provider is None:
+                    raise ValueError(
+                        "task_type='dbt' requires a registered task-type "
+                        "provider (Enterprise dbt package exposing the "
+                        "'ffengine.task_type_providers' entry point); none "
+                        "is installed. There is no silent fallback "
+                        "(fail-loud)."
+                    )
+                dbt_task_id = _bounded_task_id(f"dbt__{task_slug}")
+                task_groups[task_group_id] = provider(
+                    task_id=dbt_task_id,
+                    task_def=task_def,
+                    source_conn_id=source_conn_id,
+                    target_conn_id=target_conn_id,
+                    binding_sources=_flow_binding_sources(task_def),
+                )
+                continue
             partition_cfg = task_def.get("partitioning")
             partition_enabled = isinstance(partition_cfg, dict) and bool(
                 partition_cfg.get("enabled", False)

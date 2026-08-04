@@ -414,6 +414,7 @@ async function studioFetch(path, options) {
       SCRIPT_RUN: "script_run",
       DAG: "dag",
       BINDING: "binding",
+      DBT: "dbt",
     });
     const PARTITION_MODE_HINTS = Object.freeze({
       auto_numeric: "MIN/MAX based numeric partitioning. Best for integer/decimal columns.",
@@ -3006,13 +3007,29 @@ async function studioFetch(path, options) {
       };
     }
 
+    // F3.2 — per-type text scanned for {{ p }} / {{ dag.p }} references.
+    // Mirror of dag_param_flow._reference_expression: every task type that
+    // consumes DAG parameters MUST contribute its expression source here.
+    function taskParamExpression(task) {
+      if (task.task_type === TASK_TYPES.SCRIPT_RUN) return task.script_sql;
+      if (task.task_type === TASK_TYPES.DBT) {
+        const vars = task.dbt_vars || {};
+        return Object.keys(vars).sort().map((key) => String(vars[key])).join("\n");
+      }
+      return task.where;
+    }
+
+    function cardParamExpression(card) {
+      const taskType = card.querySelector(".task-type")?.value;
+      if (taskType === TASK_TYPES.SCRIPT_RUN) return card.querySelector(".script-sql")?.value;
+      if (taskType === TASK_TYPES.DBT) return card.querySelector(".dbt-vars")?.value;
+      return card.querySelector(".where")?.value;
+    }
+
     async function validateAirflowNamespaceKeys() {
       const keys = new Set();
       for (const card of getTaskCards()) {
-        const taskType = card.querySelector(".task-type")?.value;
-        const expression = taskType === TASK_TYPES.SCRIPT_RUN
-          ? card.querySelector(".script-sql")?.value
-          : card.querySelector(".where")?.value;
+        const expression = cardParamExpression(card);
         for (const key of expressionNamespaceRefs(expression).airflow) keys.add(key);
       }
       for (const key of keys) {
@@ -3080,7 +3097,7 @@ async function studioFetch(path, options) {
           incoming.set(name, sources.size === 1 ? Array.from(sources)[0] : ambiguousSource);
         }
         if (task.task_type !== TASK_TYPES.BINDING) {
-          const expression = task.task_type === TASK_TYPES.SCRIPT_RUN ? task.script_sql : task.where;
+          const expression = taskParamExpression(task);
           const ambiguous = Array.from(expressionNamespaceRefs(expression).dag)
             .filter((name) => incoming.get(name) === ambiguousSource);
           if (ambiguous.length) {
@@ -3149,7 +3166,7 @@ async function studioFetch(path, options) {
       }
       for (const task of payload.flow_tasks || []) {
         if (task.task_type === TASK_TYPES.BINDING) continue;
-        const expression = task.task_type === TASK_TYPES.SCRIPT_RUN ? task.script_sql : task.where;
+        const expression = taskParamExpression(task);
         const refs = expressionNamespaceRefs(expression);
         if (refs.legacyAirflow.size) {
           const key = Array.from(refs.legacyAirflow)[0];
@@ -3581,6 +3598,7 @@ async function studioFetch(path, options) {
       const sourceTargetFields = card.querySelector(".source-target-fields");
       const scriptRunFields = card.querySelector(".script-run-fields");
       const dagTaskFields = card.querySelector(".dag-task-fields");
+      const dbtFields = card.querySelector(".dbt-fields");
       const sourceCard = card.querySelector(".source-card");
       const targetCard = card.querySelector(".target-card");
       const whereClauseWrap = card.querySelector(".where-clause-wrap");
@@ -3590,6 +3608,7 @@ async function studioFetch(path, options) {
       sourceTargetFields?.classList.toggle("hidden", taskType !== TASK_TYPES.SOURCE_TARGET);
       scriptRunFields?.classList.toggle("hidden", taskType !== TASK_TYPES.SCRIPT_RUN);
       dagTaskFields?.classList.toggle("hidden", taskType !== TASK_TYPES.DAG);
+      dbtFields?.classList.toggle("hidden", taskType !== TASK_TYPES.DBT);
       sourceCard?.classList.toggle("hidden", taskType === TASK_TYPES.BINDING);
       targetCard?.classList.toggle("hidden", taskType !== TASK_TYPES.SOURCE_TARGET);
       whereClauseWrap?.classList.toggle("hidden", taskType !== TASK_TYPES.SOURCE_TARGET);
@@ -3654,6 +3673,10 @@ async function studioFetch(path, options) {
       if (scriptEnvSelect) scriptEnvSelect.disabled = taskType !== TASK_TYPES.SCRIPT_RUN;
       if (scriptSqlInput) scriptSqlInput.disabled = taskType !== TASK_TYPES.SCRIPT_RUN;
       if (dagTaskSelect) dagTaskSelect.disabled = taskType !== TASK_TYPES.DAG;
+      for (const selector of [".dbt-project-ref", ".dbt-command", ".dbt-select", ".dbt-target", ".dbt-threads", ".dbt-vars"]) {
+        const input = card.querySelector(selector);
+        if (input) input.disabled = taskType !== TASK_TYPES.DBT;
+      }
 
       if (taskType === TASK_TYPES.DAG) {
         refreshDagTaskOptions(card);
@@ -3690,6 +3713,18 @@ async function studioFetch(path, options) {
       card.querySelector(".script-sql").value = values.script_sql || "";
       card.querySelector(".dag-task-dag-id").value = values.dag_task_dag_id || "";
       card.dataset.pendingDagTaskDagId = String(values.dag_task_dag_id || "").trim();
+      const dbtProjectRefInput = card.querySelector(".dbt-project-ref");
+      if (dbtProjectRefInput) {
+        dbtProjectRefInput.value = values.dbt_project_ref || "";
+        card.querySelector(".dbt-command").value = values.dbt_command || "run";
+        card.querySelector(".dbt-select").value = values.dbt_select || "";
+        card.querySelector(".dbt-target").value = values.dbt_target || "";
+        card.querySelector(".dbt-threads").value = values.dbt_threads ? String(values.dbt_threads) : "";
+        const dbtVars = values.dbt_vars && typeof values.dbt_vars === "object" ? values.dbt_vars : null;
+        card.querySelector(".dbt-vars").value = dbtVars && Object.keys(dbtVars).length
+          ? JSON.stringify(dbtVars, null, 2)
+          : "";
+      }
       card.querySelector(".target-schema").value = values.target_schema || "";
       card.querySelector(".target-table").value = values.target_table || "";
       card.querySelector(".load-method").value = values.load_method || "create_if_not_exists_or_truncate";
@@ -3813,19 +3848,28 @@ async function studioFetch(path, options) {
       const targetTableVal = card.querySelector(".target-table").value.trim();
       const scriptEnvVal = (card.querySelector(".script-run-environment")?.value || "source").trim();
       const dagTaskDagId = (card.querySelector(".dag-task-dag-id")?.value || "").trim();
+      const dbtCommandVal = (card.querySelector(".dbt-command")?.value || "run").trim();
       const taskGroupSourceSchema = taskType === TASK_TYPES.SCRIPT_RUN
         ? "script"
         : (taskType === TASK_TYPES.DAG
           ? "dag"
-          : (taskType === TASK_TYPES.BINDING ? "binding" : (sourceType === "sql" ? "sql" : sourceSchemaVal)));
+          : (taskType === TASK_TYPES.BINDING
+            ? "binding"
+            : (taskType === TASK_TYPES.DBT ? "dbt" : (sourceType === "sql" ? "sql" : sourceSchemaVal))));
       const taskGroupSourceTable = taskType === TASK_TYPES.SCRIPT_RUN
         ? (scriptEnvVal || "source")
         : (taskType === TASK_TYPES.DAG
           ? (dagTaskDagId || "dag")
-          : (taskType === TASK_TYPES.BINDING ? `parameters_${fallbackIndex}` : (sourceType === "sql" ? "query" : sourceTableVal)));
+          : (taskType === TASK_TYPES.BINDING
+            ? `parameters_${fallbackIndex}`
+            : (taskType === TASK_TYPES.DBT ? dbtCommandVal : (sourceType === "sql" ? "query" : sourceTableVal))));
       const taskGroupLoadMethod = taskType === TASK_TYPES.SCRIPT_RUN
         ? "script"
-        : (taskType === TASK_TYPES.DAG ? "dag" : (taskType === TASK_TYPES.BINDING ? "binding" : loadMethodVal));
+        : (taskType === TASK_TYPES.DAG
+          ? "dag"
+          : (taskType === TASK_TYPES.BINDING
+            ? "binding"
+            : (taskType === TASK_TYPES.DBT ? "dbt" : loadMethodVal)));
       return [
         String(fallbackIndex),
         slugify(sourceDbVal, "source"),
@@ -5650,8 +5694,44 @@ async function studioFetch(path, options) {
         partitioning_ranges: partitioningRanges,
         bindings: bindings.length ? bindings : undefined,
         ...collectFileEndpointFields(card, taskType, sourceType, targetTypeVal),
+        ...collectDbtFields(card, taskType),
         depends_on: dependsOn,
       };
+    }
+
+    // F3.2 — dbt task fields (Enterprise-run; backend validates the contract
+    // and rejects with 422 when no provider is installed).
+    function collectDbtFields(card, taskType) {
+      if (taskType !== TASK_TYPES.DBT) return {};
+      const out = {
+        dbt_project_ref: (card.querySelector(".dbt-project-ref")?.value || "").trim() || undefined,
+        dbt_command: (card.querySelector(".dbt-command")?.value || "run").trim(),
+        dbt_select: (card.querySelector(".dbt-select")?.value || "").trim() || undefined,
+      };
+      const target = (card.querySelector(".dbt-target")?.value || "").trim();
+      if (target) out.dbt_target = target;
+      const threadsRaw = (card.querySelector(".dbt-threads")?.value || "").trim();
+      if (threadsRaw) {
+        const threads = Number(threadsRaw);
+        if (!Number.isInteger(threads) || threads < 1) {
+          throw new Error("dbt Threads must be a positive integer.");
+        }
+        out.dbt_threads = threads;
+      }
+      const varsRaw = (card.querySelector(".dbt-vars")?.value || "").trim();
+      if (varsRaw) {
+        let parsed;
+        try {
+          parsed = JSON.parse(varsRaw);
+        } catch (_err) {
+          throw new Error("dbt Vars must be a flat JSON object (e.g. {\"run_date\": \"{{ dag.run_date }}\"}).");
+        }
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+          throw new Error("dbt Vars must be a flat JSON object.");
+        }
+        out.dbt_vars = parsed;
+      }
+      return out;
     }
 
     function collectFileEndpointFields(card, taskType, sourceType, targetType) {
