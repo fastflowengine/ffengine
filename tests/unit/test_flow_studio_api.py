@@ -4022,9 +4022,10 @@ def test_api_key_required_when_env_set(client, studio_paths, monkeypatch):
 
 
 @pytest.fixture
-def dbt_provider():
+def dbt_provider(monkeypatch):
     from ffengine.airflow import task_type_registry as reg
 
+    monkeypatch.setenv("FFENGINE_EDITION", "enterprise")
     reg.clear_task_type_providers()
     reg.register_task_type_provider("dbt", lambda **kwargs: None)
     yield reg
@@ -4032,9 +4033,10 @@ def dbt_provider():
 
 
 @pytest.fixture
-def no_dbt_provider():
+def no_dbt_provider(monkeypatch):
     from ffengine.airflow import task_type_registry as reg
 
+    monkeypatch.setenv("FFENGINE_EDITION", "enterprise")
     reg.clear_task_type_providers()
     yield reg
     reg.clear_task_type_providers()
@@ -4123,6 +4125,15 @@ def test_create_dag_dbt_rejected_with_422_when_no_provider(
     r = client.post("/api/create-dag", json=_dbt_dag_payload())
     assert r.status_code == 422, r.text
     assert "Enterprise" in r.text
+
+
+def test_dbt_provider_does_not_unlock_community_edition(
+    client, studio_paths, dbt_provider, monkeypatch
+):
+    monkeypatch.setenv("FFENGINE_EDITION", "community")
+    response = client.post("/api/create-dag", json=_dbt_dag_payload())
+    assert response.status_code == 422
+    assert "Enterprise edition" in response.text
 
 
 def test_create_dag_dbt_task_persists_narrow_yaml_and_roundtrips(

@@ -178,11 +178,12 @@ def _validate_dbt_task_payload(payload: Any) -> None:
     provider the request is rejected (HTTP 422), which is the backend half
     of the edition gate (the UI half hides the option).
     """
-    if not has_task_type_provider("dbt"):
+    from ffengine.core.edition import is_enterprise_enabled
+
+    if not is_enterprise_enabled() or not has_task_type_provider("dbt"):
         raise ValueError(
-            "task_type='dbt' requires the Enterprise dbt provider (entry "
-            "point 'ffengine.task_type_providers'); it is not installed in "
-            "this environment."
+            "task_type='dbt' requires Enterprise edition and the dbt "
+            "provider; both gates must be enabled."
         )
     conflicts = {
         "script_run_environment": payload.script_run_environment,

@@ -208,12 +208,12 @@ def _validated_dbt_fields(source: dict[str, Any]) -> dict[str, Any]:
     """
     from ffengine.airflow.task_type_registry import has_task_type_provider
     from ffengine.config.dbt_contract import validate_dbt_task_fields
+    from ffengine.core.edition import is_enterprise_enabled
 
-    if not has_task_type_provider("dbt"):
+    if not is_enterprise_enabled() or not has_task_type_provider("dbt"):
         raise ValueError(
-            "task_type='dbt' requires the Enterprise dbt provider (entry "
-            "point 'ffengine.task_type_providers'); it is not installed in "
-            "this environment."
+            "task_type='dbt' requires Enterprise edition and the dbt "
+            "provider; both gates must be enabled."
         )
     if _normalize_bindings(source.get("bindings")):
         raise ValueError(

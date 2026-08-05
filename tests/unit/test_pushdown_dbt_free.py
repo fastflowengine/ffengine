@@ -96,6 +96,7 @@ def test_generated_dag_with_dbt_task_parses_without_dbt_binary(monkeypatch):
     monkeypatch.setattr(shutil, "which", _explode)
     monkeypatch.setattr(subprocess, "run", _explode)
     monkeypatch.setattr(subprocess, "Popen", _explode)
+    monkeypatch.setenv("FFENGINE_EDITION", "enterprise")
 
     reg.clear_task_type_providers()
     try:

@@ -759,9 +759,10 @@ def test_airflow_namespace_does_not_read_variable_at_parse_time():
 # --- F3.2: dbt task via the task-type provider seam --------------------------
 
 @pytest.fixture
-def dbt_provider_registry():
+def dbt_provider_registry(monkeypatch):
     from ffengine.airflow import task_type_registry as reg
 
+    monkeypatch.setenv("FFENGINE_EDITION", "enterprise")
     reg.clear_task_type_providers()
     yield reg
     reg.clear_task_type_providers()

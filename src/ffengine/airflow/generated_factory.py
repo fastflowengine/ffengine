@@ -560,15 +560,14 @@ def build_generated_dag(
                 from ffengine.airflow.task_type_registry import (
                     get_task_type_provider,
                 )
+                from ffengine.core.edition import is_enterprise_enabled
 
                 provider = get_task_type_provider("dbt")
-                if provider is None:
+                if not is_enterprise_enabled() or provider is None:
                     raise ValueError(
-                        "task_type='dbt' requires a registered task-type "
-                        "provider (Enterprise dbt package exposing the "
-                        "'ffengine.task_type_providers' entry point); none "
-                        "is installed. There is no silent fallback "
-                        "(fail-loud)."
+                        "task_type='dbt' requires Enterprise edition and a "
+                        "registered task-type provider. There is no silent "
+                        "fallback (fail-loud)."
                     )
                 dbt_task_id = _bounded_task_id(f"dbt__{task_slug}")
                 task_groups[task_group_id] = provider(

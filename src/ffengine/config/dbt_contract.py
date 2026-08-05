@@ -98,6 +98,8 @@ def _validate_threads(task: dict, *, error_cls) -> int | None:
 
 
 def _validate_var_value(key: str, value: Any, *, error_cls) -> Any:
+    if value is None:
+        return None
     if isinstance(value, bool) or isinstance(value, (int, float)):
         return value
     if isinstance(value, str):
@@ -118,8 +120,8 @@ def _validate_var_value(key: str, value: Any, *, error_cls) -> Any:
         return value
     raise error_cls(
         f"dbt_vars value for {key!r} must be a JSON scalar or a full "
-        "'{{ dag.<param> }}' token; null, list and object values are "
-        "rejected (fail-loud)."
+        "'{{ dag.<param> }}' token; list and object values are rejected "
+        "(fail-loud)."
     )
 
 

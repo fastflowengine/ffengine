@@ -148,7 +148,7 @@ def test_vars_non_identifier_keys_rejected(bad_key):
 
 @pytest.mark.parametrize(
     "bad_value",
-    [None, ["a"], {"nested": 1},
+    [["a"], {"nested": 1},
      "prefix {{ dag.run_date }}",      # mixed text template
      "{{ run_date }}",                 # simple namespace not allowed in v1
      "{{ airflow.some_key }}"],        # airflow namespace not allowed in v1
@@ -156,6 +156,11 @@ def test_vars_non_identifier_keys_rejected(bad_key):
 def test_vars_non_scalar_or_partial_templates_rejected(bad_value):
     with pytest.raises(ValueError, match="dbt_vars"):
         validate_dbt_task_fields(_task(dbt_vars={"run_date": bad_value}))
+
+
+def test_vars_null_is_a_valid_json_scalar():
+    normalized = validate_dbt_task_fields(_task(dbt_vars={"optional": None}))
+    assert normalized["dbt_vars"] == {"optional": None}
 
 
 def test_vars_must_be_flat_mapping():

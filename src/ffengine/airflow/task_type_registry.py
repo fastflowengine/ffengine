@@ -74,6 +74,9 @@ def _load_entry_points() -> None:
     if _ENTRY_POINTS_LOADED:
         return
     _ENTRY_POINTS_LOADED = True
+    from ffengine.core.extension_bootstrap import load_extension_bootstraps
+
+    load_extension_bootstraps()
     for ep in _md.entry_points(group=ENTRY_POINT_GROUP):
         # An entry point resolves to a zero-arg callable that performs its
         # own register_task_type_provider(...) calls. Failures are fail-loud

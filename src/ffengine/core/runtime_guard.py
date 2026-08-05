@@ -38,6 +38,9 @@ def _load_entry_points() -> None:
     if _ENTRY_POINTS_LOADED:
         return
     _ENTRY_POINTS_LOADED = True
+    from ffengine.core.extension_bootstrap import load_extension_bootstraps
+
+    load_extension_bootstraps()
     for ep in _md.entry_points(group=ENTRY_POINT_GROUP):
         # Resolves to a zero-arg callable performing its own
         # register_runtime_guard(...) calls; failures are fail-loud.
