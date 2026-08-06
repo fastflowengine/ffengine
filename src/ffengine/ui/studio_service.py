@@ -81,6 +81,10 @@ _DBT_FIELD_KEYS = (
     "dbt_target",
     "dbt_threads",
     "dbt_vars",
+    # F3.2b (Cosmos) — execution mode + cosmos-only knobs
+    "dbt_execution",
+    "dbt_test_behavior",
+    "emit_datasets",
 )
 STUDIO_VALID_SCRIPT_RUN_ENVIRONMENTS = {"source", "target"}
 _BINDING_PARAM_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
@@ -397,6 +401,92 @@ def _normalize_scheduler_start_date(raw: Any, *, timezone_name: str) -> str:
     return parsed.strftime("%Y-%m-%dT%H:%M:%S")
 
 
+_VALID_SCHEDULER_TRIGGER_TYPES = {"manual", "cron", "asset"}
+
+
+def _normalize_scheduler_assets(raw: Any) -> list[str]:
+    """F3.2b — validate the asset descriptor list (v1: AND-only strings)."""
+    if not isinstance(raw, list):
+        raise ValueError("scheduler.assets must be a list of asset URIs.")
+    assets: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if not text or any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+            raise ValueError(
+                "scheduler.assets entries must be non-empty asset URIs "
+                "without control characters (fail-loud)."
+            )
+        if text in assets:
+            raise ValueError(
+                f"scheduler.assets contains duplicate entry {text!r}; the "
+                "v1 semantics are AND over distinct assets (fail-loud)."
+            )
+        assets.append(text)
+    return assets
+
+
+def _validate_scheduler_trigger(
+    trigger_type: str | None,
+    assets_raw: Any,
+    cron_expression: str | None,
+) -> tuple[str | None, list[str] | None]:
+    """F3.2b — additive trigger contract; legacy payloads stay untouched.
+
+    Returns (trigger_type, assets) where both are None for legacy shapes so
+    persisted YAML remains byte-stable for configs that never opted in.
+    """
+    if trigger_type is None and assets_raw is None:
+        return None, None
+    if trigger_type is None:
+        raise ValueError(
+            "scheduler.assets requires scheduler.trigger_type='asset'."
+        )
+    if trigger_type not in _VALID_SCHEDULER_TRIGGER_TYPES:
+        raise ValueError(
+            "scheduler.trigger_type must be manual, cron, or asset."
+        )
+    if trigger_type != "asset":
+        if assets_raw not in (None, []):
+            raise ValueError(
+                "scheduler.assets requires scheduler.trigger_type='asset'."
+            )
+        if trigger_type == "cron" and not cron_expression:
+            raise ValueError(
+                "scheduler.trigger_type='cron' requires "
+                "scheduler.cron_expression."
+            )
+        if trigger_type == "manual" and cron_expression:
+            raise ValueError(
+                "scheduler.trigger_type='manual' contradicts a "
+                "cron_expression; clear one of them (fail-loud)."
+            )
+        return trigger_type, None
+
+    # Asset-triggered scheduling is an Enterprise capability (consumer half
+    # of the F3.2b Asset contract). Edition alone or provider alone is not
+    # enough — same double gate as dbt tasks (v0.1.4 review lesson).
+    from ffengine.airflow.task_type_registry import has_task_type_provider
+    from ffengine.core.edition import is_enterprise_enabled
+
+    if not is_enterprise_enabled() or not has_task_type_provider("dbt"):
+        raise ValueError(
+            "scheduler.trigger_type='asset' requires Enterprise edition "
+            "and the dbt provider; both gates must be enabled."
+        )
+    if cron_expression:
+        raise ValueError(
+            "scheduler.trigger_type='asset' cannot be combined with a "
+            "cron_expression; pick one trigger (fail-loud)."
+        )
+    assets = _normalize_scheduler_assets(assets_raw)
+    if not assets:
+        raise ValueError(
+            "scheduler.trigger_type='asset' requires at least one entry "
+            "in scheduler.assets."
+        )
+    return trigger_type, assets
+
+
 def normalize_scheduler(raw_scheduler: Any) -> dict[str, Any]:
     if raw_scheduler is None:
         payload: dict[str, Any] = {}
@@ -420,12 +510,244 @@ def normalize_scheduler(raw_scheduler: Any) -> dict[str, Any]:
     )
     active = _coerce_bool(payload.get("active"), default=STUDIO_DEFAULT_ACTIVE)
 
-    return {
+    trigger_raw = payload.get("trigger_type")
+    trigger_type = str(trigger_raw).strip().lower() if trigger_raw else None
+    trigger_type, assets = _validate_scheduler_trigger(
+        trigger_type, payload.get("assets"), cron_expression
+    )
+
+    normalized: dict[str, Any] = {
         "cron_expression": cron_expression,
         "timezone": timezone_name,
         "active": active,
         "start_date": start_date,
     }
+    if trigger_type is not None:
+        normalized["trigger_type"] = trigger_type
+    if assets is not None:
+        normalized["assets"] = assets
+    return normalized
+
+
+# --- F3.2b Studio slice (EX-D016): dbt Asset catalog + save-time guards ---
+# The catalog is derived through the provider CAPABILITY seam (cosmos's
+# public URI rule on the Enterprise side); Community only orchestrates.
+# All guards run at the Flow Studio save boundary (EX-D010) — never on the
+# DAG parse path or in scheduler loops.
+
+
+def _dbt_asset_capability() -> Any:
+    """Return the Asset-catalog capability, or None when unavailable.
+
+    Double gate mirrors dbt tasks: Community edition alone or a registered
+    provider alone never opens the catalog.
+    """
+    from ffengine.airflow.task_type_registry import get_task_type_capability
+    from ffengine.core.edition import is_enterprise_enabled
+
+    if not is_enterprise_enabled():
+        return None
+    return get_task_type_capability("dbt", "list_asset_uris")
+
+
+def _iter_all_dag_configs() -> list[tuple[str, dict[str, Any]]]:
+    """(dag_id, cfg) for every generated Studio DAG across all scopes.
+
+    Unreadable entries are skipped like the DAG Explorer does — a config
+    that cannot be parsed cannot be a producer or consumer either (its DAG
+    would not parse); the guards stay fail-closed for consumers because a
+    skipped producer only shrinks the derivable set.
+    """
+    out: list[tuple[str, dict[str, Any]]] = []
+    gen_root = _generated_dag_root()
+    if not gen_root.is_dir():
+        return out
+    for dag_path in gen_root.rglob("*.py"):
+        if not dag_path.is_file():
+            continue
+        try:
+            config_path = _extract_config_path_from_dag_source(dag_path)
+            cfg = _load_yaml_root(config_path)
+        except Exception:
+            continue
+        dag_id = str(dag_path.stem or "").strip()
+        if dag_id and isinstance(cfg, dict):
+            out.append((dag_id, cfg))
+    return out
+
+
+def _dbt_producer_specs(cfg: dict[str, Any]) -> set[tuple[str, str]]:
+    """(project_ref, target_conn_id) for every EMITTING cosmos dbt task.
+
+    Only ``dbt_execution: cosmos`` (the default) with ``emit_datasets``
+    strictly True produces Assets at runtime (cosmos gates emission on the
+    flag — source-verified); everything else contributes nothing.
+    """
+    from ffengine.config.dbt_contract import DEFAULT_DBT_EXECUTION
+
+    specs: set[tuple[str, str]] = set()
+    target_conn = str(cfg.get("target_db_var") or "").strip()
+    if not target_conn:
+        return specs
+    for task in cfg.get("flow_tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        if str(task.get("task_type") or "").strip().lower() != "dbt":
+            continue
+        execution = (
+            str(task.get("dbt_execution") or DEFAULT_DBT_EXECUTION)
+            .strip()
+            .lower()
+        )
+        if execution != "cosmos" or task.get("emit_datasets") is not True:
+            continue
+        ref = str(task.get("dbt_project_ref") or "").strip()
+        if ref:
+            specs.add((ref, target_conn))
+    return specs
+
+
+def _derivable_asset_uris(
+    specs: set[tuple[str, str]], capability: Any
+) -> set[str]:
+    """Union of derivable URIs; capability errors propagate (fail-loud)."""
+    uris: set[str] = set()
+    for ref, conn in sorted(specs):
+        for row in capability(project_ref=ref, target_conn_id=conn) or []:
+            uri = str((row or {}).get("uri") or "").strip()
+            if uri:
+                uris.add(uri)
+    return uris
+
+
+def _validate_asset_consumer_membership(
+    dag_id: str, assets: list[str]
+) -> None:
+    """Membership + stale-URI guard: every consumed URI must be derivable
+    from an EMITTING cosmos dbt producer in ANOTHER DAG right now."""
+    capability = _dbt_asset_capability()
+    if capability is None:
+        raise ValueError(
+            "scheduler.assets doğrulanamıyor: dbt provider Asset katalog "
+            "capability'sini sunmuyor (list_asset_uris). Eski bir provider "
+            "sürümüyle asset tüketicisi kaydedilemez (fail-loud)."
+        )
+    specs: set[tuple[str, str]] = set()
+    for other_id, cfg in _iter_all_dag_configs():
+        if other_id == dag_id:
+            continue
+        specs |= _dbt_producer_specs(cfg)
+    derivable = _derivable_asset_uris(specs, capability)
+    missing = [uri for uri in assets if uri not in derivable]
+    if missing:
+        raise ValueError(
+            "scheduler.assets, hiçbir emit eden cosmos dbt producer'ından "
+            f"türetilemeyen URI'ler içeriyor: {missing}. Asset picker'daki "
+            "kayıtlı URI'lerden seçin; producer'ın emit_datasets=true + "
+            "cosmos modunda olması ve bundle'ının modeli içermesi gerekir "
+            "(fail-loud)."
+        )
+
+
+def _validate_no_orphaned_asset_consumers(
+    dag_id: str, new_cfg_like: dict[str, Any]
+) -> None:
+    """Producer-side guard: this save must not orphan any OTHER DAG's
+    asset consumption (covers cosmos→task mode change, emit_datasets
+    kapatma, project/target değişimi, dbt task silme ve bundle'dan model
+    çıkması — hepsi tek mekanizma)."""
+    consumers: list[tuple[str, list[str]]] = []
+    all_cfgs = _iter_all_dag_configs()
+    for other_id, cfg in all_cfgs:
+        if other_id == dag_id:
+            continue
+        sched = cfg.get("scheduler") or {}
+        if str(sched.get("trigger_type") or "").strip().lower() != "asset":
+            continue
+        uris = [
+            str(uri).strip()
+            for uri in (sched.get("assets") or [])
+            if str(uri).strip()
+        ]
+        if uris:
+            consumers.append((other_id, uris))
+    if not consumers:
+        return
+
+    capability = _dbt_asset_capability()
+    if capability is None:
+        raise ValueError(
+            "Asset tüketicisi DAG'lar mevcutken dbt Asset katalog "
+            "capability'si kullanılamıyor; tüketicileri öksüz bırakma "
+            "riski doğrulanamadan kayıt yapılmaz (fail-loud)."
+        )
+    specs: set[tuple[str, str]] = set()
+    for other_id, cfg in all_cfgs:
+        if other_id == dag_id:
+            continue
+        specs |= _dbt_producer_specs(cfg)
+    specs |= _dbt_producer_specs(new_cfg_like)
+    derivable = _derivable_asset_uris(specs, capability)
+    for consumer_id, uris in consumers:
+        orphaned = [uri for uri in uris if uri not in derivable]
+        if orphaned:
+            raise ValueError(
+                f"Bu kayıt, '{consumer_id}' DAG'ının asset tetiklerini "
+                f"öksüz bırakırdı: {orphaned}. Üretici görev cosmos "
+                "modunda + emit_datasets=true kalmalı ve bundle bu "
+                "modelleri içermeli; önce tüketiciyi güncelleyin "
+                "(fail-loud)."
+            )
+
+
+def list_dbt_asset_options() -> dict[str, Any]:
+    """Flow Studio Asset picker source: derivable URIs across producers.
+
+    Broken producer bundles do not kill the picker; they surface as error
+    rows in the response (visible, not silent)."""
+    from ffengine.airflow.task_type_registry import has_task_type_provider
+    from ffengine.core.edition import is_enterprise_enabled
+
+    if not is_enterprise_enabled() or not has_task_type_provider("dbt"):
+        raise ValueError(
+            "dbt Asset kataloğu Enterprise edition ve kayıtlı dbt provider "
+            "gerektirir; iki kapı birlikte açık olmalı."
+        )
+    capability = _dbt_asset_capability()
+    if capability is None:
+        raise ValueError(
+            "dbt provider Asset katalog capability'sini sunmuyor "
+            "(list_asset_uris)."
+        )
+    options: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for dag_id, cfg in _iter_all_dag_configs():
+        for ref, conn in sorted(_dbt_producer_specs(cfg)):
+            try:
+                rows = capability(project_ref=ref, target_conn_id=conn) or []
+            except Exception as exc:
+                errors.append(
+                    {
+                        "producer_dag_id": dag_id,
+                        "project_ref": ref,
+                        "error": str(exc),
+                    }
+                )
+                continue
+            for row in rows:
+                uri = str((row or {}).get("uri") or "").strip()
+                if not uri:
+                    continue
+                options.append(
+                    {
+                        "uri": uri,
+                        "model": str((row or {}).get("model") or ""),
+                        "project_ref": ref,
+                        "producer_dag_id": dag_id,
+                    }
+                )
+    options.sort(key=lambda o: (o["uri"], o["producer_dag_id"]))
+    return {"options": options, "errors": errors}
 
 
 def _normalize_notify_triggers(raw: Any) -> list[str]:
@@ -2375,6 +2697,18 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                     dict(task.get("dbt_vars"))
                     if isinstance(task.get("dbt_vars"), dict)
                     and task.get("dbt_vars")
+                    else None
+                ),
+                # F3.2b (Cosmos) — same explicit-key round-trip contract.
+                "dbt_execution": str(task.get("dbt_execution") or "").strip()
+                or None,
+                "dbt_test_behavior": str(
+                    task.get("dbt_test_behavior") or ""
+                ).strip()
+                or None,
+                "emit_datasets": (
+                    task.get("emit_datasets")
+                    if isinstance(task.get("emit_datasets"), bool)
                     else None
                 ),
             }
@@ -4597,6 +4931,23 @@ def create_or_update_dag(
 
         resolve_task_dependencies(task_cfgs)
         compile_dag_parameter_flow(dag_params, task_cfgs)
+
+        # F3.2b (EX-D016) — Asset save-time guards, BEFORE any file write:
+        # (1) consumer membership/stale-URI: this DAG's asset triggers must
+        #     be derivable from another DAG's emitting cosmos producer NOW;
+        # (2) producer orphan: this save must not strand any other DAG's
+        #     asset consumption (mode change, emit off, task removal...).
+        if scheduler.get("trigger_type") == "asset":
+            _validate_asset_consumer_membership(
+                dag_path.stem, list(scheduler.get("assets") or [])
+            )
+        _validate_no_orphaned_asset_consumers(
+            dag_path.stem,
+            {
+                "target_db_var": payload.get("target_conn_id"),
+                "flow_tasks": task_cfgs,
+            },
+        )
 
         if sql_mapping_checks:
             for check in sql_mapping_checks:

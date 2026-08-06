@@ -18,6 +18,16 @@ Rules (approved F3.2 plan):
 - ``dbt_vars`` is a flat mapping; keys are identifiers; values are JSON
   scalars or a full ``{{ dag.<param> }}`` token. Mixed text templates, other
   namespaces, and nested values are rejected in v1 (fail-loud).
+
+F3.2b (Cosmos, EX-D013/EX-D014):
+- ``dbt_execution`` selects the orchestration path: ``cosmos`` (model-level
+  rendering, the FAD v27.0 default) or ``task`` (the hardened black-box
+  DbtOperator fallback). Unknown modes fail loud; there is no silent mode
+  degradation in either direction.
+- ``dbt_test_behavior`` is cosmos-mode-only; v1 supports ``after_each``.
+- ``emit_datasets`` (bool, default false) is cosmos-mode-only when true:
+  the task fallback publishes no Airflow Assets, so ``true`` + ``task``
+  is rejected instead of silently not emitting.
 """
 
 from __future__ import annotations
@@ -26,6 +36,9 @@ import re
 from typing import Any
 
 VALID_DBT_COMMANDS = frozenset({"run", "build", "test"})
+VALID_DBT_EXECUTION_MODES = frozenset({"cosmos", "task"})
+DEFAULT_DBT_EXECUTION = "cosmos"
+VALID_DBT_TEST_BEHAVIORS = frozenset({"after_each"})
 
 DBT_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DBT_DAG_TOKEN_RE = re.compile(r"^\{\{\s*dag\.[A-Za-z_][A-Za-z0-9_]*\s*\}\}$")
@@ -179,11 +192,52 @@ def validate_dbt_task_fields(task: dict, *, error_cls=ValueError) -> dict:
         )
     select = _clean_str(task, "dbt_select", error_cls=error_cls, required=True)
 
+    execution = _clean_str(
+        task, "dbt_execution", error_cls=error_cls, required=False
+    )
+    if execution is None:
+        execution = DEFAULT_DBT_EXECUTION
+    elif execution not in VALID_DBT_EXECUTION_MODES:
+        raise error_cls(
+            f"Unsupported dbt_execution: '{execution}'. Valid values: "
+            f"{sorted(VALID_DBT_EXECUTION_MODES)}. There is no silent "
+            "fallback between modes (fail-loud)."
+        )
+
     normalized: dict[str, Any] = {
         "dbt_project_ref": project_ref,
         "dbt_command": command,
         "dbt_select": select,
+        "dbt_execution": execution,
     }
+
+    behavior = _clean_str(
+        task, "dbt_test_behavior", error_cls=error_cls, required=False
+    )
+    if behavior is not None:
+        if behavior not in VALID_DBT_TEST_BEHAVIORS:
+            raise error_cls(
+                f"Unsupported dbt_test_behavior: '{behavior}'. Valid values: "
+                f"{sorted(VALID_DBT_TEST_BEHAVIORS)} (fail-loud)."
+            )
+        if execution != "cosmos":
+            raise error_cls(
+                "dbt_test_behavior requires dbt_execution='cosmos'; the "
+                "task fallback runs one black-box dbt command and cannot "
+                "split tests (fail-loud)."
+            )
+        normalized["dbt_test_behavior"] = behavior
+
+    raw_emit = task.get("emit_datasets")
+    if raw_emit is not None:
+        if not isinstance(raw_emit, bool):
+            raise error_cls("emit_datasets must be a boolean (fail-loud).")
+        if raw_emit and execution != "cosmos":
+            raise error_cls(
+                "emit_datasets=true requires dbt_execution='cosmos'; the "
+                "task fallback publishes no Airflow Assets (fail-loud)."
+            )
+        normalized["emit_datasets"] = raw_emit
     target = _clean_str(task, "dbt_target", error_cls=error_cls, required=False)
     if target is not None:
         normalized["dbt_target"] = target

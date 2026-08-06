@@ -15,6 +15,7 @@ import pytest
 
 from ffengine.config.dbt_contract import (
     VALID_DBT_COMMANDS,
+    VALID_DBT_EXECUTION_MODES,
     dbt_vars_expression_text,
     validate_dbt_task_fields,
 )
@@ -211,3 +212,83 @@ def test_vars_expression_text_deterministic_sorted():
 
 def test_vars_expression_text_empty_without_vars():
     assert dbt_vars_expression_text(_task()) == ""
+
+
+# --- F3.2b (Cosmos, EX-D013/EX-D014) - execution / test behavior / assets ---
+# Default execution is cosmos (FAD v27.0); the hardened DbtOperator remains
+# the explicit `task` fallback. Unknown modes/values fail loud; the task
+# fallback publishes no Assets, so emit_datasets=true and dbt_test_behavior
+# are cosmos-mode-only (silent no-op is forbidden).
+
+def test_execution_defaults_to_cosmos():
+    assert validate_dbt_task_fields(_task())["dbt_execution"] == "cosmos"
+
+
+def test_execution_task_fallback_accepted_and_stripped():
+    normalized = validate_dbt_task_fields(_task(dbt_execution=" task "))
+    assert normalized["dbt_execution"] == "task"
+
+
+def test_execution_unknown_mode_fails_loud():
+    with pytest.raises(ValueError, match="dbt_execution"):
+        validate_dbt_task_fields(_task(dbt_execution="kubernetes"))
+
+
+def test_valid_execution_modes_frozen():
+    assert VALID_DBT_EXECUTION_MODES == frozenset({"cosmos", "task"})
+
+
+def test_test_behavior_after_each_accepted_in_cosmos_mode():
+    normalized = validate_dbt_task_fields(_task(dbt_test_behavior="after_each"))
+    assert normalized["dbt_test_behavior"] == "after_each"
+
+
+def test_test_behavior_unknown_value_fails_loud():
+    with pytest.raises(ValueError, match="dbt_test_behavior"):
+        validate_dbt_task_fields(_task(dbt_test_behavior="after_all"))
+
+
+def test_test_behavior_rejected_in_task_mode():
+    with pytest.raises(ValueError, match="dbt_test_behavior"):
+        validate_dbt_task_fields(
+            _task(dbt_execution="task", dbt_test_behavior="after_each")
+        )
+
+
+def test_test_behavior_omitted_stays_absent():
+    assert "dbt_test_behavior" not in validate_dbt_task_fields(_task())
+
+
+def test_emit_datasets_true_accepted_in_cosmos_mode():
+    assert validate_dbt_task_fields(_task(emit_datasets=True))[
+        "emit_datasets"
+    ] is True
+
+
+def test_emit_datasets_false_round_trips_explicitly():
+    assert validate_dbt_task_fields(_task(emit_datasets=False))[
+        "emit_datasets"
+    ] is False
+
+
+def test_emit_datasets_omitted_stays_absent():
+    assert "emit_datasets" not in validate_dbt_task_fields(_task())
+
+
+@pytest.mark.parametrize("bad", ["true", 1, [], {}])
+def test_emit_datasets_requires_real_bool(bad):
+    with pytest.raises(ValueError, match="emit_datasets"):
+        validate_dbt_task_fields(_task(emit_datasets=bad))
+
+
+def test_emit_datasets_true_rejected_in_task_mode():
+    with pytest.raises(ValueError, match="emit_datasets"):
+        validate_dbt_task_fields(_task(dbt_execution="task", emit_datasets=True))
+
+
+def test_emit_datasets_false_allowed_in_task_mode():
+    normalized = validate_dbt_task_fields(
+        _task(dbt_execution="task", emit_datasets=False)
+    )
+    assert normalized["emit_datasets"] is False
+    assert normalized["dbt_execution"] == "task"

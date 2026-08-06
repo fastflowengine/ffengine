@@ -420,6 +420,64 @@ def build_generated_dag(
     else:
         cron_expression = None
 
+    # F3.2b Faz 6 — asset-triggered scheduling (consumer half, EX-D013).
+    # v1 semantics: a list of Assets = AND (all must update). No sensors,
+    # no polling, no catalog: Airflow's native Asset timetable only.
+    # The factory consumes RAW_CONFIG snapshots that are hand-editable, so
+    # it re-validates the trigger contract itself: an unknown trigger_type
+    # (or assets without asset mode) must fail the parse, not silently
+    # degrade to cron/manual scheduling (independent-review finding).
+    trigger_type = str(scheduler.get("trigger_type") or "").strip()
+    if trigger_type and trigger_type not in ("manual", "cron", "asset"):
+        raise ValueError(
+            f"Unsupported scheduler.trigger_type: '{trigger_type}'. Valid "
+            "values: manual, cron, asset. There is no silent fallback "
+            "(fail-loud)."
+        )
+    if scheduler.get("assets") and trigger_type != "asset":
+        raise ValueError(
+            "scheduler.assets is only valid with "
+            "scheduler.trigger_type='asset'; without it the asset list "
+            "would be silently ignored (fail-loud)."
+        )
+    asset_schedule = None
+    if trigger_type == "asset":
+        from ffengine.airflow.task_type_registry import (
+            has_task_type_provider,
+        )
+        from ffengine.core.edition import is_enterprise_enabled
+
+        if not is_enterprise_enabled() or not has_task_type_provider("dbt"):
+            raise ValueError(
+                "scheduler.trigger_type='asset' requires Enterprise "
+                "edition and the dbt provider; both gates must be enabled "
+                "(fail-loud)."
+            )
+        if upstream_ids:
+            raise ValueError(
+                "scheduler.trigger_type='asset' cannot be combined with "
+                "upstream DAG dependencies; pick one trigger source "
+                "(fail-loud)."
+            )
+        if cron_expression:
+            raise ValueError(
+                "scheduler.trigger_type='asset' cannot be combined with a "
+                "cron_expression (fail-loud)."
+            )
+        asset_uris = [
+            str(item).strip()
+            for item in (scheduler.get("assets") or [])
+            if str(item).strip()
+        ]
+        if not asset_uris:
+            raise ValueError(
+                "scheduler.trigger_type='asset' requires at least one "
+                "entry in scheduler.assets (fail-loud)."
+            )
+        from airflow.sdk import Asset
+
+        asset_schedule = [Asset(uri=uri) for uri in asset_uris]
+
     timezone_name = str(scheduler.get("timezone") or "UTC").strip() or "UTC"
     try:
         scheduler_tz = ZoneInfo(timezone_name)
@@ -441,7 +499,10 @@ def build_generated_dag(
 
     dag_active = bool(scheduler.get("active", True))
     edges = _resolve_task_dependencies(task_defs)
-    effective_schedule = None if upstream_ids else cron_expression
+    if asset_schedule is not None:
+        effective_schedule = asset_schedule
+    else:
+        effective_schedule = None if upstream_ids else cron_expression
     task_ids_with_upstream = {downstream for _upstream, downstream in edges}
     root_task_ids = [
         task_id

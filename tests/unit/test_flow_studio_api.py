@@ -225,7 +225,7 @@ def test_binding_task_hides_empty_source_card_and_uses_advanced_only_layout():
     )
     assert ".task-card.binding-task .task-layout" in style_css
     assert 'grid-template-areas: "advanced";' in style_css
-    assert "app.js?v=96" in index_html
+    assert "app.js?v=98" in index_html
 
 
 def test_advanced_dag_parameter_uses_parameter_type_label():
@@ -254,7 +254,7 @@ def test_connection_selector_uses_generic_source_and_target_labels():
     assert "Select Target Connection" in app_js
     assert "DB Connection" not in app_js
     assert "database connection" not in index_html
-    assert "app.js?v=96" in index_html
+    assert "app.js?v=98" in index_html
 
 
 def test_binding_ui_has_conditional_default_and_searchable_variable_selector():
@@ -332,7 +332,7 @@ def test_folder_path_ui_requires_explicit_selection():
     assert '(el("level").value || "").trim() || "level1"' not in app_js
     assert 'el("flow").value.trim() || "src_to_stg"' not in app_js
     assert '(el("flow").value || "").trim() || "src_to_stg"' not in app_js
-    assert "app.js?v=96" in index_html
+    assert "app.js?v=98" in index_html
 
 
 def test_dag_explorer_html_ok(client):
@@ -4171,11 +4171,13 @@ def test_create_dag_dbt_task_persists_narrow_yaml_and_roundtrips(
     assert len(dbt_tasks) == 1
     task = dbt_tasks[0]
     # Narrow YAML: only the dbt contract keys, no engine fields.
+    # F3.2b: dbt_execution is always persisted explicitly (default cosmos).
     assert set(task) == {
         "task_type", "task_group_id", "depends_on", "tags",
         "dbt_project_ref", "dbt_command", "dbt_select", "dbt_target",
-        "dbt_threads", "dbt_vars",
+        "dbt_threads", "dbt_vars", "dbt_execution",
     }
+    assert task["dbt_execution"] == "cosmos"
     assert task["dbt_project_ref"] == "finance"
     assert task["dbt_vars"] == {
         "run_date": "{{ dag.run_date }}", "full_refresh": False,
@@ -4207,6 +4209,7 @@ def test_create_dag_dbt_task_persists_narrow_yaml_and_roundtrips(
             "task_type", "task_group_id", "depends_on", "bindings",
             "dbt_project_ref", "dbt_command", "dbt_select", "dbt_target",
             "dbt_threads", "dbt_vars",
+            "dbt_execution", "dbt_test_behavior", "emit_datasets",
         }
         return {
             key: value
@@ -4267,13 +4270,17 @@ def test_dbt_ui_card_markup_is_enterprise_gated():
     for control in (
         "dbt-project-ref", "dbt-command", "dbt-select",
         "dbt-target", "dbt-threads", "dbt-vars",
+        # F3.2b (Cosmos): execution mode + cosmos-only knobs
+        "dbt-execution", "dbt-test-behavior", "dbt-emit-datasets",
     ):
         assert control in index_html
+    assert '<option value="cosmos">' in index_html
+    assert '<option value="task">' in index_html
     # Edition gate CSS (F2.1 layer 1): enterprise-only surfaces stay hidden
     # unless the server stamped data-ffengine-edition="enterprise" on <body>.
     assert ".enterprise-only {" in style_css
     assert 'body[data-ffengine-edition="enterprise"] .enterprise-only' in style_css
-    assert "app.js?v=96" in index_html
+    assert "app.js?v=98" in index_html
 
 
 def test_dbt_ui_js_wiring_contract():
@@ -4291,6 +4298,12 @@ def test_dbt_ui_js_wiring_contract():
     assert "function taskParamExpression(task)" in app_js
     assert "function cardParamExpression(card)" in app_js
     assert "dbt Vars must be a flat JSON object" in app_js
+    # F3.2b (Cosmos): execution mode wiring — collect + hydrate + the
+    # task-mode sync that disables cosmos-only controls.
+    assert "function syncDbtExecutionControls(card)" in app_js
+    assert "out.dbt_execution = execution;" in app_js
+    assert 'if (execution === "cosmos")' in app_js
+    assert "out.emit_datasets = true;" in app_js
 
 
 def test_served_studio_page_hides_dbt_in_community_edition(client):
@@ -4301,3 +4314,371 @@ def test_served_studio_page_hides_dbt_in_community_edition(client):
     assert 'data-ffengine-edition="community"' in html  # Community default
     assert 'data-ffengine-edition="enterprise"' not in html
     assert 'data-task-type="dbt"' in html  # markup shipped, CSS-gated
+
+
+# --- F3.2b (Cosmos, EX-D013/EX-D014): execution mode + Asset scheduling -----
+
+
+def test_create_dag_dbt_persists_cosmos_default_execution(
+    client, studio_paths, dbt_provider
+):
+    r = client.post("/api/create-dag", json=_dbt_dag_payload())
+    assert r.status_code == 201, r.text
+    cfg = yaml.safe_load(
+        Path(r.json()["config_path"]).read_text(encoding="utf-8")
+    )
+    task = [t for t in cfg["flow_tasks"] if t.get("task_type") == "dbt"][0]
+    assert task["dbt_execution"] == "cosmos"
+    assert "dbt_test_behavior" not in task
+    assert "emit_datasets" not in task
+
+
+def test_create_dag_dbt_task_mode_roundtrips(
+    client, studio_paths, dbt_provider
+):
+    r = client.post(
+        "/api/create-dag", json=_dbt_dag_payload(dbt_execution="task")
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    cfg = yaml.safe_load(
+        Path(body["config_path"]).read_text(encoding="utf-8")
+    )
+    task = [t for t in cfg["flow_tasks"] if t.get("task_type") == "dbt"][0]
+    assert task["dbt_execution"] == "task"
+
+    dag_id = Path(body["dag_path"]).stem
+    r2 = client.get(f"/api/dag-config?dag_id={dag_id}")
+    assert r2.status_code == 200, r2.text
+    preload = [
+        t for t in (r2.json()["payload"].get("flow_tasks") or [])
+        if t.get("task_type") == "dbt"
+    ][0]
+    assert preload["dbt_execution"] == "task"
+
+
+def test_create_dag_dbt_cosmos_knobs_persist_and_preload(
+    client, studio_paths, dbt_provider
+):
+    r = client.post(
+        "/api/create-dag",
+        json=_dbt_dag_payload(
+            dbt_test_behavior="after_each", emit_datasets=True
+        ),
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    cfg = yaml.safe_load(
+        Path(body["config_path"]).read_text(encoding="utf-8")
+    )
+    task = [t for t in cfg["flow_tasks"] if t.get("task_type") == "dbt"][0]
+    assert task["dbt_execution"] == "cosmos"
+    assert task["dbt_test_behavior"] == "after_each"
+    assert task["emit_datasets"] is True
+
+    dag_id = Path(body["dag_path"]).stem
+    r2 = client.get(f"/api/dag-config?dag_id={dag_id}")
+    preload = [
+        t for t in (r2.json()["payload"].get("flow_tasks") or [])
+        if t.get("task_type") == "dbt"
+    ][0]
+    assert preload["dbt_test_behavior"] == "after_each"
+    assert preload["emit_datasets"] is True
+
+
+def test_dag_payload_dbt_unknown_execution_rejected(dbt_provider):
+    from ffengine.ui.api_app import FlowTaskPayload
+
+    with pytest.raises(ValidationError, match="dbt_execution"):
+        FlowTaskPayload(**_dbt_flow_task(dbt_execution="kubernetes"))
+
+
+def test_dag_payload_dbt_emit_datasets_task_mode_rejected(dbt_provider):
+    from ffengine.ui.api_app import FlowTaskPayload
+
+    with pytest.raises(ValidationError, match="emit_datasets"):
+        FlowTaskPayload(
+            **_dbt_flow_task(dbt_execution="task", emit_datasets=True)
+        )
+
+
+def test_dag_payload_dbt_test_behavior_task_mode_rejected(dbt_provider):
+    from ffengine.ui.api_app import FlowTaskPayload
+
+    with pytest.raises(ValidationError, match="dbt_test_behavior"):
+        FlowTaskPayload(
+            **_dbt_flow_task(
+                dbt_execution="task", dbt_test_behavior="after_each"
+            )
+        )
+
+
+def test_scheduler_legacy_shape_has_no_new_keys(client, studio_paths):
+    r = client.post("/api/create-dag", json=_minimal_table_payload())
+    assert r.status_code == 201, r.text
+    cfg = yaml.safe_load(
+        Path(r.json()["config_path"]).read_text(encoding="utf-8")
+    )
+    scheduler = cfg.get("scheduler") or {}
+    assert "trigger_type" not in scheduler
+    assert "assets" not in scheduler
+
+
+def test_scheduler_assets_require_asset_trigger(
+    client, studio_paths, dbt_provider
+):
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {"assets": ["postgres://db/analytics/fct_orders"]}
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "trigger_type" in r.text
+
+
+def test_scheduler_asset_trigger_rejects_cron_together(
+    client, studio_paths, dbt_provider
+):
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {
+        "trigger_type": "asset",
+        "assets": ["postgres://db/analytics/fct_orders"],
+        "cron_expression": "0 3 * * *",
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "cron" in r.text.lower()
+
+
+def test_scheduler_asset_trigger_requires_nonempty_assets(
+    client, studio_paths, dbt_provider
+):
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {"trigger_type": "asset", "assets": []}
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "assets" in r.text
+
+
+def test_scheduler_asset_duplicates_rejected(
+    client, studio_paths, dbt_provider
+):
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {
+        "trigger_type": "asset",
+        "assets": ["postgres://db/a/t", "postgres://db/a/t"],
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "duplicate" in r.text.lower()
+
+
+def test_scheduler_asset_trigger_is_enterprise_gated(
+    client, studio_paths, dbt_provider, monkeypatch
+):
+    monkeypatch.setenv("FFENGINE_EDITION", "community")
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {
+        "trigger_type": "asset",
+        "assets": ["postgres://db/analytics/fct_orders"],
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "Enterprise" in r.text
+
+
+def test_scheduler_asset_trigger_gate_needs_provider_too(
+    client, studio_paths, no_dbt_provider
+):
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {
+        "trigger_type": "asset",
+        "assets": ["postgres://db/analytics/fct_orders"],
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+
+
+# F3.2b Studio slice (EX-D016): Asset catalog capability + save-time guards.
+
+_ASSET_CATALOG_ROWS = [
+    {
+        "model": "dim_customer",
+        "unique_id": "model.finance.dim_customer",
+        "uri": "postgres://db/analytics/dim_customer",
+    },
+    {
+        "model": "fct_orders",
+        "unique_id": "model.finance.fct_orders",
+        "uri": "postgres://db/analytics/fct_orders",
+    },
+]
+
+
+@pytest.fixture
+def dbt_asset_capability(dbt_provider):
+    def _capability(*, project_ref, target_conn_id, **_kw):
+        if project_ref == "finance":
+            return [dict(row) for row in _ASSET_CATALOG_ROWS]
+        return []
+
+    dbt_provider.register_task_type_capability(
+        "dbt", "list_asset_uris", _capability
+    )
+    return dbt_provider
+
+
+def _producer_dag_payload() -> dict:
+    payload = _minimal_table_payload()
+    payload["flow_tasks"] = [_dbt_flow_task(emit_datasets=True)]
+    return payload
+
+
+def _asset_consumer_payload(assets: list) -> dict:
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {"trigger_type": "asset", "assets": assets}
+    return payload
+
+
+def test_scheduler_asset_trigger_persists_and_preloads(
+    client, studio_paths, dbt_asset_capability
+):
+    rp = client.post("/api/create-dag", json=_producer_dag_payload())
+    assert rp.status_code == 201, rp.text
+
+    r = client.post(
+        "/api/create-dag",
+        json=_asset_consumer_payload(
+            [
+                "postgres://db/analytics/fct_orders",
+                "postgres://db/analytics/dim_customer",
+            ]
+        ),
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    cfg = yaml.safe_load(
+        Path(body["config_path"]).read_text(encoding="utf-8")
+    )
+    scheduler = cfg["scheduler"]
+    assert scheduler["trigger_type"] == "asset"
+    assert scheduler["assets"] == [
+        "postgres://db/analytics/fct_orders",
+        "postgres://db/analytics/dim_customer",
+    ]
+    assert scheduler["cron_expression"] is None
+
+    dag_id = Path(body["dag_path"]).stem
+    r2 = client.get(f"/api/dag-config?dag_id={dag_id}")
+    assert r2.status_code == 200, r2.text
+    sched = (r2.json()["payload"]).get("scheduler") or {}
+    assert sched["trigger_type"] == "asset"
+    assert len(sched["assets"]) == 2
+
+
+def test_asset_consumer_membership_rejects_underivable_uri(
+    client, studio_paths, dbt_asset_capability
+):
+    # No producer DAG exists -> nothing is derivable -> fail-loud.
+    r = client.post(
+        "/api/create-dag",
+        json=_asset_consumer_payload(["postgres://db/analytics/fct_orders"]),
+    )
+    assert r.status_code == 422
+    assert "producer" in r.text
+
+
+def test_asset_consumer_without_capability_fails_loud(
+    client, studio_paths, dbt_provider
+):
+    # Provider registered but NO catalog capability (older provider): the
+    # consumer save must refuse instead of skipping the membership check.
+    r = client.post(
+        "/api/create-dag",
+        json=_asset_consumer_payload(["postgres://db/analytics/fct_orders"]),
+    )
+    assert r.status_code == 422
+    assert "list_asset_uris" in r.text
+
+
+def test_producer_change_that_orphans_consumer_rejected(
+    client, studio_paths, dbt_asset_capability
+):
+    rp = client.post("/api/create-dag", json=_producer_dag_payload())
+    assert rp.status_code == 201, rp.text
+    producer_dag_id = Path(rp.json()["dag_path"]).stem
+
+    rc = client.post(
+        "/api/create-dag",
+        json=_asset_consumer_payload(["postgres://db/analytics/fct_orders"]),
+    )
+    assert rc.status_code == 201, rc.text
+    consumer_dag_id = Path(rc.json()["dag_path"]).stem
+
+    # cosmos -> task mode change would stop the Asset emission entirely.
+    upd = _minimal_table_payload()
+    upd["flow_tasks"] = [_dbt_flow_task(dbt_execution="task")]
+    r = client.post(f"/api/update-dag?dag_id={producer_dag_id}", json=upd)
+    assert r.status_code == 422
+    assert consumer_dag_id in r.text
+
+    # emit_datasets kapatmak da ayni orphan mekanizmasina takilir.
+    upd2 = _minimal_table_payload()
+    upd2["flow_tasks"] = [_dbt_flow_task(emit_datasets=False)]
+    r2 = client.post(f"/api/update-dag?dag_id={producer_dag_id}", json=upd2)
+    assert r2.status_code == 422
+    assert consumer_dag_id in r2.text
+
+    # Positive control: keeping cosmos + emit_datasets stays saveable.
+    r3 = client.post(
+        f"/api/update-dag?dag_id={producer_dag_id}",
+        json=_producer_dag_payload(),
+    )
+    assert r3.status_code in (200, 201), r3.text
+
+
+def test_dbt_assets_endpoint_gated_without_provider(
+    client, studio_paths, no_dbt_provider
+):
+    r = client.get("/api/dbt-assets")
+    assert r.status_code == 422
+
+
+def test_dbt_assets_endpoint_lists_producer_uris(
+    client, studio_paths, dbt_asset_capability
+):
+    rp = client.post("/api/create-dag", json=_producer_dag_payload())
+    assert rp.status_code == 201, rp.text
+    producer_dag_id = Path(rp.json()["dag_path"]).stem
+
+    r = client.get("/api/dbt-assets")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True and body["errors"] == []
+    by_uri = {item["uri"]: item for item in body["options"]}
+    assert set(by_uri) == {
+        "postgres://db/analytics/dim_customer",
+        "postgres://db/analytics/fct_orders",
+    }
+    assert by_uri["postgres://db/analytics/fct_orders"][
+        "producer_dag_id"
+    ] == producer_dag_id
+
+
+def test_scheduler_manual_trigger_rejects_cron(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {
+        "trigger_type": "manual",
+        "cron_expression": "0 3 * * *",
+    }
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "manual" in r.text
+
+
+def test_scheduler_cron_trigger_requires_cron_expression(
+    client, studio_paths
+):
+    payload = _minimal_table_payload()
+    payload["scheduler"] = {"trigger_type": "cron"}
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+    assert "cron_expression" in r.text

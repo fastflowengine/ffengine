@@ -95,8 +95,53 @@ def has_task_type_provider(task_type: str) -> bool:
     return get_task_type_provider(task_type) is not None
 
 
+# --- Service-side capabilities (F3.2b Studio slice, EX-D016) -------------
+# A provider package may expose ADDITIONAL service-boundary callables next
+# to its operator provider (e.g. the dbt Asset URI catalog consumed by Flow
+# Studio save-time guards). Same discovery, keying and fail-loud duplicate
+# rules as the operator registry; capabilities are NEVER used on the DAG
+# parse path.
+
+_CAPABILITIES: dict[tuple[str, str], Callable] = {}
+
+
+def register_task_type_capability(
+    task_type: str, capability: str, provider: Callable
+) -> None:
+    """Register a named service-side capability for a task type."""
+    key = (_key(task_type), _key(capability))
+    if not key[0] or not key[1]:
+        raise ConfigError(
+            "task_type capability kaydı için boş task_type/capability "
+            "verilemez."
+        )
+    if not callable(provider):
+        raise ConfigError(
+            f"Task-type capability callable olmalı: {provider!r} "
+            f"(task_type={task_type!r}, capability={capability!r})."
+        )
+    existing = _CAPABILITIES.get(key)
+    if existing is not None and existing is not provider:
+        raise ConfigError(
+            f"Task-type capability zaten kayıtlı: {key!r} -> "
+            f"{existing.__module__}."
+            f"{getattr(existing, '__qualname__', existing)}. "
+            "Aynı capability için ikinci kayıt reddedilir (son-kazanır yok)."
+        )
+    _CAPABILITIES[key] = provider
+
+
+def get_task_type_capability(
+    task_type: str, capability: str
+) -> Optional[Callable]:
+    """Return the named capability or ``None`` when unregistered."""
+    _load_entry_points()
+    return _CAPABILITIES.get((_key(task_type), _key(capability)))
+
+
 def clear_task_type_providers() -> None:
     """Reset the registry (test/dev use only)."""
     global _ENTRY_POINTS_LOADED
     _REGISTRY.clear()
+    _CAPABILITIES.clear()
     _ENTRY_POINTS_LOADED = False

@@ -396,7 +396,7 @@ async function studioFetch(path, options) {
     const CUSTOM_TAG_MAX_LENGTH = 32;
     const SCHEDULER_FALLBACK_START_DATE = "2023-01-01T00:00:00";
     const SCHEDULER_DEFAULT_TIMEZONE = "UTC";
-    const SCHEDULER_MODES = ["manual", "minutely", "hourly", "daily", "weekly", "monthly", "advanced"];
+    const SCHEDULER_MODES = ["manual", "minutely", "hourly", "daily", "weekly", "monthly", "advanced", "asset"];
     const LOAD_METHOD_LABELS = Object.freeze({
       create_if_not_exists_or_truncate: "Create if not exists or truncate",
       append: "Append rows",
@@ -948,11 +948,83 @@ async function studioFetch(path, options) {
       for (const panel of document.querySelectorAll(".scheduler-panel")) {
         panel.classList.toggle("active", panel.getAttribute("data-scheduler-panel") === next);
       }
+      if (next === "asset") {
+        // Lazy: the catalog endpoint is hit only when the asset tab opens.
+        loadDbtAssetOptions(collectSelectedSchedulerAssets());
+      }
       syncSchedulerPreview();
     }
 
+    function collectSelectedSchedulerAssets() {
+      const select = el("scheduler_asset_select");
+      if (!select) return [];
+      return Array.from(select.selectedOptions || [])
+        .map((opt) => String(opt.value || "").trim())
+        .filter(Boolean);
+    }
+
+    async function loadDbtAssetOptions(selectedUris) {
+      const select = el("scheduler_asset_select");
+      const status = el("scheduler_asset_status");
+      if (!select) return;
+      const keep = new Set(
+        (selectedUris || []).map((uri) => String(uri || "").trim()).filter(Boolean)
+      );
+      if (status) status.textContent = "Loading asset catalog...";
+      let options = [];
+      let errors = [];
+      try {
+        const r = await studioFetch("/api/dbt-assets");
+        const data = await parseJsonSafe(r);
+        if (!r.ok || !data || !data.ok) {
+          const detail = (data && (data.detail || data.error)) || `HTTP ${r.status}`;
+          if (status) status.textContent = `Asset catalog unavailable: ${detail}`;
+          select.innerHTML = "";
+          return;
+        }
+        options = Array.isArray(data.options) ? data.options : [];
+        errors = Array.isArray(data.errors) ? data.errors : [];
+      } catch (err) {
+        if (status) status.textContent = `Asset catalog unavailable: ${err}`;
+        select.innerHTML = "";
+        return;
+      }
+      select.innerHTML = "";
+      const seen = new Set();
+      for (const item of options) {
+        const uri = String((item && item.uri) || "").trim();
+        if (!uri || seen.has(uri)) continue;
+        seen.add(uri);
+        const opt = document.createElement("option");
+        opt.value = uri;
+        const producer = String((item && item.producer_dag_id) || "").trim();
+        opt.textContent = producer ? `${uri}  [${producer}]` : uri;
+        if (keep.has(uri)) opt.selected = true;
+        select.appendChild(opt);
+      }
+      // Stored URIs missing from the catalog stay VISIBLE and selected so a
+      // hydrated config never silently loses them; save fails loud anyway.
+      for (const uri of keep) {
+        if (seen.has(uri)) continue;
+        const opt = document.createElement("option");
+        opt.value = uri;
+        opt.textContent = `${uri}  [not in catalog]`;
+        opt.selected = true;
+        select.appendChild(opt);
+      }
+      if (status) {
+        const parts = [`${seen.size} asset${seen.size === 1 ? "" : "s"} available`];
+        for (const item of errors) {
+          parts.push(
+            `producer ${String(item.producer_dag_id || "?")}/${String(item.project_ref || "?")} failed: ${String(item.error || "")}`
+          );
+        }
+        status.textContent = parts.join(" | ");
+      }
+    }
+
     function buildCronFromSchedulerControls() {
-      if (schedulerModeState === "manual") {
+      if (schedulerModeState === "manual" || schedulerModeState === "asset") {
         return null;
       }
       if (schedulerModeState === "minutely") {
@@ -1002,25 +1074,43 @@ async function studioFetch(path, options) {
       const timezone = isValidTimezone(timezoneValue) ? timezoneValue : SCHEDULER_DEFAULT_TIMEZONE;
       const active = typeof scheduler.active === "boolean" ? scheduler.active : true;
       const startDate = normalizeStartDateForPayload(String(scheduler.start_date || "").trim());
-      return {
+      const state = {
         cron_expression: cronExpression,
         timezone,
         active,
         start_date: startDate,
       };
+      // F3.2b — asset trigger keys travel only when asset mode is on so
+      // legacy scheduler payloads stay byte-stable.
+      if (String(scheduler.trigger_type || "").trim().toLowerCase() === "asset") {
+        state.trigger_type = "asset";
+        state.assets = Array.isArray(scheduler.assets)
+          ? scheduler.assets.map((item) => String(item || "").trim()).filter(Boolean)
+          : [];
+      }
+      return state;
     }
 
     function cloneSchedulerState(state) {
-      return {
+      const cloned = {
         cron_expression: state && state.cron_expression ? String(state.cron_expression) : null,
         timezone: String((state && state.timezone) || SCHEDULER_DEFAULT_TIMEZONE),
         active: !!(state && state.active),
         start_date: String((state && state.start_date) || SCHEDULER_FALLBACK_START_DATE),
       };
+      if (state && state.trigger_type === "asset") {
+        cloned.trigger_type = "asset";
+        cloned.assets = Array.isArray(state.assets) ? state.assets.slice() : [];
+      }
+      return cloned;
     }
 
     function schedulerDetailedSummaryTextFromState(state) {
       const scheduler = cloneSchedulerState(state || {});
+      if (scheduler.trigger_type === "asset") {
+        const count = Array.isArray(scheduler.assets) ? scheduler.assets.length : 0;
+        return `Asset-triggered (${count} asset${count === 1 ? "" : "s"}, AND). Timezone: ${scheduler.timezone}. Active: ${scheduler.active ? "on" : "off"}. Start: ${scheduler.start_date}.`;
+      }
       const cron = String(scheduler.cron_expression || "").trim();
       if (!cron) {
         return `Manual mode. Timezone: ${scheduler.timezone}. Active: ${scheduler.active ? "on" : "off"}. Start: ${scheduler.start_date}.`;
@@ -1044,6 +1134,10 @@ async function studioFetch(path, options) {
 
     function schedulerCompactBaseSummaryFromState(state) {
       const scheduler = cloneSchedulerState(state || {});
+      if (scheduler.trigger_type === "asset") {
+        const count = Array.isArray(scheduler.assets) ? scheduler.assets.length : 0;
+        return `Asset-triggered (${count} asset${count === 1 ? "" : "s"})`;
+      }
       const cron = String(scheduler.cron_expression || "").trim();
       if (!cron) {
         return "Manual run only";
@@ -1129,8 +1223,12 @@ async function studioFetch(path, options) {
         active: !!el("scheduler_active")?.checked,
         start_date: normalizeStartDateForPayload(el("scheduler_start_date")?.value || ""),
       };
+      if (schedulerModeState === "asset") {
+        draft.trigger_type = "asset";
+        draft.assets = collectSelectedSchedulerAssets();
+      }
       if (preview) {
-        preview.value = cron || "Manual";
+        preview.value = schedulerModeState === "asset" ? "Asset-triggered" : (cron || "Manual");
       }
       if (summary) {
         summary.textContent = schedulerDetailedSummaryTextFromState(draft);
@@ -1158,18 +1256,28 @@ async function studioFetch(path, options) {
     }
 
     function collectSchedulerFormPayload() {
-      return normalizeSchedulerState({
+      const draft = {
         cron_expression: buildCronFromSchedulerControls(),
         timezone: String(el("scheduler_timezone")?.value || "").trim() || SCHEDULER_DEFAULT_TIMEZONE,
         active: !!el("scheduler_active")?.checked,
         start_date: normalizeStartDateForPayload(el("scheduler_start_date")?.value || ""),
-      });
+      };
+      if (schedulerModeState === "asset") {
+        draft.trigger_type = "asset";
+        draft.assets = collectSelectedSchedulerAssets();
+      }
+      return normalizeSchedulerState(draft);
     }
 
     function setSchedulerFormFromState(rawScheduler) {
       const scheduler = normalizeSchedulerState(rawScheduler);
       const cronExpression = String(scheduler.cron_expression || "").trim();
-      const mode = resolveSchedulerModeFromCron(cronExpression);
+      const mode = scheduler.trigger_type === "asset"
+        ? "asset"
+        : resolveSchedulerModeFromCron(cronExpression);
+      if (mode === "asset") {
+        loadDbtAssetOptions(scheduler.assets || []);
+      }
 
       el("scheduler_timezone").value = scheduler.timezone;
       el("scheduler_active").checked = !!scheduler.active;
@@ -3724,6 +3832,15 @@ async function studioFetch(path, options) {
         card.querySelector(".dbt-vars").value = dbtVars && Object.keys(dbtVars).length
           ? JSON.stringify(dbtVars, null, 2)
           : "";
+        const dbtExecution = card.querySelector(".dbt-execution");
+        if (dbtExecution) {
+          dbtExecution.value = values.dbt_execution === "task" ? "task" : "cosmos";
+          const behaviorSel = card.querySelector(".dbt-test-behavior");
+          if (behaviorSel) behaviorSel.value = values.dbt_test_behavior || "";
+          const emitBox = card.querySelector(".dbt-emit-datasets");
+          if (emitBox) emitBox.checked = values.emit_datasets === true;
+          syncDbtExecutionControls(card);
+        }
       }
       card.querySelector(".target-schema").value = values.target_schema || "";
       card.querySelector(".target-table").value = values.target_table || "";
@@ -5286,6 +5403,11 @@ async function studioFetch(path, options) {
       });
       scriptEnvSelect.addEventListener("change", () => refreshTaskCardHeaders());
       scriptSqlInput.addEventListener("input", () => refreshTaskCardHeaders());
+      // F3.2b — cosmos/task mode toggles the cosmos-only controls.
+      const dbtExecutionSelect = card.querySelector(".dbt-execution");
+      if (dbtExecutionSelect) {
+        dbtExecutionSelect.addEventListener("change", () => syncDbtExecutionControls(card));
+      }
       dagTaskDagSelect.addEventListener("change", () => {
         refreshTaskCardHeaders();
         syncTaskTypeState(card);
@@ -5731,7 +5853,36 @@ async function studioFetch(path, options) {
         }
         out.dbt_vars = parsed;
       }
+      // F3.2b (Cosmos) — execution mode + cosmos-only knobs. Task mode
+      // sends neither test behavior nor emit flag (backend rejects them
+      // fail-loud; the UI simply never produces that combination).
+      const execution = (card.querySelector(".dbt-execution")?.value || "cosmos").trim();
+      out.dbt_execution = execution;
+      if (execution === "cosmos") {
+        const behavior = (card.querySelector(".dbt-test-behavior")?.value || "").trim();
+        if (behavior) out.dbt_test_behavior = behavior;
+        if (card.querySelector(".dbt-emit-datasets")?.checked) {
+          out.emit_datasets = true;
+        }
+      }
       return out;
+    }
+
+    // F3.2b — cosmos-only controls are disabled (not silently dropped) in
+    // task mode so the operator sees why they do not apply.
+    function syncDbtExecutionControls(card) {
+      const execution = (card.querySelector(".dbt-execution")?.value || "cosmos").trim();
+      const cosmosMode = execution === "cosmos";
+      const behavior = card.querySelector(".dbt-test-behavior");
+      const emit = card.querySelector(".dbt-emit-datasets");
+      if (behavior) {
+        behavior.disabled = !cosmosMode;
+        if (!cosmosMode) behavior.value = "";
+      }
+      if (emit) {
+        emit.disabled = !cosmosMode;
+        if (!cosmosMode) emit.checked = false;
+      }
     }
 
     function collectFileEndpointFields(card, taskType, sourceType, targetType) {

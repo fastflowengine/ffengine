@@ -318,6 +318,26 @@
                   <input class="dbt-threads" type="number" min="1" step="1" placeholder="1" title="dbt --threads (positive integer; default 1).">
                 </label>
               </div>
+              <div class="row-2">
+                <label>
+                  <span class="global-control-label">Execution</span>
+                  <select class="dbt-execution" title="cosmos = model-level orchestration (default); task = single black-box dbt command.">
+                    <option value="cosmos">cosmos (model-level)</option>
+                    <option value="task">task (black-box fallback)</option>
+                  </select>
+                </label>
+                <label>
+                  <span class="global-control-label">Test Behavior</span>
+                  <select class="dbt-test-behavior" title="Cosmos mode only: run each model's tests right after the model.">
+                    <option value="">(engine default)</option>
+                    <option value="after_each">after_each</option>
+                  </select>
+                </label>
+              </div>
+              <label class="dbt-emit-datasets-wrap">
+                <input class="dbt-emit-datasets" type="checkbox" title="Cosmos mode only: publish model outputs as Airflow Assets for asset-triggered downstream DAGs.">
+                <span class="global-control-label">Emit Airflow Assets (cosmos only)</span>
+              </label>
               <label>
                 Vars (flat JSON object)
                 <textarea
@@ -557,6 +577,7 @@
             <button class="scheduler-tab-btn" type="button" data-scheduler-tab="weekly">Weekly</button>
             <button class="scheduler-tab-btn" type="button" data-scheduler-tab="monthly">Monthly</button>
             <button class="scheduler-tab-btn" type="button" data-scheduler-tab="advanced">Advanced</button>
+            <button class="scheduler-tab-btn enterprise-only" type="button" data-scheduler-tab="asset">Asset</button>
           </div>
           <div class="scheduler-panel active" data-scheduler-panel="manual">
             <div class="muted-note">No automatic schedule. Trigger runs manually.</div>
@@ -636,6 +657,23 @@
                 spellcheck="false"
               >
             </label>
+          </div>
+          <div class="scheduler-panel enterprise-only" data-scheduler-panel="asset">
+            <div class="muted-note">
+              Asset-triggered (Enterprise): the DAG runs when ALL selected
+              model Assets have updated (AND). Options come from emitting
+              cosmos dbt producers only.
+            </div>
+            <label>
+              Producer Model Assets
+              <select
+                id="scheduler_asset_select"
+                class="scheduler-control-input"
+                multiple
+                size="6"
+              ></select>
+            </label>
+            <div id="scheduler_asset_status" class="muted-note"></div>
           </div>
           <div class="scheduler-shared-fields">
             <div class="row-2">
@@ -840,6 +878,6 @@
   </div>
   <datalist id="mapping_editor_source_options"></datalist>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=96"></script>
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=98"></script>
 </body>
 </html>

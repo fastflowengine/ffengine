@@ -878,3 +878,145 @@ def test_generated_dag_dbt_without_provider_fails_loud_at_parse(
             upstream_dag_ids=[],
             raw_config_snapshot=raw,
         )
+
+
+def _asset_raw_config(assets=None, cron=None):
+    raw = _base_raw_config()
+    raw["flow_tasks"] = [
+        {
+            "task_group_id": "orders_task",
+            "task_type": "source_target",
+            "depends_on": [],
+            "partitioning": {"enabled": False},
+        },
+    ]
+    raw["scheduler"] = {
+        "trigger_type": "asset",
+        "assets": (
+            assets
+            if assets is not None
+            else [
+                "postgres://db/analytics/fct_orders",
+                "postgres://db/analytics/dim_customer",
+            ]
+        ),
+    }
+    if cron:
+        raw["scheduler"]["cron_expression"] = cron
+    return raw
+
+
+def test_generated_dag_renders_asset_and_schedule(dbt_provider_registry):
+    # F3.2b Faz 6: v1 semantics = list of Assets = AND-only. No sensor, no
+    # polling loop, no catalog — Airflow's native Asset timetable.
+    dbt_provider_registry.register_task_type_provider(
+        "dbt", lambda **kwargs: None
+    )
+    dag = build_generated_dag(
+        dag_id="demo_asset_trigger",
+        dag_tags=["demo"],
+        upstream_dag_ids=[],
+        raw_config_snapshot=_asset_raw_config(),
+    )
+    uris = sorted(
+        asset.uri
+        for _key, asset in dag.timetable.asset_condition.iter_assets()
+    )
+    assert uris == [
+        "postgres://db/analytics/dim_customer",
+        "postgres://db/analytics/fct_orders",
+    ]
+
+
+def test_generated_dag_asset_trigger_is_edition_gated(monkeypatch):
+    from ffengine.airflow import task_type_registry as reg
+
+    monkeypatch.setenv("FFENGINE_EDITION", "community")
+    reg.clear_task_type_providers()
+    try:
+        with pytest.raises(ValueError, match="Enterprise"):
+            build_generated_dag(
+                dag_id="demo_asset_gate",
+                dag_tags=["demo"],
+                upstream_dag_ids=[],
+                raw_config_snapshot=_asset_raw_config(),
+            )
+    finally:
+        reg.clear_task_type_providers()
+
+
+def test_generated_dag_asset_trigger_rejects_upstream_deps(
+    dbt_provider_registry,
+):
+    dbt_provider_registry.register_task_type_provider(
+        "dbt", lambda **kwargs: None
+    )
+    with pytest.raises(ValueError, match="upstream"):
+        build_generated_dag(
+            dag_id="demo_asset_upstream",
+            dag_tags=["demo"],
+            upstream_dag_ids=["other_dag"],
+            raw_config_snapshot=_asset_raw_config(),
+        )
+
+
+def test_generated_dag_asset_trigger_rejects_cron_combination(
+    dbt_provider_registry,
+):
+    dbt_provider_registry.register_task_type_provider(
+        "dbt", lambda **kwargs: None
+    )
+    with pytest.raises(ValueError, match="cron_expression"):
+        build_generated_dag(
+            dag_id="demo_asset_cron",
+            dag_tags=["demo"],
+            upstream_dag_ids=[],
+            raw_config_snapshot=_asset_raw_config(cron="0 3 * * *"),
+        )
+
+
+def test_generated_dag_asset_trigger_rejects_empty_assets(
+    dbt_provider_registry,
+):
+    dbt_provider_registry.register_task_type_provider(
+        "dbt", lambda **kwargs: None
+    )
+    with pytest.raises(ValueError, match="at least one"):
+        build_generated_dag(
+            dag_id="demo_asset_empty",
+            dag_tags=["demo"],
+            upstream_dag_ids=[],
+            raw_config_snapshot=_asset_raw_config(assets=[]),
+        )
+
+
+def test_generated_dag_unknown_trigger_type_fails_loud(
+    dbt_provider_registry,
+):
+    # Hand-edited RAW_CONFIG with e.g. 'Asset' must fail the parse, not
+    # silently degrade to cron/manual scheduling (review finding).
+    raw = _asset_raw_config()
+    raw["scheduler"]["trigger_type"] = "Asset"
+    with pytest.raises(ValueError, match="Unsupported scheduler.trigger_type"):
+        build_generated_dag(
+            dag_id="demo_asset_typo",
+            dag_tags=["demo"],
+            upstream_dag_ids=[],
+            raw_config_snapshot=raw,
+        )
+
+
+def test_generated_dag_assets_without_asset_mode_fail_loud(
+    dbt_provider_registry,
+):
+    # scheduler.assets present while trigger_type is cron/missing would be
+    # silently dropped — the factory must reject the contradiction.
+    raw = _asset_raw_config(cron="0 3 * * *")
+    raw["scheduler"]["trigger_type"] = "cron"
+    with pytest.raises(ValueError, match="only valid with"):
+        build_generated_dag(
+            dag_id="demo_assets_cron_contradiction",
+            dag_tags=["demo"],
+            upstream_dag_ids=[],
+            raw_config_snapshot=raw,
+        )

@@ -51,6 +51,7 @@ from ffengine.ui.studio_service import (
     generate_mapping_preview,
     parse_mapping_columns,
     get_dag_revisions,
+    list_dbt_asset_options,
     normalize_notifications,
     normalize_scheduler,
     promote_dag_revision,
@@ -216,6 +217,9 @@ def _validate_dbt_task_payload(payload: Any) -> None:
             "dbt_target": payload.dbt_target,
             "dbt_threads": payload.dbt_threads,
             "dbt_vars": payload.dbt_vars,
+            "dbt_execution": payload.dbt_execution,
+            "dbt_test_behavior": payload.dbt_test_behavior,
+            "emit_datasets": payload.emit_datasets,
         }
     )
 
@@ -377,6 +381,10 @@ class FlowTaskPayload(BaseModel):
     dbt_target: str | None = None
     dbt_threads: int | None = None
     dbt_vars: dict[str, Any] | None = None
+    # F3.2b (Cosmos) — execution mode + cosmos-only knobs
+    dbt_execution: str | None = None
+    dbt_test_behavior: str | None = None
+    emit_datasets: bool | None = None
     # F1.4/F1.5 — file source (csv/json) + file target
     file_path: str | None = None
     delimiter: str | None = None
@@ -561,6 +569,10 @@ class SchedulerPayload(BaseModel):
     timezone: str | None = None
     active: bool | None = None
     start_date: str | None = None
+    # F3.2b (Cosmos) — additive trigger contract; asset mode is
+    # Enterprise-gated inside normalize_scheduler (backend 422 half).
+    trigger_type: str | None = None
+    assets: list[str] | None = None
 
     @model_validator(mode="after")
     def _v_scheduler(self) -> "SchedulerPayload":
@@ -569,6 +581,8 @@ class SchedulerPayload(BaseModel):
         self.timezone = normalized["timezone"]
         self.active = normalized["active"]
         self.start_date = normalized["start_date"]
+        self.trigger_type = normalized.get("trigger_type")
+        self.assets = normalized.get("assets")
         return self
 
 
@@ -788,6 +802,10 @@ class DagUpsertPayload(BaseModel):
     dbt_target: str | None = None
     dbt_threads: int | None = None
     dbt_vars: dict[str, Any] | None = None
+    # F3.2b (Cosmos) — execution mode + cosmos-only knobs
+    dbt_execution: str | None = None
+    dbt_test_behavior: str | None = None
+    emit_datasets: bool | None = None
     # F1.4/F1.5 — file source (csv/json) + file target (single-task DAG path)
     file_path: str | None = None
     delimiter: str | None = None
@@ -1193,6 +1211,19 @@ def api_dag_search(q: str | None = None) -> dict[str, Any]:
     try:
         data = search_dag_explorer_items(q or "")
         return {"ok": True, **data}
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@flow_studio_app.get("/api/dbt-assets")
+def api_dbt_assets(_: None = Depends(_optional_api_key_dep)) -> dict[str, Any]:
+    """F3.2b (EX-D016) — Asset picker catalog: URIs derivable from emitting
+    cosmos dbt producers. Double-gated (Enterprise AND provider) -> 422."""
+    try:
+        data = list_dbt_asset_options()
+        return {"ok": True, **data}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         _raise_http_from_exception(exc)
 

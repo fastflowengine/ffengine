@@ -3,4 +3,4 @@ FFEngine Community Edition
 Low-Code Airflow Native Data Integrator
 """
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
