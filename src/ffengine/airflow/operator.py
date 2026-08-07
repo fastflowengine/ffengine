@@ -145,6 +145,10 @@ def aggregate_results(results: list[FlowResult]) -> FlowResult:
     max_duration = max(r.duration_seconds for r in results)
     throughput = total_rows / max_duration if max_duration > 0 else 0.0
     all_errors = [e for r in results for e in r.errors]
+    # F3.3 — sayaçlar partition'lar boyunca toplanır; muhasebe durumu ancak
+    # HER partition doğrulanmışsa "passed" kalır (biri legacy ise legacy).
+    statuses = {r.reconciliation_status for r in results}
+    status = "passed" if statuses == {"passed"} else "legacy"
 
     return FlowResult(
         rows=total_rows,
@@ -152,6 +156,10 @@ def aggregate_results(results: list[FlowResult]) -> FlowResult:
         throughput=round(throughput, 2),
         partitions_completed=len(results),
         errors=all_errors,
+        rows_read=sum(int(r.rows_read or 0) for r in results),
+        rows_written=sum(int(r.rows_written or 0) for r in results),
+        rows_rejected=sum(int(r.rows_rejected or 0) for r in results),
+        reconciliation_status=status,
     )
 
 
@@ -566,6 +574,12 @@ def run_partition_for_task(
         "partitions_completed": int(result.partitions_completed),
         "errors": list(result.errors or []),
         "partition_id": (partition_spec or {}).get("part_id"),
+        # F3.3 — mapped-partition yolunun muhasebe kanalı budur; bu yol
+        # `rows_transferred` XCom'u push etmez (yeni anahtar da açılmaz).
+        "rows_read": int(result.rows_read or 0),
+        "rows_written": int(result.rows_written or 0),
+        "rows_rejected": int(result.rows_rejected or 0),
+        "reconciliation_status": str(result.reconciliation_status),
     }
 
 
@@ -578,13 +592,22 @@ def aggregate_partition_payloads(
     payloads = list(results or [])
     flow_results: list[FlowResult] = []
     for item in payloads:
+        rows = int(item.get("rows", 0))
         flow_results.append(
             FlowResult(
-                rows=int(item.get("rows", 0)),
+                rows=rows,
                 duration_seconds=float(item.get("duration_seconds", 0.0)),
                 throughput=float(item.get("throughput", 0.0)),
                 partitions_completed=int(item.get("partitions_completed", 1)),
                 errors=list(item.get("errors") or []),
+                # Eski payload'lar sayaç taşımaz → FlowResult bunları
+                # `rows`'tan türetir ve "legacy" olarak işaretler.
+                rows_read=item.get("rows_read"),
+                rows_written=item.get("rows_written"),
+                rows_rejected=int(item.get("rows_rejected", 0) or 0),
+                reconciliation_status=str(
+                    item.get("reconciliation_status") or "legacy"
+                ),
             )
         )
     aggregated = aggregate_results(flow_results)
@@ -594,6 +617,10 @@ def aggregate_partition_payloads(
         "throughput": aggregated.throughput,
         "partitions_completed": aggregated.partitions_completed,
         "errors": aggregated.errors,
+        "rows_read": aggregated.rows_read,
+        "rows_written": aggregated.rows_written,
+        "rows_rejected": aggregated.rows_rejected,
+        "reconciliation_status": aggregated.reconciliation_status,
     }
 
 
@@ -952,6 +979,12 @@ class FFEngineOperator(BaseOperator):
                 "partitions_completed": aggregated.partitions_completed,
                 "errors": aggregated.errors,
                 "retry_telemetry": retry_telemetry,
+                # F3.3 — muhasebe alanları mevcut return_value XCom'uyla
+                # taşınır; yeni XCom satırı açılmaz.
+                "rows_read": aggregated.rows_read,
+                "rows_written": aggregated.rows_written,
+                "rows_rejected": aggregated.rows_rejected,
+                "reconciliation_status": aggregated.reconciliation_status,
             }
             _log_structured(
                 level=logging.INFO,
@@ -964,6 +997,10 @@ class FFEngineOperator(BaseOperator):
                 duration_seconds=aggregated.duration_seconds,
                 throughput=aggregated.throughput,
                 delivery_semantics="best_effort",
+                rows_read=aggregated.rows_read,
+                rows_written=aggregated.rows_written,
+                rows_rejected=aggregated.rows_rejected,
+                reconciliation_status=aggregated.reconciliation_status,
             )
             return summary
         except Exception as exc:

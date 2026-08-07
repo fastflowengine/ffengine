@@ -483,3 +483,34 @@ def test_rollback_batch_with_exception(writer, session):
     exc = ValueError("test")
     writer.rollback_batch(exc)
     session.conn.rollback.assert_called_once()
+
+
+# ------------------------------------------------------------------
+# F3.3 K1 — upsert muhasebe semantiği (T-F3.3-3)
+# ------------------------------------------------------------------
+
+
+def test_upsert_count_means_processed_input_rows(writer, session, dialect):
+    """T-F3.3-3: upsert'te 'okunan = işlenen input satırı'dır — hedefteki
+    fiziksel satır paritesi DEĞİL. Sürücü `cursor.rowcount`'u muhasebe
+    girdisi olarak KULLANILMAZ (taşınabilir değil: pyodbc fast_executemany
+    çoğu zaman -1 döner, MERGE/ON CONFLICT insert+update ayrımı sürücüye
+    göre değişir) — bu yüzden denklik driver'dan bağımsız kalır.
+    """
+    cursor = session.cursor.return_value
+    # Sürücü yanıltıcı bir rowcount bildirse bile muhasebe etkilenmez.
+    cursor.rowcount = -1
+
+    rows = [(1, "x"), (2, "y"), (3, "z")]
+    count = writer.write_batch(
+        rows,
+        {
+            "load_method": "upsert",
+            "target_schema": "s",
+            "target_table": "t",
+            "target_columns": ["id", "name"],
+            "upsert_match_columns": ["id"],
+        },
+    )
+
+    assert count == len(rows) == 3

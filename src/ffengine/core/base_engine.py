@@ -30,6 +30,19 @@ class FlowResult:
     throughput: float  # rows / second
     partitions_completed: int
     errors: list[str] = field(default_factory=list)
+    # F3.3 K1 (additive) — aktarım muhasebesi. Legacy çağrılar bu alanları
+    # vermez; __post_init__ onları `rows` üzerinden türetir ve durumu
+    # "legacy" işaretler, böylece eski davranış bire bir korunur.
+    rows_read: int | None = None
+    rows_written: int | None = None
+    rows_rejected: int = 0
+    reconciliation_status: str = "legacy"
+
+    def __post_init__(self) -> None:
+        if self.rows_read is None:
+            self.rows_read = self.rows
+        if self.rows_written is None:
+            self.rows_written = self.rows
 
 
 class BaseEngine(ABC):

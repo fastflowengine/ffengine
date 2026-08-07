@@ -424,12 +424,19 @@ class TestFFEngineOperatorExecute:
 
             mock_writer.return_value.prepare.return_value = None
 
+            # F3.3: gerçek run_flow_task artık muhasebe sayaçlarını da
+            # doldurur (denklik streamer'da doğrulanmıştır) — mock gerçeği
+            # yansıtır.
             mock_etl.return_value.run_flow_task.return_value = FlowResult(
                 rows=100,
                 duration_seconds=1.5,
                 throughput=66.67,
                 partitions_completed=1,
                 errors=[],
+                rows_read=100,
+                rows_written=100,
+                rows_rejected=0,
+                reconciliation_status="passed",
             )
 
             self.mock_adapter = mock_adapter
@@ -594,6 +601,27 @@ class TestFFEngineOperatorExecute:
         assert "retry_telemetry" in push_calls
         assert push_calls["rows_transferred"] == 100
         assert isinstance(push_calls["retry_telemetry"], dict)
+
+    def test_reconciliation_fields_in_return_value_xcom_contract(self):
+        """T-F3.3-5: muhasebe alanları mevcut return_value XCom'unda taşınır;
+        YENİ xcom_push anahtarı açılmaz (mevcut dört anahtar aynen kalır)."""
+        ti = MagicMock()
+        op = _make_operator()
+        summary = op.execute({"ti": ti})
+
+        assert summary["rows_read"] == 100
+        assert summary["rows_written"] == 100
+        assert summary["rows_rejected"] == 0
+        assert summary["reconciliation_status"] == "passed"
+        assert summary["rows"] == summary["rows_written"]
+
+        pushed_keys = {c.kwargs["key"] for c in ti.xcom_push.call_args_list}
+        assert pushed_keys == {
+            "rows_transferred",
+            "duration_seconds",
+            "rows_per_second",
+            "retry_telemetry",
+        }
 
     def test_config_loader_called_with_correct_args(self):
         op = _make_operator(config_path="/a/b.yaml", task_group_id="tg1")
@@ -822,3 +850,102 @@ class TestFFEngineOperatorErrors:
             }
             assert "error_summary" in pushed
             assert pushed["error_summary"]["details"]["db_sqlstate"] == "23505"
+
+
+# ------------------------------------------------------------------
+# F3.3 K1 — muhasebe alanlarının XCom/summary ve mapped-partition
+# yolundaki taşınması (T-F3.3-5)
+# ------------------------------------------------------------------
+
+
+def _partition_payload(**overrides):
+    payload = {
+        "rows": 50,
+        "duration_seconds": 1.0,
+        "throughput": 50.0,
+        "partitions_completed": 1,
+        "errors": [],
+        "partition_id": 0,
+        "rows_read": 50,
+        "rows_written": 50,
+        "rows_rejected": 0,
+        "reconciliation_status": "passed",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_aggregate_results_sums_reconciliation_counters():
+    from ffengine.airflow.operator import aggregate_results
+
+    parts = [
+        FlowResult(
+            rows=50,
+            duration_seconds=1.0,
+            throughput=50.0,
+            partitions_completed=1,
+            errors=[],
+            rows_read=50,
+            rows_written=50,
+            rows_rejected=0,
+            reconciliation_status="passed",
+        )
+        for _ in range(2)
+    ]
+    aggregated = aggregate_results(parts)
+    assert aggregated.rows_read == 100
+    assert aggregated.rows_written == 100
+    assert aggregated.rows_rejected == 0
+    assert aggregated.reconciliation_status == "passed"
+
+
+def test_aggregate_results_marks_legacy_when_any_partition_unverified():
+    """Bir partition doğrulanmamışsa toplam 'passed' iddia edemez."""
+    from ffengine.airflow.operator import aggregate_results
+
+    verified = FlowResult(
+        rows=10,
+        duration_seconds=1.0,
+        throughput=10.0,
+        partitions_completed=1,
+        errors=[],
+        rows_read=10,
+        rows_written=10,
+        reconciliation_status="passed",
+    )
+    legacy = FlowResult(
+        rows=10, duration_seconds=1.0, throughput=10.0, partitions_completed=1
+    )
+    assert aggregate_results([verified, legacy]).reconciliation_status == "legacy"
+
+
+def test_mapped_partition_payload_carries_reconciliation_fields():
+    """T-F3.3-5 (mapped yol): bu yolda rows_transferred XCom'u YOK; sayaçlar
+    return_value payload'ıyla taşınır ve aggregate aynı alanları üretir."""
+    from ffengine.airflow.operator import aggregate_partition_payloads
+
+    aggregated = aggregate_partition_payloads(
+        [_partition_payload(partition_id=0), _partition_payload(partition_id=1)]
+    )
+    assert aggregated["rows_read"] == 100
+    assert aggregated["rows_written"] == 100
+    assert aggregated["rows_rejected"] == 0
+    assert aggregated["reconciliation_status"] == "passed"
+
+
+def test_legacy_partition_payload_without_counters_still_aggregates():
+    """Backward-compat: sayaç taşımayan eski payload rows'tan türetilir."""
+    from ffengine.airflow.operator import aggregate_partition_payloads
+
+    legacy = {
+        "rows": 30,
+        "duration_seconds": 1.0,
+        "throughput": 30.0,
+        "partitions_completed": 1,
+        "errors": [],
+    }
+    aggregated = aggregate_partition_payloads([legacy])
+    assert aggregated["rows"] == 30
+    assert aggregated["rows_read"] == 30
+    assert aggregated["rows_written"] == 30
+    assert aggregated["reconciliation_status"] == "legacy"

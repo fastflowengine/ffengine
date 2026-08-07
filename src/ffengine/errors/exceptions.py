@@ -94,6 +94,17 @@ class PartitionError(FFEngineError):
     default_code = "partition_error"
 
 
+class ReconciliationError(FFEngineError):
+    """Aktarım muhasebesi denkliği tutmadı (F3.3 K1).
+
+    ``rows_read != rows_written + rows_rejected``. Partition fail-loud olur;
+    sessiz düzeltme veya sonraki partition ile mahsuplaşma YOKTUR. Details
+    yalnız sayaç/kimlik taşır — veri satırı ya da SQL değeri içermez.
+    """
+
+    default_code = "reconciliation_error"
+
+
 class FileSourceError(FFEngineError):
     """Dosya kaynağı okuma/parse hatası (F1.4 — bozuk satır, nested, vb.)."""
 

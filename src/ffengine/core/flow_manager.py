@@ -15,7 +15,12 @@ from datetime import UTC, datetime
 
 from ffengine.config.schema import FILE_SOURCE_TYPES
 from ffengine.core.base_engine import BaseEngine, FlowResult
-from ffengine.errors import FFEngineError, error_payload, normalize_exception
+from ffengine.errors import (
+    FFEngineError,
+    ReconciliationError,
+    error_payload,
+    normalize_exception,
+)
 from ffengine.pipeline.source_reader import SourceReader
 from ffengine.pipeline.streamer import Streamer
 from ffengine.pipeline.target_writer import TargetWriter
@@ -183,9 +188,12 @@ class FlowManager:
                     norm.details.setdefault("partition_spec", dict(partition_spec))
             payload = error_payload(norm)
             err_details = dict(payload.get("details") or {})
+            # F3.3 — muhasebe ihlali kendi stage'iyle loglanır; sayaçlar
+            # exception details'inden gelir (yeni sorgu/kanal yok).
+            is_reconciliation = isinstance(norm, ReconciliationError)
             _log_structured(
                 level=logging.ERROR,
-                stage="load",
+                stage="reconciliation" if is_reconciliation else "load",
                 message="Flow task failed.",
                 task_group_id=task_group_id,
                 source_db=source_db,
@@ -201,11 +209,20 @@ class FlowManager:
                 db_root_cause=err_details.get("db_root_cause"),
                 sql_preview=err_details.get("sql_preview"),
                 partition_id=(partition_spec or {}).get("part_id"),
+                rows_read=err_details.get("rows_read"),
+                rows_written=err_details.get("rows_written"),
+                rows_rejected=err_details.get("rows_rejected"),
+                reconciliation_status="failed" if is_reconciliation else None,
             )
             raise norm from exc
 
         elapsed = time.monotonic() - start
         rows = result["rows"]
+        # F3.3 — denklik streamer'da finalize'dan ÖNCE doğrulandı (mismatch
+        # oraya raise ederdi); burası yalnız RAPORLAMA katmanıdır.
+        rows_read = int(result.get("rows_read", rows))
+        rows_written = int(result.get("rows_written", rows))
+        rows_rejected = int(result.get("rows_rejected", 0))
         throughput = rows / elapsed if elapsed > 0 else 0.0
         _log_structured(
             level=logging.INFO,
@@ -218,6 +235,10 @@ class FlowManager:
             duration_seconds=elapsed,
             throughput=round(throughput, 2),
             partition_id=(partition_spec or {}).get("part_id"),
+            rows_read=rows_read,
+            rows_written=rows_written,
+            rows_rejected=rows_rejected,
+            reconciliation_status="passed",
         )
 
         return FlowResult(
@@ -226,6 +247,10 @@ class FlowManager:
             throughput=round(throughput, 2),
             partitions_completed=1,
             errors=[],
+            rows_read=rows_read,
+            rows_written=rows_written,
+            rows_rejected=rows_rejected,
+            reconciliation_status="passed",
         )
 
 

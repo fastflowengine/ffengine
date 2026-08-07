@@ -280,7 +280,9 @@ def test_skip_prepare_true_skips_writer_prepare(
 ):
     with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
         mock_writer = MagicMock()
-        mock_writer.write_batch.return_value = 0
+        # Writer sözleşmesi: işlenen input satırı sayısı döner.
+        # (F3.3 K1 denkliği sahte 0 dönüşünü haklı olarak reddeder.)
+        mock_writer.write_batch.side_effect = lambda rows, cfg: len(rows)
         MockWriter.return_value = mock_writer
 
         manager = FlowManager()
@@ -301,7 +303,9 @@ def test_skip_prepare_false_calls_writer_prepare(
 ):
     with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
         mock_writer = MagicMock()
-        mock_writer.write_batch.return_value = 0
+        # Writer sözleşmesi: işlenen input satırı sayısı döner.
+        # (F3.3 K1 denkliği sahte 0 dönüşünü haklı olarak reddeder.)
+        mock_writer.write_batch.side_effect = lambda rows, cfg: len(rows)
         MockWriter.return_value = mock_writer
 
         manager = FlowManager()
@@ -320,7 +324,9 @@ def test_skip_prepare_false_calls_writer_prepare(
 def test_skip_prepare_default_is_false(src_session, tgt_session, dialect, task_config):
     with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
         mock_writer = MagicMock()
-        mock_writer.write_batch.return_value = 0
+        # Writer sözleşmesi: işlenen input satırı sayısı döner.
+        # (F3.3 K1 denkliği sahte 0 dönüşünü haklı olarak reddeder.)
+        mock_writer.write_batch.side_effect = lambda rows, cfg: len(rows)
         MockWriter.return_value = mock_writer
 
         manager = FlowManager()
@@ -352,3 +358,95 @@ def test_detect_auto_fallback_to_python_engine():
 
     engine = BaseEngine.detect("auto")
     assert isinstance(engine, PythonEngine)
+
+
+# ------------------------------------------------------------------
+# F3.3 K1 — FlowResult muhasebe alanları (T-F3.3-1, T-F3.3-4)
+# ------------------------------------------------------------------
+
+
+def test_flow_result_contains_reconciliation_counts(
+    src_session, tgt_session, dialect, task_config
+):
+    """T-F3.3-1: başarılı akışta sayaçlar FlowResult'a yazılır."""
+    with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
+        mock_writer = MagicMock()
+        mock_writer.write_batch.side_effect = lambda rows, cfg: len(rows)
+        MockWriter.return_value = mock_writer
+
+        result = FlowManager().run_flow_task(
+            src_session=src_session,
+            tgt_session=tgt_session,
+            src_dialect=dialect,
+            tgt_dialect=dialect,
+            task_config=task_config,
+        )
+
+    assert result.rows_read == 2
+    assert result.rows_written == 2
+    assert result.rows_rejected == 0
+    assert result.reconciliation_status == "passed"
+    # Legacy alan aynı anlamda korunur.
+    assert result.rows == result.rows_written
+
+
+def test_reconciliation_adds_no_source_query(
+    src_session, tgt_session, dialect, task_config
+):
+    """T-F3.3-4: muhasebe akış sayaçlarından türetilir — kaynağa ek
+    COUNT/sorgu atılmaz (cursor.execute tam bir kez)."""
+    with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
+        mock_writer = MagicMock()
+        mock_writer.write_batch.side_effect = lambda rows, cfg: len(rows)
+        MockWriter.return_value = mock_writer
+
+        FlowManager().run_flow_task(
+            src_session=src_session,
+            tgt_session=tgt_session,
+            src_dialect=dialect,
+            tgt_dialect=dialect,
+            task_config=task_config,
+        )
+
+    src_cursor = src_session.cursor.return_value
+    assert src_cursor.execute.call_count == 1
+    for call in src_cursor.execute.call_args_list:
+        assert "count(" not in str(call).lower()
+
+
+def test_row_loss_raises_reconciliation_error_from_flow_task(
+    src_session, tgt_session, dialect, task_config
+):
+    """T-F3.3-2: writer satır düşürürse task fail-loud (normalize edilmiş
+    ReconciliationError korunur, başka tipe dönüşmez)."""
+    from ffengine.errors.exceptions import ReconciliationError
+
+    with patch("ffengine.core.flow_manager.TargetWriter") as MockWriter:
+        mock_writer = MagicMock()
+        mock_writer.write_batch.side_effect = lambda rows, cfg: len(rows) - 1
+        MockWriter.return_value = mock_writer
+
+        with pytest.raises(ReconciliationError) as exc:
+            FlowManager().run_flow_task(
+                src_session=src_session,
+                tgt_session=tgt_session,
+                src_dialect=dialect,
+                tgt_dialect=dialect,
+                task_config=task_config,
+            )
+
+    details = exc.value.details
+    assert details["rows_read"] == 2 and details["rows_written"] == 1
+    # Secret-free: mesaj/details veri satırı ya da SQL taşımaz.
+    assert "Alice" not in str(details) and "INSERT" not in str(details)
+
+
+def test_legacy_flow_result_derives_counts_from_rows():
+    """Backward-compat: sayaçsız (legacy) kurulum eski davranışı korur."""
+    legacy = FlowResult(
+        rows=7, duration_seconds=1.0, throughput=7.0, partitions_completed=1
+    )
+    assert legacy.rows_read == 7
+    assert legacy.rows_written == 7
+    assert legacy.rows_rejected == 0
+    assert legacy.reconciliation_status == "legacy"

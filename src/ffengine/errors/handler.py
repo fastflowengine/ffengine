@@ -15,6 +15,7 @@ from ffengine.errors.exceptions import (
     FFEngineError,
     MappingError,
     PartitionError,
+    ReconciliationError,
     ValidationError,
 )
 
@@ -28,6 +29,7 @@ _HTTP_STATUS_MAP: dict[type[FFEngineError], int] = {
     CheckpointError: 500,
     DeliveryPolicyError: 500,
     EngineError: 500,
+    ReconciliationError: 500,
 }
 
 _DB_DRIVER_HINTS = (

@@ -9,6 +9,7 @@ from ffengine.errors.exceptions import (
     DeliveryPolicyError,
     CheckpointError,
     PartitionError,
+    ReconciliationError,
 )
 from ffengine.errors.handler import error_payload, http_status_for, normalize_exception
 
@@ -23,6 +24,7 @@ __all__ = [
     "DeliveryPolicyError",
     "CheckpointError",
     "PartitionError",
+    "ReconciliationError",
     "normalize_exception",
     "http_status_for",
     "error_payload",
