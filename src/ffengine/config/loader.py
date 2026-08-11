@@ -9,7 +9,14 @@ from pathlib import Path
 
 import yaml
 
-from ffengine.config.schema import REQUIRED_ROOT_FIELDS, TASK_DEFAULTS
+from ffengine.config.schema import (
+    ENGINE_BLOCK_FIELD,
+    ENGINE_PREFERENCE_FIELD,
+    ENGINE_PREFERENCE_KEY,
+    REQUIRED_ROOT_FIELDS,
+    TASK_DEFAULTS,
+    VALID_ENGINE_BLOCK_FIELDS,
+)
 from ffengine.config.validator import ConfigValidator
 from ffengine.errors.exceptions import ConfigError
 
@@ -45,8 +52,10 @@ class ConfigLoader:
         raw = self._read_yaml(config_path)
         self._validate_root(raw)
         task = self._find_task(raw["flow_tasks"], task_group_id)
+        self._reject_reserved_task_fields(task)
         normalized = self._apply_defaults(task)
         self._resolve_mapping_file_path(normalized, config_path)
+        self._attach_engine_preference(raw, normalized)
         ConfigValidator().validate(normalized)
         return normalized
 
@@ -90,6 +99,40 @@ class ConfigLoader:
             merged.update(task["partitioning"])
             result["partitioning"] = merged
         return result
+
+    def _reject_reserved_task_fields(self, task: dict) -> None:
+        if ENGINE_PREFERENCE_KEY in task:
+            raise ConfigError(
+                f"Task field '{ENGINE_PREFERENCE_KEY}' is reserved for internal "
+                "use. Configure motor selection only through root "
+                "engine.preference."
+            )
+
+    def _attach_engine_preference(self, raw: dict, task: dict) -> None:
+        """F6.0 — kök ``engine:`` bloğunu task runtime dict'ine taşır.
+
+        Blok **şekli** burada doğrulanır (kök alan → ``ConfigError``, mevcut
+        ``_validate_root`` deseniyle tutarlı). **Değer** doğrulaması
+        ``ConfigValidator._check_engine``'e aittir (``ValidationError``/422) —
+        validator yalnız task dict'ini gördüğü için taşıma zorunludur.
+        """
+        block = raw.get(ENGINE_BLOCK_FIELD)
+        if block is None:
+            return
+        if not isinstance(block, dict):
+            raise ConfigError(
+                f"Root alanı '{ENGINE_BLOCK_FIELD}' bir mapping olmalıdır; "
+                f"ör. {ENGINE_BLOCK_FIELD}: {{{ENGINE_PREFERENCE_FIELD}: auto}}"
+            )
+        unknown = sorted(set(block) - VALID_ENGINE_BLOCK_FIELDS)
+        if unknown:
+            raise ConfigError(
+                f"'{ENGINE_BLOCK_FIELD}' bloğunda bilinmeyen alan(lar): "
+                f"{unknown}. Geçerli alan(lar): "
+                f"{sorted(VALID_ENGINE_BLOCK_FIELDS)}."
+            )
+        if ENGINE_PREFERENCE_FIELD in block:
+            task[ENGINE_PREFERENCE_KEY] = block[ENGINE_PREFERENCE_FIELD]
 
     def _resolve_mapping_file_path(self, task: dict, config_path: str) -> None:
         """mapping_file relatif ise config dosyasina gore absolute cozumler."""

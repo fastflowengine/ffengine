@@ -51,6 +51,24 @@ VALID_NOTIFY_TRIGGERS: frozenset[str] = frozenset({"failure", "success", "deadli
 # Root seviyesinde zorunlu alanlar
 REQUIRED_ROOT_FIELDS: tuple[str, ...] = ("source_db_var", "target_db_var", "flow_tasks")
 
+# F6.0 — kök `engine:` bloğu (opsiyonel, additive).
+#
+#     engine:
+#       preference: auto        # auto | standard | pipeline | spark
+#
+# Kanonik değer listesi **tek kaynakta** yaşar:
+# ``ffengine.core.base_engine.CANONICAL_ENGINE_PREFERENCES``. Burada ikinci
+# bir liste tanımlanmaz; yalnız blok adı/alanı ve varsayılan tutulur.
+# Doğrulama ``ConfigValidator._check_engine`` içinde (lazy import ile).
+ENGINE_BLOCK_FIELD: str = "engine"
+ENGINE_PREFERENCE_FIELD: str = "preference"
+VALID_ENGINE_BLOCK_FIELDS: frozenset[str] = frozenset({ENGINE_PREFERENCE_FIELD})
+#: Alan verilmezse kullanılan belirgin varsayılan (EX-D021: `auto` korunur).
+DEFAULT_ENGINE_PREFERENCE: str = "auto"
+#: Loader'ın task runtime dict'ine koyduğu private anahtar
+#: (`_resolved_where` konvansiyonu).
+ENGINE_PREFERENCE_KEY: str = "_engine_preference"
+
 # Task seviyesinde zorunlu alanlar
 REQUIRED_TASK_FIELDS: tuple[str, ...] = (
     "task_group_id",

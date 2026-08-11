@@ -14,6 +14,7 @@ from ffengine.airflow.generated_factory import (
     build_generated_dag,
 )
 from ffengine.airflow.operator import FFEngineOperator
+from ffengine.errors.exceptions import EngineError
 
 
 def _lifecycle_messages(caplog) -> list[str]:
@@ -164,6 +165,70 @@ def test_build_generated_dag_partition_task_group_and_script_task():
     assert "flow__partitioned_task.run_partition" in task_ids
     assert "flow__partitioned_task.aggregate" in task_ids
     assert "script__script_task" in task_ids
+
+
+def test_partition_wrapper_runs_guard_before_binding_xcom_pull():
+    raw = _base_raw_config()
+    raw["dag_params"] = [
+        {"name": "log_level", "type": "string", "default": "default"},
+        {"name": "run_date", "type": "string"},
+    ]
+    raw["flow_tasks"] = [
+        {
+            "task_group_id": "bind_date",
+            "task_type": "binding",
+            "bindings": [
+                {
+                    "variable_name": "run_date",
+                    "binding_source": "default",
+                    "default_value": "2026-08-11",
+                }
+            ],
+            "depends_on": [],
+        },
+        {
+            "task_group_id": "partitioned_task",
+            "task_type": "source_target",
+            "where": "business_date = {{ dag.run_date }}",
+            "depends_on": ["bind_date"],
+            "partitioning": {"enabled": True},
+        },
+    ]
+    dag = build_generated_dag(
+        dag_id="guard_before_binding",
+        dag_tags=[],
+        upstream_dag_ids=[],
+        raw_config_snapshot=raw,
+    )
+    wrapper = dag.task_dict["flow__partitioned_task.plan_partitions"]
+    ti = MagicMock(task_id=wrapper.task_id)
+    ti.xcom_pull.return_value = {"run_date": "2026-08-11"}
+    dag_run = MagicMock(
+        dag_id=dag.dag_id, run_id="manual__1", start_date="2026-08-11"
+    )
+
+    with (
+        patch(
+            "ffengine.airflow.generated_factory.get_current_context",
+            return_value={"ti": ti, "dag_run": dag_run},
+        ),
+        patch(
+            "ffengine.core.runtime_guard.run_runtime_guards",
+            side_effect=EngineError("license-stop"),
+        ) as guard,
+    ):
+        with pytest.raises(EngineError, match="license-stop"):
+            wrapper.python_callable()
+
+    ti.xcom_pull.assert_not_called()
+    guard.assert_called_once_with(
+        {
+            "dag_id": "guard_before_binding",
+            "task_id": "flow__partitioned_task.plan_partitions",
+            "run_id": "manual__1",
+            "dag_run_start_date": "2026-08-11",
+        }
+    )
 
 
 def test_dag_params_become_airflow_params_and_binding_is_thin_task():
@@ -918,10 +983,14 @@ def test_generated_dag_renders_asset_and_schedule(dbt_provider_registry):
         upstream_dag_ids=[],
         raw_config_snapshot=_asset_raw_config(),
     )
-    uris = sorted(
-        asset.uri
-        for _key, asset in dag.timetable.asset_condition.iter_assets()
-    )
+    condition = dag.timetable.asset_condition
+    if hasattr(condition, "iter_assets"):
+        # Airflow 3.1 compatibility.
+        assets = [asset for _key, asset in condition.iter_assets()]
+    else:
+        # Airflow 3.2+: AssetAll exposes its operands through `objects`.
+        assets = list(condition.objects)
+    uris = sorted(asset.uri for asset in assets)
     assert uris == [
         "postgres://db/analytics/dim_customer",
         "postgres://db/analytics/fct_orders",

@@ -27,7 +27,7 @@ except Exception:  # pragma: no cover - airflow olmayan ortamlarda import fallba
 from ffengine.core.base_engine import FlowResult
 from ffengine.config.dag_param_flow import BUILTIN_DAG_PARAM_BINDING_ERROR
 from ffengine.errors import error_payload, normalize_exception
-from ffengine.errors.exceptions import ConfigError
+from ffengine.errors.exceptions import ConfigError, EngineError
 
 _log = logging.getLogger(__name__)
 
@@ -126,6 +126,17 @@ def combine_where(base_where: str | None, partition_where: str | None) -> str | 
 # ---------------------------------------------------------------------------
 
 
+def _single_engine_type(values, *, source: str) -> str | None:
+    """Return one declared engine type; reject mixed identities fail-loud."""
+    engine_types = {str(value) for value in values if value is not None}
+    if len(engine_types) > 1:
+        raise EngineError(
+            f"{source} birden fazla engine_type kimligi tasiyor: "
+            f"{sorted(engine_types)}. Sessiz birlestirme yapilmaz."
+        )
+    return next(iter(engine_types), None)
+
+
 def aggregate_results(results: list[FlowResult]) -> FlowResult:
     """
     Birden fazla partition sonucunu tek bir FlowResult'a birleştirir.
@@ -149,6 +160,9 @@ def aggregate_results(results: list[FlowResult]) -> FlowResult:
     # HER partition doğrulanmışsa "passed" kalır (biri legacy ise legacy).
     statuses = {r.reconciliation_status for r in results}
     status = "passed" if statuses == {"passed"} else "legacy"
+    engine_type = _single_engine_type(
+        (result.engine for result in results), source="FlowResult listesi"
+    )
 
     return FlowResult(
         rows=total_rows,
@@ -160,6 +174,7 @@ def aggregate_results(results: list[FlowResult]) -> FlowResult:
         rows_written=sum(int(r.rows_written or 0) for r in results),
         rows_rejected=sum(int(r.rows_rejected or 0) for r in results),
         reconciliation_status=status,
+        engine=engine_type,
     )
 
 
@@ -320,6 +335,133 @@ def _merge_legacy_binding_values(ti, binding_task_ids: list[str] | None) -> dict
     return merged
 
 
+# F6.0 — operatörün `engine` argümanı bu değerle geldiğinde "verilmedi" ile
+# ayırt edilemez (imza `engine: str = "auto"`; sentinel'e geçmek public API
+# değişikliği olurdu). Bu durumda YAML otoritedir.
+_ENGINE_ARG_AMBIGUOUS = "auto"
+
+
+def _runtime_guard_context(
+    context: dict[str, Any] | None = None, *, task_id: str | None = None
+) -> dict[str, Any]:
+    """Build the metadata-only context required by runtime guards.
+
+    Mapped TaskFlow helpers receive a normalized binding context rather than
+    Airflow's full execution context. Recover the current context lazily while
+    running under Airflow; direct library/unit-test calls remain supported.
+    """
+    runtime_context = dict(context or {})
+    metadata_keys = {"dag_run", "ti", "task", "dag_id", "run_id"}
+    if not metadata_keys.intersection(runtime_context):
+        try:
+            from airflow.sdk import get_current_context
+
+            runtime_context = dict(get_current_context())
+        except (ImportError, RuntimeError):
+            pass
+
+    dag_run = runtime_context.get("dag_run")
+    ti = runtime_context.get("ti")
+    task = runtime_context.get("task")
+    return {
+        "dag_id": getattr(dag_run, "dag_id", None)
+        or runtime_context.get("dag_id"),
+        "task_id": getattr(ti, "task_id", None)
+        or getattr(task, "task_id", None)
+        or task_id,
+        "run_id": getattr(dag_run, "run_id", None)
+        or runtime_context.get("run_id"),
+        "dag_run_start_date": getattr(dag_run, "start_date", None),
+    }
+
+
+def _resolve_engine_preference(
+    task_config: dict[str, Any], operator_arg: str | None = None
+) -> str:
+    """F6.0 — çalışma-zamanı engine tercihi. Kök YAML tek otoritedir.
+
+    Operatör argümanı legacy/programmatic giriş kanalıdır: varsayılandan
+    farklıysa **explicit** sayılır ve YAML ile çelişirse fail-loud olur
+    (sessizce yok sayılmaz). ``"auto"`` verildiğinde verilmemişten ayırt
+    edilemez → YAML kazanır (bilinen sınır, plan §6 satır 5).
+    """
+    from ffengine.config.schema import (
+        DEFAULT_ENGINE_PREFERENCE,
+        ENGINE_PREFERENCE_KEY,
+    )
+
+    yaml_pref = task_config.get(ENGINE_PREFERENCE_KEY)
+    arg = None if operator_arg is None else str(operator_arg).strip().lower()
+    explicit_arg = arg is not None and arg != _ENGINE_ARG_AMBIGUOUS
+
+    if yaml_pref is None:
+        return arg if explicit_arg else DEFAULT_ENGINE_PREFERENCE
+
+    yaml_value = str(yaml_pref).strip().lower()
+    if explicit_arg and arg != yaml_value:
+        raise ConfigError(
+            f"Engine tercihi celisiyor: config engine.preference='{yaml_value}', "
+            f"operator engine='{arg}'. Kok YAML tek otoritedir; operator "
+            "argumani deprecated. Birini kaldirin."
+        )
+    return yaml_value
+
+
+def _is_standard_engine(engine: Any) -> bool:
+    from ffengine.core.flow_manager import StandardEngine
+
+    return isinstance(engine, StandardEngine)
+
+
+def _engine_type_name(engine: Any, preference: str) -> str:
+    """Cozulen motorun rapor adi (`engine_type`).
+
+    `detect()` semantigi geregi deterministiktir: `auto` yalniz `pipeline`
+    provider'ini yoklar, Spark'i asla secmez (EX-D021).
+    """
+    if _is_standard_engine(engine):
+        return "standard"
+    return "pipeline" if preference == "auto" else preference
+
+
+def _engine_preflight(
+    task_config: dict[str, Any],
+    *,
+    mapped_path: bool,
+    operator_arg: str | None = None,
+) -> tuple[Any, str]:
+    """F6.0 — motor cozumu; **her turlu I/O'dan once** calisir.
+
+    Mapped zincir (`plan_partitions -> prepare_target -> run_partition`) uc
+    ayri task oldugundan, dogrulama `run_partition`'a birakilirsa
+    `prepare_target` hedefte TRUNCATE/CREATE calistirdiktan SONRA fail-loud
+    olurdu. Bu yuzden cagri `_resolve_task_runtime()` icinde, connection
+    adapter'a dokunulmadan once yapilir.
+
+    Returns
+    -------
+    (engine, engine_type)
+    """
+    from ffengine.core.base_engine import BaseEngine
+
+    preference = _resolve_engine_preference(task_config, operator_arg)
+    # Provider yok / is_available()=False -> EngineError (fail-loud).
+    engine = BaseEngine.detect(preference)
+
+    if mapped_path and not _is_standard_engine(engine):
+        # B8: partition basina harici motor sozlesmesi tanimsiz (F4.1).
+        # `engine.run(config_path, task_group_id)` tum task-group'u calistirir;
+        # her partition'da cagrilirsa veri cogalir. Varsayim uretmeyiz.
+        raise EngineError(
+            f"Partition'li calisma '{_engine_type_name(engine, preference)}' "
+            "motoruyla desteklenmiyor: non-Standard motorlar icin partition "
+            "basina yurutme sozlesmesi tanimli degil (F4.1). "
+            "`partitioning.enabled: false` yapin ya da "
+            "`engine.preference: standard` kullanin."
+        )
+    return engine, _engine_type_name(engine, preference)
+
+
 def _resolve_task_runtime(
     *,
     config_path: str,
@@ -327,19 +469,34 @@ def _resolve_task_runtime(
     source_conn_id: str,
     target_conn_id: str,
     airflow_context: dict | None = None,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], Any, Any, Any, dict]:
-    """Config, connection, dialect ve BindingResolver context'ini hazırlar."""
+    binding_sources: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], Any, Any, Any, dict, str]:
+    """Config, connection, dialect ve BindingResolver context'ini hazırlar.
+
+    F6.0: config yuklendikten hemen sonra, **connection adapter'dan once**
+    engine preflight calisir; uc mapped helper de bu tek noktadan korunur.
+    Doner tuple'a 8. eleman olarak `engine_type` eklenmistir (private,
+    additive).
+    """
     from ffengine.config.loader import ConfigLoader
     from ffengine.config.binding_resolver import BindingResolver
+    from ffengine.core.runtime_guard import run_runtime_guards
     from ffengine.db.airflow_adapter import AirflowConnectionAdapter
 
+    run_runtime_guards(
+        _runtime_guard_context(airflow_context, task_id=task_group_id)
+    )
     task_config = ConfigLoader().load(config_path, task_group_id)
+    # --- F6.0 preflight: buradan onceye hicbir I/O girmez ---
+    _engine, engine_type = _engine_preflight(task_config, mapped_path=True)
     src_params = AirflowConnectionAdapter.get_connection_params(source_conn_id)
     tgt_params = AirflowConnectionAdapter.get_connection_params(target_conn_id)
     src_dialect = resolve_dialect(src_params["conn_type"])
     tgt_dialect = resolve_dialect(tgt_params["conn_type"])
 
-    airflow_ctx = build_runtime_binding_context(airflow_context)
+    airflow_ctx = build_runtime_binding_context(
+        airflow_context, binding_sources=binding_sources
+    )
     resolver = BindingResolver()
     task_config = resolver.resolve(task_config, airflow_ctx)
     return (
@@ -350,6 +507,7 @@ def _resolve_task_runtime(
         tgt_dialect,
         resolver,
         airflow_ctx,
+        engine_type,
     )
 
 
@@ -399,6 +557,7 @@ def plan_partitions_for_task(
     source_conn_id: str,
     target_conn_id: str,
     airflow_context: dict | None = None,
+    binding_sources: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Dynamic task mapping için partition spec listesini hesaplar.
@@ -414,12 +573,14 @@ def plan_partitions_for_task(
         tgt_dialect,
         resolver,
         airflow_ctx,
+        engine_type,
     ) = _resolve_task_runtime(
         config_path=config_path,
         task_group_id=task_group_id,
         source_conn_id=source_conn_id,
         target_conn_id=target_conn_id,
         airflow_context=airflow_context,
+        binding_sources=binding_sources,
     )
 
     with DBSession(src_params, src_dialect) as src_session:
@@ -444,6 +605,7 @@ def prepare_target_for_task(
     source_conn_id: str,
     target_conn_id: str,
     airflow_context: dict | None = None,
+    binding_sources: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Partition koşularından önce hedef hazırlığını bir kez yapar.
@@ -459,12 +621,14 @@ def prepare_target_for_task(
         tgt_dialect,
         resolver,
         airflow_ctx,
+        engine_type,
     ) = _resolve_task_runtime(
         config_path=config_path,
         task_group_id=task_group_id,
         source_conn_id=source_conn_id,
         target_conn_id=target_conn_id,
         airflow_context=airflow_context,
+        binding_sources=binding_sources,
     )
 
     with DBSession(src_params, src_dialect) as src_session:
@@ -497,6 +661,7 @@ def run_partition_for_task(
     target_conn_id: str,
     partition_spec: dict[str, Any] | None,
     airflow_context: dict | None = None,
+    binding_sources: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Tek bir partition spec için ETL çalıştırır (dynamic mapped task body).
@@ -512,12 +677,14 @@ def run_partition_for_task(
         tgt_dialect,
         resolver,
         airflow_ctx,
+        engine_type,
     ) = _resolve_task_runtime(
         config_path=config_path,
         task_group_id=task_group_id,
         source_conn_id=source_conn_id,
         target_conn_id=target_conn_id,
         airflow_context=airflow_context,
+        binding_sources=binding_sources,
     )
 
     with DBSession(src_params, src_dialect) as src_session:
@@ -580,6 +747,9 @@ def run_partition_for_task(
         "rows_written": int(result.rows_written or 0),
         "rows_rejected": int(result.rows_rejected or 0),
         "reconciliation_status": str(result.reconciliation_status),
+        # F6.0 — mapped yolda çözülen motor (bu yol Standard-only'dir;
+        # non-Standard preflight'ta fail-loud olur).
+        "engine_type": engine_type,
     }
 
 
@@ -610,6 +780,17 @@ def aggregate_partition_payloads(
                 ),
             )
         )
+    # F6.0 — motor kimliği partition'lar arasında tek olmalıdır (hepsi aynı
+    # task'ın parçası). Farklı değerler sessizce birleştirilmez.
+    engine_type = _single_engine_type(
+        (
+            item.get("engine_type")
+            for item in (results or [])
+            if isinstance(item, dict)
+        ),
+        source="Partition payload'lari",
+    )
+
     aggregated = aggregate_results(flow_results)
     return {
         "rows": aggregated.rows,
@@ -621,6 +802,8 @@ def aggregate_partition_payloads(
         "rows_written": aggregated.rows_written,
         "rows_rejected": aggregated.rows_rejected,
         "reconciliation_status": aggregated.reconciliation_status,
+        # Legacy payload'lar taşımaz → None (uydurma değer yazılmaz).
+        "engine_type": engine_type,
     }
 
 
@@ -709,7 +892,12 @@ class FFEngineOperator(BaseOperator):
     task_group_id    : Çalıştırılacak task kimliği.
     source_conn_id   : Airflow kaynak Connection ID.
     target_conn_id   : Airflow hedef Connection ID.
-    engine           : Engine tercihi ("auto", "community", "enterprise").
+    engine           : Engine tercihi — "auto" (varsayılan) | "standard" |
+                       "pipeline" | "spark". Legacy "community"/"enterprise"
+                       alias'ları `DeprecationWarning` üretir. **Deprecated
+                       giriş kanalı:** çalışma-zamanı otoritesi kök YAML
+                       `engine.preference`'tır; bu argüman yalnız YAML'da alan
+                       yokken kullanılır ve çeliştiğinde fail-loud olur (F6.0).
     airflow_context  : BindingResolver context dict (test/CLI için).
     """
 
@@ -773,15 +961,8 @@ class FFEngineOperator(BaseOperator):
         # its license guard via the "ffengine.runtime_guards" entry point.
         # Runs before any real work; a raising guard stops the task
         # fail-loud. Metadata only — no DB/LDAP/network on this path.
-        dag_run = context.get("dag_run")
         run_runtime_guards(
-            {
-                "dag_id": getattr(dag_run, "dag_id", None)
-                or context.get("dag_id"),
-                "task_id": getattr(self, "task_id", None),
-                "run_id": getattr(dag_run, "run_id", None),
-                "dag_run_start_date": getattr(dag_run, "start_date", None),
-            }
+            _runtime_guard_context(context, task_id=getattr(self, "task_id", None))
         )
         airflow_ctx = build_runtime_binding_context(
             context,
@@ -830,6 +1011,21 @@ class FFEngineOperator(BaseOperator):
 
             # 1. Config yükle
             task_config = ConfigLoader().load(self.config_path, self.task_group_id)
+
+            # 1b. F6.0 — engine preflight: runtime guard'dan SONRA, herhangi
+            # bir connection/DB dokunuşundan ÖNCE. Provider yok/unavailable →
+            # fail-loud EngineError; hedefe hiçbir şey yazılmadan durur.
+            engine, engine_type = _engine_preflight(
+                task_config, mapped_path=False, operator_arg=self.engine
+            )
+            if not _is_standard_engine(engine):
+                # Harici motor tüm task-group'u kendi çalıştırır (W2 sözleşmesi);
+                # Standard hazırlığı (session/dialect/prepare) çalıştırılmaz.
+                return self._run_external_engine(
+                    engine=engine,
+                    engine_type=engine_type,
+                    retry_telemetry=retry_telemetry,
+                )
 
             # 2. Connection parametreleri
             src_params = AirflowConnectionAdapter.get_connection_params(
@@ -985,6 +1181,9 @@ class FFEngineOperator(BaseOperator):
                 "rows_written": aggregated.rows_written,
                 "rows_rejected": aggregated.rows_rejected,
                 "reconciliation_status": aggregated.reconciliation_status,
+                # F6.0 — çözülen gerçek motor (sabit değil); aynı return_value
+                # XCom'uyla taşınır, yeni anahtar açılmaz.
+                "engine_type": engine_type,
             }
             _log_structured(
                 level=logging.INFO,
@@ -1001,6 +1200,7 @@ class FFEngineOperator(BaseOperator):
                 rows_written=aggregated.rows_written,
                 rows_rejected=aggregated.rows_rejected,
                 reconciliation_status=aggregated.reconciliation_status,
+                engine_type=engine_type,
             )
             return summary
         except Exception as exc:
@@ -1032,6 +1232,73 @@ class FFEngineOperator(BaseOperator):
             raise norm from exc
         finally:
             _log.setLevel(previous_log_level)
+
+    def _run_external_engine(
+        self, *, engine: Any, engine_type: str, retry_telemetry: dict
+    ) -> dict:
+        """F6.0 — harici (non-Standard) motor dispatch'i.
+
+        W2 sözleşmesi: ``engine.run(config_path, task_group_id)``. Motor tüm
+        task-group'u kendi yürütür; Standard hazırlığı (connection/dialect/
+        mapping/partition/prepare) **çalıştırılmaz**. Bu yüzden yalnız
+        partition'sız (tek task) yolda çağrılır — mapped yolda `_engine_preflight`
+        zaten fail-loud olur (B8).
+        """
+        _log_structured(
+            level=logging.INFO,
+            stage="airflow",
+            message="Operator delegating to external engine.",
+            task_group_id=self.task_group_id,
+            # Harici motor yolunda FFEngine dialect çözmez (motor kendi
+            # bağlantısını kurar) — uydurma değer yazmak yerine "unknown".
+            source_db="unknown",
+            target_db="unknown",
+            retry_telemetry=retry_telemetry,
+            engine_type=engine_type,
+        )
+        result = engine.run(self.config_path, self.task_group_id)
+        # Motor kimlik döndürmezse çözülen motorla deterministik doldurulur;
+        # sabit değer yazılmaz.
+        # The preflight provider identity remains authoritative for audit.
+        reported_engine = getattr(result, "engine", None)
+        if reported_engine is not None and reported_engine != engine_type:
+            raise EngineError(
+                "External engine reported an engine_type inconsistent with "
+                f"preflight: resolved='{engine_type}', "
+                f"reported='{reported_engine}'."
+            )
+        resolved = engine_type
+        summary = {
+            "rows": result.rows,
+            "duration_seconds": result.duration_seconds,
+            "throughput": result.throughput,
+            "partitions_completed": result.partitions_completed,
+            "errors": list(result.errors or []),
+            "retry_telemetry": retry_telemetry,
+            "rows_read": result.rows_read,
+            "rows_written": result.rows_written,
+            "rows_rejected": result.rows_rejected,
+            "reconciliation_status": result.reconciliation_status,
+            "engine_type": resolved,
+        }
+        _log_structured(
+            level=logging.INFO,
+            stage="airflow",
+            message="Operator completed.",
+            task_group_id=self.task_group_id,
+            source_db="unknown",
+            target_db="unknown",
+            rows=result.rows,
+            duration_seconds=result.duration_seconds,
+            throughput=result.throughput,
+            delivery_semantics="best_effort",
+            rows_read=result.rows_read,
+            rows_written=result.rows_written,
+            rows_rejected=result.rows_rejected,
+            reconciliation_status=result.reconciliation_status,
+            engine_type=resolved,
+        )
+        return summary
 
     def _retry_telemetry(self, context: dict) -> dict:
         """Task retry bilgilerini context'ten normalize eder."""

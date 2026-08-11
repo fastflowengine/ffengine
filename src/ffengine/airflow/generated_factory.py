@@ -16,7 +16,6 @@ from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
 from ffengine.airflow.operator import (
     FFEngineOperator,
     aggregate_partition_payloads,
-    build_runtime_binding_context,
     coerce_dag_param_value,
     plan_partitions_for_task,
     prepare_target_for_task,
@@ -689,10 +688,8 @@ def build_generated_dag(
                         task_group_id=_task_group_id,
                         source_conn_id=_source_conn_id,
                         target_conn_id=_target_conn_id,
-                        airflow_context=build_runtime_binding_context(
-                            get_current_context(),
-                            binding_sources=_binding_sources,
-                        ),
+                        airflow_context=get_current_context(),
+                        binding_sources=_binding_sources,
                     )
 
                 @task(task_id="prepare_target")
@@ -710,10 +707,8 @@ def build_generated_dag(
                         task_group_id=_task_group_id,
                         source_conn_id=_source_conn_id,
                         target_conn_id=_target_conn_id,
-                        airflow_context=build_runtime_binding_context(
-                            get_current_context(),
-                            binding_sources=_binding_sources,
-                        ),
+                        airflow_context=get_current_context(),
+                        binding_sources=_binding_sources,
                     )
 
                 @task(task_id="run_partition")
@@ -731,10 +726,8 @@ def build_generated_dag(
                         source_conn_id=_source_conn_id,
                         target_conn_id=_target_conn_id,
                         partition_spec=partition_spec,
-                        airflow_context=build_runtime_binding_context(
-                            get_current_context(),
-                            binding_sources=_binding_sources,
-                        ),
+                        airflow_context=get_current_context(),
+                        binding_sources=_binding_sources,
                     )
 
                 @task(task_id="aggregate")

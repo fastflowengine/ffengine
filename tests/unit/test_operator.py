@@ -668,6 +668,9 @@ class TestRunPartitionTaskLogging:
                     tgt_dialect,
                     resolver,
                     airflow_ctx,
+                    # F6.0 — private helper'a eklenen 8. eleman: çözülen
+                    # motorun rapor adı (mapped yol Standard-only'dir).
+                    "standard",
                 ),
             ),
             patch(

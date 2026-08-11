@@ -9,6 +9,8 @@ import logging
 
 from ffengine.errors.exceptions import ConfigError, ValidationError
 from ffengine.config.schema import (
+    DEFAULT_ENGINE_PREFERENCE,
+    ENGINE_PREFERENCE_KEY,
     REQUIRED_TASK_FIELDS,
     VALID_SOURCE_TYPES,
     VALID_LOAD_METHODS,
@@ -41,6 +43,12 @@ class ConfigValidator:
 
     def validate(self, task: dict) -> None:
         self._check_required(task)
+        # F6.0 — engine bağlama kuralları source/target whitelist'inden ÖNCE
+        # çalışır: `iceberg` hedefinde "açık spark gerekir" mesajı, "geçersiz
+        # target_type" mesajından daha aktörlenebilirdir. Mevcut kontrollerin
+        # sırası değişmedi; bu YENİ bir kontroldür ve engine bloğu olmayan +
+        # iceberg olmayan config'ler için no-op'tur.
+        self._check_engine(task)
         self._check_source_type(task)
         self._check_target_type(task)
         self._check_load_method(task)
@@ -141,6 +149,59 @@ class ConfigValidator:
             _log.warning(
                 "extraction_method=copy_binary Community modunda etkin degildir; "
                 "cursor modu kullanilacak."
+            )
+
+    def _check_engine(self, task: dict) -> None:
+        """F6.0 — engine.preference config sözleşmesi (EX-D021).
+
+        Yalnız **config** soruları burada: enum, legacy alias reddi, edition
+        gate ve Iceberg bağlama kuralı. Provider kayıtlı mı / `is_available()`
+        **runtime** sorusudur ve `BaseEngine.detect()`'e aittir — burada
+        registry'ye dokunulmaz (DAG parse'ta entry-point yüklenmesin ve
+        `EngineError` 422 ile gölgelenmesin).
+        """
+        preference_provided = ENGINE_PREFERENCE_KEY in task
+        raw_pref = task.get(ENGINE_PREFERENCE_KEY)
+        source_type = str(task.get("source_type") or "").strip().lower()
+        target_type = str(task.get("target_type") or "").strip().lower()
+        iceberg_endpoint = "iceberg" in (source_type, target_type)
+
+        # Sıcak yol: her DAG-parse'ta çalışır → engine bloğu yoksa ve Iceberg
+        # uç yoksa sıfır import/iş (bkz. _check_bulk_api deseni).
+        if not preference_provided and not iceberg_endpoint:
+            return
+
+        from ffengine.core.base_engine import normalize_engine_preference
+        from ffengine.core.edition import is_enterprise_enabled
+
+        if not preference_provided:
+            preference = DEFAULT_ENGINE_PREFERENCE
+        else:
+            if not isinstance(raw_pref, str) or not raw_pref.strip():
+                raise ValidationError(
+                    "engine.preference must be a non-empty string; "
+                    f"received type {type(raw_pref).__name__}."
+                )
+            try:
+                preference = normalize_engine_preference(
+                    raw_pref, allow_legacy_aliases=False
+                )
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
+
+        if preference in ("pipeline", "spark") and not is_enterprise_enabled():
+            raise ValidationError(
+                f"engine.preference='{preference}' Enterprise gerektirir "
+                "(FFENGINE_EDITION=enterprise). Community 'standard' veya "
+                "'auto' kullanir."
+            )
+
+        if iceberg_endpoint and preference != "spark":
+            raise ValidationError(
+                "Iceberg kaynak/hedef yalniz ACIK engine.preference: spark ile "
+                f"kullanilir; verilen: '{preference}'. 'auto' Spark'i asla "
+                "secmez (yalniz 'pipeline' provider'ini arar) -> sessizce "
+                "yanlis motorda calisma riski fail-loud kapatildi."
             )
 
     def _check_bulk_api(self, task: dict) -> None:
