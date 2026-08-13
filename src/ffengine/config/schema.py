@@ -62,12 +62,39 @@ REQUIRED_ROOT_FIELDS: tuple[str, ...] = ("source_db_var", "target_db_var", "flow
 # Doğrulama ``ConfigValidator._check_engine`` içinde (lazy import ile).
 ENGINE_BLOCK_FIELD: str = "engine"
 ENGINE_PREFERENCE_FIELD: str = "preference"
-VALID_ENGINE_BLOCK_FIELDS: frozenset[str] = frozenset({ENGINE_PREFERENCE_FIELD})
+ENGINE_SPARK_FIELD: str = "spark"
+VALID_ENGINE_BLOCK_FIELDS: frozenset[str] = frozenset(
+    {ENGINE_PREFERENCE_FIELD, ENGINE_SPARK_FIELD}
+)
+SPARK_SUBMIT_MODE_FIELD: str = "submit_mode"
+SPARK_CONN_ID_FIELD: str = "conn_id"
+VALID_ENGINE_SPARK_FIELDS: frozenset[str] = frozenset(
+    {SPARK_SUBMIT_MODE_FIELD, SPARK_CONN_ID_FIELD}
+)
+#: F6.1'de SEVK EDİLEN submit modları (EX-D026).
+VALID_SPARK_SUBMIT_MODES: frozenset[str] = frozenset({"k8s", "local"})
+#: TANINAN ama gerekçeli REDDEDİLEN modlar (EX-D026). Sessizce "unsupported"
+#: demek yerine ayrı tutuluyor: kullanıcı YARN yazdığında neden çalışmadığını
+#: ve neyin beklendiğini öğrenmeli. Klasik YARN'da konteyner imajı yoktur, bu
+#: yüzden imaja bake edilen driver script'i ve Python ortamı NodeManager'da
+#: bulunmaz; ayrı bir `--archives`/`PYSPARK_PYTHON` dağıtım hattı gerekir.
+DEFERRED_SPARK_SUBMIT_MODES: dict[str, str] = {
+    "yarn": (
+        "classic YARN has no container image, so the driver script and Python "
+        "runtime this delivery bakes into the Spark image are absent on the "
+        "NodeManager; shipping it would need a second distribution path "
+        "(--archives/PYSPARK_PYTHON) and its own test surface"
+    ),
+}
+VALID_SPARK_SOURCE_TYPES: frozenset[str] = frozenset(
+    {"table", "view", "sql", "iceberg"}
+)
 #: Alan verilmezse kullanılan belirgin varsayılan (EX-D021: `auto` korunur).
 DEFAULT_ENGINE_PREFERENCE: str = "auto"
 #: Loader'ın task runtime dict'ine koyduğu private anahtar
 #: (`_resolved_where` konvansiyonu).
 ENGINE_PREFERENCE_KEY: str = "_engine_preference"
+ENGINE_SPARK_KEY: str = "_engine_spark"
 
 # Task seviyesinde zorunlu alanlar
 REQUIRED_TASK_FIELDS: tuple[str, ...] = (

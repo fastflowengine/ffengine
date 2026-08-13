@@ -454,8 +454,26 @@ async function studioFetch(path, options) {
     let dagDepsOptionsState = [];
     let dagDepsReferencedByState = [];
     let pendingDeleteDagCleanupReferences = false;
+    let engineConfigExplicit = false;
 
     function el(id) { return document.getElementById(id); }
+
+    function syncEngineOptions() {
+      const preference = String(el("engine_preference")?.value || "auto").trim();
+      const sparkOptions = el("engine_spark_options");
+      if (sparkOptions) sparkOptions.style.display = preference === "spark" ? "grid" : "none";
+      const connId = el("engine_spark_conn_id");
+      const mode = String(el("engine_spark_submit_mode")?.value || "k8s").trim();
+      if (connId) connId.required = preference === "spark" && mode !== "local";
+    }
+
+    function resetEngineConfig() {
+      engineConfigExplicit = false;
+      if (el("engine_preference")) el("engine_preference").value = "auto";
+      if (el("engine_spark_submit_mode")) el("engine_spark_submit_mode").value = "k8s";
+      if (el("engine_spark_conn_id")) el("engine_spark_conn_id").value = "";
+      syncEngineOptions();
+    }
 
     function logDebug(message, payload) {
       if (typeof payload === "undefined") {
@@ -1846,6 +1864,7 @@ async function studioFetch(path, options) {
       });
       setSchedulerFormFromState(schedulerAppliedState);
       closeSchedulerModal();
+      resetEngineConfig();
       clearAndLoadTasks([{}]);
       setUpdateMode(false);
       loadDagDependencyOptions("").catch((_err) => {});
@@ -5501,6 +5520,13 @@ async function studioFetch(path, options) {
       syncFolderPathDisplay();
       setConnectionValue("source_conn_id", payload.source_conn_id || "");
       setConnectionValue("target_conn_id", payload.target_conn_id || "");
+      const engine = payload.engine && typeof payload.engine === "object" ? payload.engine : null;
+      const spark = engine && engine.spark && typeof engine.spark === "object" ? engine.spark : {};
+      engineConfigExplicit = !!engine;
+      el("engine_preference").value = String(engine?.preference || "auto");
+      el("engine_spark_submit_mode").value = String(spark.submit_mode || "k8s");
+      el("engine_spark_conn_id").value = String(spark.conn_id || "");
+      syncEngineOptions();
       clearAndLoadTasks(payload.flow_tasks || [payload]);
     }
 
@@ -5953,6 +5979,17 @@ async function studioFetch(path, options) {
         partitioning_ranges: firstTask.partitioning_ranges,
         flow_tasks: flowTasks,
       };
+      const enginePreference = String(el("engine_preference")?.value || "auto").trim();
+      if (engineConfigExplicit || enginePreference !== "auto") {
+        payload.engine = { preference: enginePreference };
+        if (enginePreference === "spark") {
+          payload.engine.spark = {
+            submit_mode: String(el("engine_spark_submit_mode")?.value || "").trim(),
+          };
+          const sparkConnId = String(el("engine_spark_conn_id")?.value || "").trim();
+          if (sparkConnId) payload.engine.spark.conn_id = sparkConnId;
+        }
+      }
       return payload;
     }
 
@@ -6062,6 +6099,17 @@ async function studioFetch(path, options) {
       refreshTaskCardHeaders();
       refreshAllUpsertMatchOptions();
     });
+    el("engine_preference").addEventListener("change", () => {
+      engineConfigExplicit = true;
+      syncEngineOptions();
+    });
+    el("engine_spark_submit_mode").addEventListener("change", () => {
+      engineConfigExplicit = true;
+      syncEngineOptions();
+    });
+    el("engine_spark_conn_id").addEventListener("input", () => {
+      engineConfigExplicit = true;
+    });
     const customTagsInput = el("custom_tags_input");
     if (customTagsInput) {
       customTagsInput.addEventListener("keydown", (evt) => {
@@ -6108,6 +6156,7 @@ async function studioFetch(path, options) {
     async function initPage() {
       await applyAirflowThemeAssets();
       bindSchedulerControls();
+      resetEngineConfig();
       setUpdateMode(false);
       setCustomTags([]);
       dagParamsAppliedState = defaultDagParams();

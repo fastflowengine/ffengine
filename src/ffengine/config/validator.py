@@ -11,6 +11,7 @@ from ffengine.errors.exceptions import ConfigError, ValidationError
 from ffengine.config.schema import (
     DEFAULT_ENGINE_PREFERENCE,
     ENGINE_PREFERENCE_KEY,
+    ENGINE_SPARK_KEY,
     REQUIRED_TASK_FIELDS,
     VALID_SOURCE_TYPES,
     VALID_LOAD_METHODS,
@@ -20,6 +21,10 @@ from ffengine.config.schema import (
     FILE_SOURCE_TYPES,
     VALID_JSON_MODES,
     VALID_TARGET_TYPES,
+    VALID_ENGINE_SPARK_FIELDS,
+    VALID_SPARK_SOURCE_TYPES,
+    DEFERRED_SPARK_SUBMIT_MODES,
+    VALID_SPARK_SUBMIT_MODES,
 )
 
 _log = logging.getLogger(__name__)
@@ -151,6 +156,18 @@ class ConfigValidator:
                 "cursor modu kullanilacak."
             )
 
+    def validate_engine_selection(self, task: dict) -> None:
+        """F6.1 — yalnız motor seçim kurallarını doğrular (public giriş).
+
+        `validate()` bunu config yolunda zaten çalıştırır. Ayrı bir giriş
+        gerekiyor çünkü `FFEngineOperator(engine=...)` argümanı kök YAML'da
+        olmayan bir tercih dayatabiliyor: o durumda knob kilidi, `submit_mode`
+        zorunluluğu ve endpoint matrisi hiç değerlendirilmemiş olurdu
+        (programatik DAG'lar için sessiz INV-1 deliği). Runtime preflight
+        çözülen tercihi enjekte edip burayı yeniden koşar.
+        """
+        self._check_engine(task)
+
     def _check_engine(self, task: dict) -> None:
         """F6.0 — engine.preference config sözleşmesi (EX-D021).
 
@@ -161,6 +178,7 @@ class ConfigValidator:
         `EngineError` 422 ile gölgelenmesin).
         """
         preference_provided = ENGINE_PREFERENCE_KEY in task
+        spark_options_provided = ENGINE_SPARK_KEY in task
         raw_pref = task.get(ENGINE_PREFERENCE_KEY)
         source_type = str(task.get("source_type") or "").strip().lower()
         target_type = str(task.get("target_type") or "").strip().lower()
@@ -168,7 +186,7 @@ class ConfigValidator:
 
         # Sıcak yol: her DAG-parse'ta çalışır → engine bloğu yoksa ve Iceberg
         # uç yoksa sıfır import/iş (bkz. _check_bulk_api deseni).
-        if not preference_provided and not iceberg_endpoint:
+        if not preference_provided and not spark_options_provided and not iceberg_endpoint:
             return
 
         from ffengine.core.base_engine import normalize_engine_preference
@@ -196,12 +214,98 @@ class ConfigValidator:
                 "'auto' kullanir."
             )
 
+        self._check_spark_options(task, preference)
+
         if iceberg_endpoint and preference != "spark":
             raise ValidationError(
                 "Iceberg kaynak/hedef yalniz ACIK engine.preference: spark ile "
                 f"kullanilir; verilen: '{preference}'. 'auto' Spark'i asla "
                 "secmez (yalniz 'pipeline' provider'ini arar) -> sessizce "
                 "yanlis motorda calisma riski fail-loud kapatildi."
+            )
+
+    def _check_spark_options(self, task: dict, preference: str) -> None:
+        options_present = ENGINE_SPARK_KEY in task
+        if preference != "spark":
+            if options_present:
+                raise ValidationError(
+                    "engine.spark is valid only with engine.preference='spark'."
+                )
+            return
+        if not options_present:
+            raise ValidationError(
+                "engine.preference='spark' requires the nested engine.spark block."
+            )
+        options = task.get(ENGINE_SPARK_KEY)
+        if not isinstance(options, dict):
+            raise ValidationError("engine.spark must be a mapping.")
+        unknown = sorted(set(options) - VALID_ENGINE_SPARK_FIELDS)
+        if unknown:
+            raise ValidationError(f"Unknown engine.spark field(s): {unknown}.")
+        self._check_spark_submit(options)
+        self._check_spark_knobs(task)
+        self._check_spark_endpoints(task)
+
+    def _check_spark_submit(self, options: dict) -> None:
+        raw_mode = options.get("submit_mode")
+        if not isinstance(raw_mode, str) or not raw_mode.strip():
+            raise ValidationError("engine.spark.submit_mode is required; auto is not supported.")
+        mode = raw_mode.strip().lower()
+        # Ertelenmis modlar TANINIR ve gerekcesiyle reddedilir (EX-D026):
+        # "gecersiz mod" mesaji kullaniciya nedenini soylemez.
+        deferred_reason = DEFERRED_SPARK_SUBMIT_MODES.get(mode)
+        if deferred_reason is not None:
+            raise ValidationError(
+                f"engine.spark.submit_mode='{mode}' is recognised but deliberately "
+                f"not shipped in this release: {deferred_reason}. "
+                f"Supported modes: {sorted(VALID_SPARK_SUBMIT_MODES)}."
+            )
+        if mode not in VALID_SPARK_SUBMIT_MODES:
+            raise ValidationError(
+                f"Unsupported engine.spark.submit_mode='{raw_mode}'. "
+                f"Valid modes: {sorted(VALID_SPARK_SUBMIT_MODES)}."
+            )
+        raw_conn = options.get("conn_id")
+        if mode == "k8s" and (not isinstance(raw_conn, str) or not raw_conn.strip()):
+            raise ValidationError(f"engine.spark.conn_id is required for {mode} submit.")
+        # Normalize edilmis degeri geri yaz: motor tarafi tam esleme ariyor.
+        # Aksi halde 'K8s' dogrulamayi gecer, submit'te "Unsupported mode" alir.
+        options["submit_mode"] = mode
+        if isinstance(raw_conn, str):
+            options["conn_id"] = raw_conn.strip()
+
+    def _check_spark_knobs(self, task: dict) -> None:
+        locked = []
+        if task.get("writer_workers") is not None:
+            locked.append("writer_workers")
+        if task.get("use_bulk_api") is True:
+            locked.append("use_bulk_api")
+        part = task.get("partitioning")
+        if isinstance(part, dict) and part.get("enabled") is True:
+            locked.append("partitioning.enabled")
+        # Deger-bazli: diger uc knob gibi. Anahtar varligina bakmak
+        # `parallel_degree: null` gibi ACIK BIR VARSAYILANI reddederdi ve
+        # T-F6.1-6'nin yasakladigi "default != explicit" ayrimini bozardi.
+        if task.get("parallel_degree") is not None:
+            locked.append("parallel_degree")
+        if locked:
+            raise ValidationError(
+                "SparkEngine owns its executor model; these Pipeline knobs are "
+                f"not supported: {locked}."
+            )
+
+    def _check_spark_endpoints(self, task: dict) -> None:
+        target_type = str(task.get("target_type") or "db").strip().lower()
+        source_type = str(task.get("source_type") or "").strip().lower()
+        if target_type != "iceberg":
+            raise ValidationError(
+                "SparkEngine target must be Iceberg so authoritative write "
+                "reconciliation remains available."
+            )
+        if source_type not in VALID_SPARK_SOURCE_TYPES:
+            raise ValidationError(
+                "Unsupported Spark source for this delivery: "
+                f"'{source_type}'. Valid sources: {sorted(VALID_SPARK_SOURCE_TYPES)}."
             )
 
     def _check_bulk_api(self, task: dict) -> None:

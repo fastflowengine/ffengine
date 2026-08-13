@@ -86,6 +86,10 @@ class FlowResult:
     # motorun kimliği. Sona eklenir ve default'ludur; mevcut pozisyonel
     # çağrılar etkilenmez. Rapor yüzeyinde anahtar adı `engine_type`.
     engine: str | None = None
+    # F6.1 (additive): external engine audit identifiers. Defaults preserve
+    # every legacy positional constructor and Community execution path.
+    application_id: str | None = None
+    snapshot_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.rows_read is None:

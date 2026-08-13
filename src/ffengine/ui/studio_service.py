@@ -30,6 +30,10 @@ from ffengine.config.dag_param_flow import (
     validate_binding_target_is_custom,
 )
 from ffengine.config.schema import (
+    ENGINE_PREFERENCE_FIELD,
+    ENGINE_PREFERENCE_KEY,
+    ENGINE_SPARK_FIELD,
+    ENGINE_SPARK_KEY,
     VALID_NOTIFY_TRIGGERS,
     FILE_SOURCE_TYPES,
     VALID_JSON_MODES,
@@ -2774,6 +2778,8 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "target_header": first_task["target_header"],
         "flow_tasks": normalized_tasks,
     }
+    if isinstance(raw.get("engine"), dict):
+        payload["engine"] = dict(raw["engine"])
 
     return {
         "dag_id": did,
@@ -3539,6 +3545,16 @@ def build_task_dict_for_validation(payload: dict[str, Any]) -> dict[str, Any]:
     return task
 
 
+def _attach_root_engine(payload: dict[str, Any], task: dict[str, Any]) -> None:
+    block = payload.get("engine")
+    if not isinstance(block, dict):
+        return
+    if ENGINE_PREFERENCE_FIELD in block:
+        task[ENGINE_PREFERENCE_KEY] = block[ENGINE_PREFERENCE_FIELD]
+    if ENGINE_SPARK_FIELD in block:
+        task[ENGINE_SPARK_KEY] = dict(block[ENGINE_SPARK_FIELD] or {})
+
+
 def _apply_file_endpoints(
     task: dict[str, Any],
     item: dict[str, Any],
@@ -3741,6 +3757,7 @@ def validate_pipeline_payload(payload: dict[str, Any]) -> None:
                 target_conn_id=target_conn_id,
                 task_index=idx,
             )
+            _attach_root_engine(payload, task)
             if (
                 str(task.get("task_type") or STUDIO_TASK_TYPE_SOURCE_TARGET)
                 == STUDIO_TASK_TYPE_SOURCE_TARGET
@@ -3754,6 +3771,7 @@ def validate_pipeline_payload(payload: dict[str, Any]) -> None:
         return
 
     task = build_task_dict_for_validation(payload)
+    _attach_root_engine(payload, task)
     if (
         str(task.get("task_type") or STUDIO_TASK_TYPE_SOURCE_TARGET)
         == STUDIO_TASK_TYPE_SOURCE_TARGET
@@ -5024,6 +5042,8 @@ def create_or_update_dag(
                 "dag_dependencies": dag_dependencies,
                 "dag_params": dag_params,
             }
+            if isinstance(payload.get("engine"), dict):
+                config_obj["engine"] = dict(payload["engine"])
             if notifications:
                 config_obj["notifications"] = notifications
             config_path.write_text(

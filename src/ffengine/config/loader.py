@@ -13,9 +13,12 @@ from ffengine.config.schema import (
     ENGINE_BLOCK_FIELD,
     ENGINE_PREFERENCE_FIELD,
     ENGINE_PREFERENCE_KEY,
+    ENGINE_SPARK_FIELD,
+    ENGINE_SPARK_KEY,
     REQUIRED_ROOT_FIELDS,
     TASK_DEFAULTS,
     VALID_ENGINE_BLOCK_FIELDS,
+    VALID_ENGINE_SPARK_FIELDS,
 )
 from ffengine.config.validator import ConfigValidator
 from ffengine.errors.exceptions import ConfigError
@@ -101,12 +104,14 @@ class ConfigLoader:
         return result
 
     def _reject_reserved_task_fields(self, task: dict) -> None:
-        if ENGINE_PREFERENCE_KEY in task:
-            raise ConfigError(
-                f"Task field '{ENGINE_PREFERENCE_KEY}' is reserved for internal "
-                "use. Configure motor selection only through root "
-                "engine.preference."
-            )
+        reserved = (ENGINE_PREFERENCE_KEY, ENGINE_SPARK_KEY)
+        for field in reserved:
+            if field in task:
+                raise ConfigError(
+                    f"Task field '{field}' is reserved for internal use. "
+                    "Configure motor selection only through root engine.preference "
+                    "and engine.spark."
+                )
 
     def _attach_engine_preference(self, raw: dict, task: dict) -> None:
         """F6.0 — kök ``engine:`` bloğunu task runtime dict'ine taşır.
@@ -133,6 +138,18 @@ class ConfigLoader:
             )
         if ENGINE_PREFERENCE_FIELD in block:
             task[ENGINE_PREFERENCE_KEY] = block[ENGINE_PREFERENCE_FIELD]
+        if ENGINE_SPARK_FIELD in block:
+            spark = block[ENGINE_SPARK_FIELD]
+            if not isinstance(spark, dict):
+                raise ConfigError("Root field 'engine.spark' must be a mapping.")
+            unknown_spark = sorted(set(spark) - VALID_ENGINE_SPARK_FIELDS)
+            if unknown_spark:
+                raise ConfigError(
+                    "'engine.spark' contains unknown field(s): "
+                    f"{unknown_spark}. Valid fields: "
+                    f"{sorted(VALID_ENGINE_SPARK_FIELDS)}."
+                )
+            task[ENGINE_SPARK_KEY] = copy.deepcopy(spark)
 
     def _resolve_mapping_file_path(self, task: dict, config_path: str) -> None:
         """mapping_file relatif ise config dosyasina gore absolute cozumler."""

@@ -225,7 +225,7 @@ def test_binding_task_hides_empty_source_card_and_uses_advanced_only_layout():
     )
     assert ".task-card.binding-task .task-layout" in style_css
     assert 'grid-template-areas: "advanced";' in style_css
-    assert "app.js?v=98" in index_html
+    assert "app.js?v=99" in index_html
 
 
 def test_advanced_dag_parameter_uses_parameter_type_label():
@@ -254,7 +254,7 @@ def test_connection_selector_uses_generic_source_and_target_labels():
     assert "Select Target Connection" in app_js
     assert "DB Connection" not in app_js
     assert "database connection" not in index_html
-    assert "app.js?v=98" in index_html
+    assert "app.js?v=99" in index_html
 
 
 def test_binding_ui_has_conditional_default_and_searchable_variable_selector():
@@ -332,7 +332,7 @@ def test_folder_path_ui_requires_explicit_selection():
     assert '(el("level").value || "").trim() || "level1"' not in app_js
     assert 'el("flow").value.trim() || "src_to_stg"' not in app_js
     assert '(el("flow").value || "").trim() || "src_to_stg"' not in app_js
-    assert "app.js?v=98" in index_html
+    assert "app.js?v=99" in index_html
 
 
 def test_dag_explorer_html_ok(client):
@@ -4280,7 +4280,7 @@ def test_dbt_ui_card_markup_is_enterprise_gated():
     # unless the server stamped data-ffengine-edition="enterprise" on <body>.
     assert ".enterprise-only {" in style_css
     assert 'body[data-ffengine-edition="enterprise"] .enterprise-only' in style_css
-    assert "app.js?v=98" in index_html
+    assert "app.js?v=99" in index_html
 
 
 def test_dbt_ui_js_wiring_contract():

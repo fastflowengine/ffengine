@@ -32,6 +32,7 @@ from ffengine.config.schema import (
     VALID_TARGET_TYPES,
 )
 from ffengine.errors import http_status_for, normalize_exception
+from ffengine.errors.exceptions import ValidationError as ConfigValidationError
 from ffengine.ui.studio_service import (
     STUDIO_DAG_MARKER,
     create_or_update_dag,
@@ -562,6 +563,20 @@ class FlowTaskPayload(BaseModel):
         return self
 
 
+class SparkEnginePayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    submit_mode: str
+    conn_id: str | None = None
+
+
+class EnginePayload(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    preference: str = "auto"
+    spark: SparkEnginePayload | None = None
+
+
 class SchedulerPayload(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -767,6 +782,7 @@ class DagUpsertPayload(BaseModel):
     flow: str = Field(..., min_length=1)
     source_conn_id: str = Field(..., min_length=1)
     target_conn_id: str = Field(..., min_length=1)
+    engine: EnginePayload | None = None
     source_schema: str | None = Field(default=None, min_length=1)
     source_table: str | None = Field(default=None, min_length=1)
     source_type: str = "table"
@@ -1386,7 +1402,7 @@ def api_create_dag(
     try:
         result = create_or_update_dag(_payload_to_service_dict(payload), update=False)
         return {"ok": True, **result}
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, ConfigValidationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         _raise_http_from_exception(exc)
@@ -1405,7 +1421,7 @@ def api_update_dag(
             dag_id=dag_id,
         )
         return {"ok": True, **result}
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, ConfigValidationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         _raise_http_from_exception(exc)

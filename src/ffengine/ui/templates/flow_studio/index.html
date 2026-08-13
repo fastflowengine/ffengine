@@ -49,6 +49,31 @@
             <option value="">Select Target Connection</option>
           </select>
         </label>
+        <label>
+          <span class="global-control-label">Execution Engine</span>
+          <select id="engine_preference" title="Choose the execution engine">
+            <option value="auto">Auto</option>
+            <option value="standard">Standard</option>
+            <option value="pipeline" class="enterprise-only">Pipeline (Enterprise)</option>
+            <option value="spark" class="enterprise-only">Spark (Enterprise)</option>
+          </select>
+        </label>
+      </div>
+      <div id="engine_spark_options" class="panel-body grid-3 enterprise-only" style="display: none;">
+        <label>
+          <span class="global-control-label">Spark Submit Mode</span>
+          <select id="engine_spark_submit_mode">
+            <option value="k8s">Kubernetes</option>
+            <option value="local">Local (explicit opt-in)</option>
+          </select>
+        </label>
+        <label>
+          <span class="global-control-label">Spark Connection</span>
+          <input id="engine_spark_conn_id" placeholder="Airflow Connection ID">
+        </label>
+        <div class="muted-note">
+          Spark requires an Iceberg target. Iceberg endpoint fields are activated by F6.2.
+        </div>
       </div>
       <div class="panel-body global-controls-row">
         <label class="global-control tags-control">
@@ -878,6 +903,6 @@
   </div>
   <datalist id="mapping_editor_source_options"></datalist>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=98"></script>
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=99"></script>
 </body>
 </html>

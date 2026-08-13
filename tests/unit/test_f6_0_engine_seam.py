@@ -12,6 +12,8 @@ Bu yüzden preflight `_resolve_task_runtime()` içinde, config yüklendikten
 hemen sonra ve `AirflowConnectionAdapter`'a dokunulmadan önce olmalıdır.
 """
 
+from pathlib import Path
+
 import pytest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -534,8 +536,23 @@ def test_f6_0_validate_rejects_yaml_legacy_alias(alias, monkeypatch):
 
 def test_f6_0_validate_accepts_canonical_values(monkeypatch):
     monkeypatch.setenv("FFENGINE_EDITION", "enterprise")
-    for preference in ("auto", "standard", "pipeline", "spark"):
+    for preference in ("auto", "standard", "pipeline"):
         _validate(_validated_task(_engine_preference=preference))
+
+    # F6.1 makes `spark` canonical but deliberately constrained: nested
+    # options + Iceberg target are required. F6.2 adds the enum itself.
+    import ffengine.config.validator as validator_module
+
+    monkeypatch.setattr(
+        validator_module, "VALID_TARGET_TYPES", frozenset({"db", "file", "iceberg"})
+    )
+    _validate(
+        _validated_task(
+            target_type="iceberg",
+            _engine_preference="spark",
+            _engine_spark={"submit_mode": "local"},
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -621,12 +638,25 @@ def _write_config(tmp_path, engine_block: str = ""):
 
 def test_f6_0_root_engine_preference_reaches_runtime_task(tmp_path, monkeypatch):
     from ffengine.config.loader import ConfigLoader
-    from ffengine.config.schema import ENGINE_PREFERENCE_KEY
+    from ffengine.config.schema import ENGINE_PREFERENCE_KEY, ENGINE_SPARK_KEY
+    import ffengine.config.validator as validator_module
 
     monkeypatch.setenv("FFENGINE_EDITION", "enterprise")
-    path = _write_config(tmp_path, "engine:\n  preference: spark\n")
+    monkeypatch.setattr(
+        validator_module, "VALID_TARGET_TYPES", frozenset({"db", "file", "iceberg"})
+    )
+    path = _write_config(
+        tmp_path,
+        "engine:\n  preference: spark\n  spark:\n    submit_mode: local\n",
+    )
+    text = Path(path).read_text(encoding="utf-8")
+    Path(path).write_text(
+        text.replace("    load_method: append\n", "    load_method: append\n    target_type: iceberg\n"),
+        encoding="utf-8",
+    )
     task = ConfigLoader().load(path, "t1")
     assert task[ENGINE_PREFERENCE_KEY] == "spark"
+    assert task[ENGINE_SPARK_KEY] == {"submit_mode": "local"}
 
 
 def test_f6_0_missing_engine_block_defaults_to_auto(tmp_path):

@@ -29,3 +29,8 @@ handbook/
 # Temporary per-worktree live-test overrides (F1.x) must stay untracked.
 /docker/docker-compose.f1-*.override.yml
 /.vscode/
+# Python packaging artifacts (setuptools copies src/ into build/ during
+# `pip wheel .`); they must never enter the OSS repo via `git add -A`.
+/build/
+/dist/
+*.egg-info/

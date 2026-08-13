@@ -5,6 +5,7 @@ FFEngineOperator, Airflow ortamında FFEngine Flow pipeline'ını orkestre eder:
   plan → prepare → run (3-fazlı iç orkestrasyon).
 """
 
+import json
 import logging
 import re
 from datetime import UTC, datetime
@@ -298,6 +299,88 @@ def build_runtime_binding_context(
     }
 
 
+_RUN_DAG_PARAM_RE = re.compile(r"\{\{\s*dag\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+_RUN_SIMPLE_PARAM_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+_RUN_AIRFLOW_RE = re.compile(r"\{\{\s*airflow\.([^\s{}]+)\s*\}\}")
+_RUN_LEGACY_AIRFLOW_RE = re.compile(r"\{\{\s*airflow_var\.([^\s{}]+)\s*\}\}")
+_MAX_RUN_CONTRACT_BYTES = 64 * 1024
+
+
+def _task_template_references(task_config: dict) -> tuple[set[str], set[str]]:
+    dag_names: set[str] = set()
+    airflow_names: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for nested in value.values():
+                visit(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                visit(nested)
+        elif isinstance(value, str):
+            dag_names.update(_RUN_DAG_PARAM_RE.findall(value))
+            dag_names.update(_RUN_SIMPLE_PARAM_RE.findall(value))
+            airflow_names.update(_RUN_AIRFLOW_RE.findall(value))
+            airflow_names.update(_RUN_LEGACY_AIRFLOW_RE.findall(value))
+
+    visit(task_config)
+    local_names = {
+        str(item.get("variable_name") or "").strip()
+        for item in task_config.get("bindings") or []
+        if isinstance(item, dict)
+    }
+    return dag_names - local_names, airflow_names
+
+
+def task_runtime_token_names(task_config: dict) -> set[str]:
+    """Task'in TÜKETTİĞİ runtime token adları (public, additive seam).
+
+    Harici motorlar "bu task runtime değeri istiyor mu?" sorusunu kendi
+    regex'leriyle cevaplamamalı — ikinci bir doğruluk kaynağı, sözleşme
+    değiştiğinde sessizce ayrışır. Operatörün `uses_context` kararı da
+    aynı kümeden üretilir.
+    """
+    dag_names, airflow_names = _task_template_references(task_config)
+    return dag_names | airflow_names
+
+
+def _build_external_run_contract(
+    task_config: dict,
+    airflow_ctx: dict,
+    *,
+    source_conn_id: str,
+    target_conn_id: str,
+) -> dict:
+    dag_names, airflow_names = _task_template_references(task_config)
+    contract = {
+        "schema_version": 1,
+        "source_conn_id": source_conn_id,
+        "target_conn_id": target_conn_id,
+        "binding_values": {},
+        "dag_run_conf": {},
+        "airflow_params": {},
+        "airflow_variables": {},
+    }
+    for name in sorted(dag_names):
+        for namespace in ("binding_values", "dag_run_conf", "airflow_params"):
+            values = airflow_ctx.get(namespace) or {}
+            if name in values:
+                contract[namespace][name] = values[name]
+                break
+    variables = airflow_ctx.get("airflow_variables") or {}
+    for name in sorted(airflow_names):
+        if name not in variables:
+            raise ConfigError(f"Airflow Variable '{name}' is unavailable.")
+        contract["airflow_variables"][name] = variables[name]
+    try:
+        encoded = json.dumps(contract, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise ConfigError("External engine run context must be JSON-serializable.") from exc
+    if len(encoded.encode("utf-8")) > _MAX_RUN_CONTRACT_BYTES:
+        raise ConfigError("External engine run context exceeds the 64 KiB limit.")
+    return contract
+
+
 def _select_compiled_binding_values(ti, binding_sources: dict[str, str]) -> dict:
     parameters_by_task: dict[str, list[str]] = {}
     for name, task_id in sorted(binding_sources.items()):
@@ -407,6 +490,34 @@ def _resolve_engine_preference(
     return yaml_value
 
 
+def _revalidate_engine_selection(task_config: dict[str, Any], preference: str) -> None:
+    """F6.1 — operatör argümanı YAML'da olmayan bir tercih dayattığında motor
+    config kurallarını yeniden koşar.
+
+    `ConfigValidator._check_engine` yalnız kök `engine:` bloğunu görür ve o
+    blok yoksa erken döner. `FFEngineOperator(engine="spark")` ise tercihi
+    çalışma zamanında değiştirebiliyor — bu yolda knob kilidi, `submit_mode`
+    zorunluluğu, edition gate ve endpoint matrisi hiç değerlendirilmezdi.
+    Kural değişmez, yalnız çözülen tercih enjekte edilip aynı doğrulama
+    tekrarlanır; kök YAML tek otorite olmaya devam eder.
+    """
+    from ffengine.config.schema import (
+        DEFAULT_ENGINE_PREFERENCE,
+        ENGINE_PREFERENCE_KEY,
+    )
+    from ffengine.config.validator import ConfigValidator
+
+    if ENGINE_PREFERENCE_KEY in task_config:
+        # YAML otoritedir ve loader doğrulamayı zaten çalıştırdı.
+        return
+    if preference == DEFAULT_ENGINE_PREFERENCE:
+        # Argüman verilmemişten ayırt edilemez; davranış değişmedi.
+        return
+    effective = dict(task_config)
+    effective[ENGINE_PREFERENCE_KEY] = preference
+    ConfigValidator().validate_engine_selection(effective)
+
+
 def _is_standard_engine(engine: Any) -> bool:
     from ffengine.core.flow_manager import StandardEngine
 
@@ -445,6 +556,10 @@ def _engine_preflight(
     from ffengine.core.base_engine import BaseEngine
 
     preference = _resolve_engine_preference(task_config, operator_arg)
+    # F6.1: operator argumani YAML'da olmayan bir tercih dayattiysa motor
+    # config kurallari burada yeniden kosar -- provider aramasindan ONCE,
+    # cunku config hatasi "provider kayitli degil"den daha aksiyonabildir.
+    _revalidate_engine_selection(task_config, preference)
     # Provider yok / is_available()=False -> EngineError (fail-loud).
     engine = BaseEngine.detect(preference)
 
@@ -934,6 +1049,7 @@ class FFEngineOperator(BaseOperator):
         self.binding_sources = dict(binding_sources or {})
         source_task_ids = dict.fromkeys(self.binding_sources.values())
         self.binding_task_ids = list(binding_task_ids or source_task_ids)
+        self._active_engine = None
 
     def execute(self, context: dict | None = None) -> dict:
         """
@@ -1025,6 +1141,8 @@ class FFEngineOperator(BaseOperator):
                     engine=engine,
                     engine_type=engine_type,
                     retry_telemetry=retry_telemetry,
+                    task_config=task_config,
+                    airflow_ctx=airflow_ctx,
                 )
 
             # 2. Connection parametreleri
@@ -1234,7 +1352,13 @@ class FFEngineOperator(BaseOperator):
             _log.setLevel(previous_log_level)
 
     def _run_external_engine(
-        self, *, engine: Any, engine_type: str, retry_telemetry: dict
+        self,
+        *,
+        engine: Any,
+        engine_type: str,
+        retry_telemetry: dict,
+        task_config: dict,
+        airflow_ctx: dict,
     ) -> dict:
         """F6.0 — harici (non-Standard) motor dispatch'i.
 
@@ -1256,7 +1380,32 @@ class FFEngineOperator(BaseOperator):
             retry_telemetry=retry_telemetry,
             engine_type=engine_type,
         )
-        result = engine.run(self.config_path, self.task_group_id)
+        runner = getattr(engine, "run_with_context", None)
+        uses_context = bool(task_runtime_token_names(task_config))
+        run_contract = _build_external_run_contract(
+            task_config,
+            airflow_ctx,
+            source_conn_id=self.source_conn_id,
+            target_conn_id=self.target_conn_id,
+        )
+        self._active_engine = engine
+        try:
+            if callable(runner):
+                result = runner(
+                    self.config_path,
+                    self.task_group_id,
+                    context=run_contract,
+                )
+            elif uses_context:
+                raise EngineError(
+                    "External engine must implement run_with_context() for a task "
+                    "that consumes runtime binding values."
+                )
+            else:
+                result = engine.run(self.config_path, self.task_group_id)
+        finally:
+            if self._active_engine is engine:
+                self._active_engine = None
         # Motor kimlik döndürmezse çözülen motorla deterministik doldurulur;
         # sabit değer yazılmaz.
         # The preflight provider identity remains authoritative for audit.
@@ -1280,6 +1429,8 @@ class FFEngineOperator(BaseOperator):
             "rows_rejected": result.rows_rejected,
             "reconciliation_status": result.reconciliation_status,
             "engine_type": resolved,
+            "application_id": result.application_id,
+            "snapshot_id": result.snapshot_id,
         }
         _log_structured(
             level=logging.INFO,
@@ -1297,8 +1448,25 @@ class FFEngineOperator(BaseOperator):
             rows_rejected=result.rows_rejected,
             reconciliation_status=result.reconciliation_status,
             engine_type=resolved,
+            application_id=result.application_id,
+            snapshot_id=result.snapshot_id,
         )
         return summary
+
+    def on_kill(self) -> None:
+        """Best-effort cancellation for an active optional external engine."""
+        engine = self._active_engine
+        self._active_engine = None
+        cancel = getattr(engine, "cancel", None)
+        if not callable(cancel):
+            return
+        try:
+            cancel()
+        except Exception as exc:  # signal path must never replace task failure
+            _log.warning(
+                "External engine cancellation failed; error_type=%s.",
+                type(exc).__name__,
+            )
 
     def _retry_telemetry(self, context: dict) -> dict:
         """Task retry bilgilerini context'ten normalize eder."""

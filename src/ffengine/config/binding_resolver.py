@@ -14,6 +14,7 @@ import logging
 import math
 import re
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from ffengine.errors.exceptions import ConfigError
@@ -314,8 +315,14 @@ class BindingResolver:
         if value is None:
             return "NULL"
         if isinstance(value, bool):
+            if self._is_postgres_dialect(where_dialect):
+                return "TRUE" if value else "FALSE"
             return "1" if value else "0"
         if isinstance(value, int):
+            return str(value)
+        if isinstance(value, Decimal):
+            if not value.is_finite():
+                raise ConfigError("Binding degeri NaN/Inf olamaz.")
             return str(value)
         if isinstance(value, float):
             if not math.isfinite(value):
@@ -324,14 +331,21 @@ class BindingResolver:
         if isinstance(value, datetime):
             return self._datetime_to_sql_literal(value, where_dialect=where_dialect)
         if isinstance(value, date):
-            return self._date_to_sql_literal(value)
+            return self._date_to_sql_literal(value, where_dialect=where_dialect)
 
-        text = str(value)
-        return "'" + text.replace("'", "''") + "'"
+        return self._quoted_text(value, where_dialect=where_dialect)
 
-    @staticmethod
-    def _date_to_sql_literal(value: date) -> str:
+    @classmethod
+    def _quoted_text(cls, value: Any, *, where_dialect: Any = None) -> str:
+        prefix = "N" if cls._is_mssql_dialect(where_dialect) else ""
+        text = str(value).replace("'", "''")
+        return f"{prefix}'{text}'"
+
+    @classmethod
+    def _date_to_sql_literal(cls, value: date, *, where_dialect: Any = None) -> str:
         text = value.isoformat().replace("'", "''")
+        if cls._is_mssql_dialect(where_dialect):
+            return f"CAST(N'{text}' AS date)"
         return f"DATE '{text}'"
 
     @staticmethod
@@ -348,6 +362,11 @@ class BindingResolver:
         return name in {"postgresdialect", "postgresqldialect"} or "postgres" in name
 
     @classmethod
+    def _is_mssql_dialect(cls, dialect: Any) -> bool:
+        name = cls._dialect_name(dialect)
+        return name in {"mssqldialect", "sqlserverdialect"} or "mssql" in name
+
+    @classmethod
     def _datetime_to_sql_literal(
         cls, value: datetime, *, where_dialect: Any = None
     ) -> str:
@@ -361,4 +380,6 @@ class BindingResolver:
                 return f"TIMESTAMPTZ '{text_tz}'"
             dt = dt_utc.replace(tzinfo=None)
         text = dt.isoformat(sep=" ", timespec=_DATETIME_TIMESPEC).replace("'", "''")
+        if cls._is_mssql_dialect(where_dialect):
+            return f"CAST(N'{text}' AS datetime2(6))"
         return f"TIMESTAMP '{text}'"
