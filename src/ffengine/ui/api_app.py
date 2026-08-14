@@ -221,6 +221,7 @@ def _validate_dbt_task_payload(payload: Any) -> None:
             "dbt_execution": payload.dbt_execution,
             "dbt_test_behavior": payload.dbt_test_behavior,
             "emit_datasets": payload.emit_datasets,
+            "dbt_target_platform": payload.dbt_target_platform,
         }
     )
 
@@ -386,6 +387,7 @@ class FlowTaskPayload(BaseModel):
     dbt_execution: str | None = None
     dbt_test_behavior: str | None = None
     emit_datasets: bool | None = None
+    dbt_target_platform: str | None = None
     # F1.4/F1.5 — file source (csv/json) + file target
     file_path: str | None = None
     delimiter: str | None = None
@@ -822,6 +824,7 @@ class DagUpsertPayload(BaseModel):
     dbt_execution: str | None = None
     dbt_test_behavior: str | None = None
     emit_datasets: bool | None = None
+    dbt_target_platform: str | None = None
     # F1.4/F1.5 — file source (csv/json) + file target (single-task DAG path)
     file_path: str | None = None
     delimiter: str | None = None

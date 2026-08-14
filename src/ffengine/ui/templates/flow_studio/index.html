@@ -359,6 +359,15 @@
                   </select>
                 </label>
               </div>
+              <label>
+                <span class="global-control-label">Target Platform (cosmos only)</span>
+                <select class="dbt-target-platform" title="Adapter selection (F6.4): postgres = certified RDBMS adapter; spark = dbt-spark over Spark Thrift for Iceberg lakehouse targets (plain Parquet has no merge/snapshot support); databricks = dbt-databricks (never dbt-spark). RDBMS-target dbt connects directly to the target DB and is unchanged.">
+                  <option value="">postgres (default)</option>
+                  <option value="postgres">postgres</option>
+                  <option value="spark">spark (Iceberg lakehouse)</option>
+                  <option value="databricks">databricks</option>
+                </select>
+              </label>
               <label class="dbt-emit-datasets-wrap">
                 <input class="dbt-emit-datasets" type="checkbox" title="Cosmos mode only: publish model outputs as Airflow Assets for asset-triggered downstream DAGs.">
                 <span class="global-control-label">Emit Airflow Assets (cosmos only)</span>

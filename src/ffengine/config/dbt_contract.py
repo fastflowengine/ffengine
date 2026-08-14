@@ -39,6 +39,13 @@ VALID_DBT_COMMANDS = frozenset({"run", "build", "test"})
 VALID_DBT_EXECUTION_MODES = frozenset({"cosmos", "task"})
 DEFAULT_DBT_EXECUTION = "cosmos"
 VALID_DBT_TEST_BEHAVIORS = frozenset({"after_each"})
+# F6.4 (EX-D035) — cosmos-mode adapter/profile selector. Secret-free by
+# design (EX-D030 precedent): the ProfileMapping CLASS is chosen at DAG
+# parse and parse-time Connection reads are forbidden (F3.2b), so the
+# platform must be declared in config. Databricks is a distinct platform
+# with a distinct adapter (dbt-databricks, never dbt-spark — INV-10).
+VALID_DBT_TARGET_PLATFORMS = frozenset({"postgres", "spark", "databricks"})
+DEFAULT_DBT_TARGET_PLATFORM = "postgres"
 
 DBT_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DBT_DAG_TOKEN_RE = re.compile(r"^\{\{\s*dag\.[A-Za-z_][A-Za-z0-9_]*\s*\}\}$")
@@ -227,6 +234,28 @@ def validate_dbt_task_fields(task: dict, *, error_cls=ValueError) -> dict:
                 "split tests (fail-loud)."
             )
         normalized["dbt_test_behavior"] = behavior
+
+    platform = _clean_str(
+        task, "dbt_target_platform", error_cls=error_cls, required=False
+    )
+    if platform is not None:
+        if platform not in VALID_DBT_TARGET_PLATFORMS:
+            raise error_cls(
+                f"Unsupported dbt_target_platform: '{platform}'. Valid "
+                f"values: {sorted(VALID_DBT_TARGET_PLATFORMS)}. Databricks "
+                "requires dbt-databricks, not dbt-spark; there is no silent "
+                "adapter fallback (fail-loud)."
+            )
+        if execution != "cosmos":
+            raise error_cls(
+                "dbt_target_platform requires dbt_execution='cosmos'; the "
+                "task fallback takes its profile from the deployment-owned "
+                "profiles.yml, so the field would be silently ignored there "
+                "(fail-loud)."
+            )
+        normalized["dbt_target_platform"] = platform
+    elif execution == "cosmos":
+        normalized["dbt_target_platform"] = DEFAULT_DBT_TARGET_PLATFORM
 
     raw_emit = task.get("emit_datasets")
     if raw_emit is not None:

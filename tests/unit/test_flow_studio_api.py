@@ -4172,12 +4172,15 @@ def test_create_dag_dbt_task_persists_narrow_yaml_and_roundtrips(
     task = dbt_tasks[0]
     # Narrow YAML: only the dbt contract keys, no engine fields.
     # F3.2b: dbt_execution is always persisted explicitly (default cosmos).
+    # F6.4: dbt_target_platform follows the same explicit-over-implicit
+    # rule in cosmos mode (default postgres, EX-D035).
     assert set(task) == {
         "task_type", "task_group_id", "depends_on", "tags",
         "dbt_project_ref", "dbt_command", "dbt_select", "dbt_target",
-        "dbt_threads", "dbt_vars", "dbt_execution",
+        "dbt_threads", "dbt_vars", "dbt_execution", "dbt_target_platform",
     }
     assert task["dbt_execution"] == "cosmos"
+    assert task["dbt_target_platform"] == "postgres"
     assert task["dbt_project_ref"] == "finance"
     assert task["dbt_vars"] == {
         "run_date": "{{ dag.run_date }}", "full_refresh": False,

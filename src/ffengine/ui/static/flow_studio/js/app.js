@@ -3858,6 +3858,8 @@ async function studioFetch(path, options) {
           if (behaviorSel) behaviorSel.value = values.dbt_test_behavior || "";
           const emitBox = card.querySelector(".dbt-emit-datasets");
           if (emitBox) emitBox.checked = values.emit_datasets === true;
+          const platformSel = card.querySelector(".dbt-target-platform");
+          if (platformSel) platformSel.value = values.dbt_target_platform || "";
           syncDbtExecutionControls(card);
         }
       }
@@ -5890,6 +5892,10 @@ async function studioFetch(path, options) {
         if (card.querySelector(".dbt-emit-datasets")?.checked) {
           out.emit_datasets = true;
         }
+        // F6.4 — adapter/platform selector (cosmos only; empty = backend
+        // default postgres, so a pre-F6.4 payload stays byte-identical).
+        const platform = (card.querySelector(".dbt-target-platform")?.value || "").trim();
+        if (platform) out.dbt_target_platform = platform;
       }
       return out;
     }
@@ -5908,6 +5914,11 @@ async function studioFetch(path, options) {
       if (emit) {
         emit.disabled = !cosmosMode;
         if (!cosmosMode) emit.checked = false;
+      }
+      const platform = card.querySelector(".dbt-target-platform");
+      if (platform) {
+        platform.disabled = !cosmosMode;
+        if (!cosmosMode) platform.value = "";
       }
     }
 

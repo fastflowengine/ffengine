@@ -16,6 +16,7 @@ import pytest
 from ffengine.config.dbt_contract import (
     VALID_DBT_COMMANDS,
     VALID_DBT_EXECUTION_MODES,
+    VALID_DBT_TARGET_PLATFORMS,
     dbt_vars_expression_text,
     validate_dbt_task_fields,
 )
@@ -292,3 +293,54 @@ def test_emit_datasets_false_allowed_in_task_mode():
     )
     assert normalized["emit_datasets"] is False
     assert normalized["dbt_execution"] == "task"
+
+
+# --- F6.4 — dbt_target_platform (adapter selection, EX-D035) ----------------
+# The platform selector is a secret-free config field (EX-D030 precedent):
+# the ProfileMapping CLASS choice is a parse-time decision, and parse-time
+# Connection reads are forbidden (F3.2b), so runtime auto-detect is not an
+# option. Default is postgres — every pre-F6.4 cosmos config keeps its exact
+# behavior (T-F6.4-3). Databricks and Spark are DIFFERENT platforms with
+# different adapters (INV-10); an unknown value fails loud.
+
+def test_target_platform_defaults_to_postgres_in_cosmos_mode():
+    normalized = validate_dbt_task_fields(_task())
+    assert normalized["dbt_target_platform"] == "postgres"
+
+
+@pytest.mark.parametrize("platform", ["postgres", "spark", "databricks"])
+def test_target_platform_valid_values_accepted(platform):
+    normalized = validate_dbt_task_fields(
+        _task(dbt_target_platform=f" {platform} ")
+    )
+    assert normalized["dbt_target_platform"] == platform
+
+
+def test_target_platform_unknown_value_fails_loud():
+    with pytest.raises(ValueError, match="dbt_target_platform"):
+        validate_dbt_task_fields(_task(dbt_target_platform="snowflake-spark"))
+
+
+def test_target_platform_set_rejected_in_task_mode():
+    """Task fallback profili deployment-owned profiles.yml'den alir; alanin
+    orada sessizce yok sayilmasi INV-1 ihlali olurdu."""
+    with pytest.raises(ValueError, match="dbt_target_platform"):
+        validate_dbt_task_fields(
+            _task(dbt_execution="task", dbt_target_platform="spark")
+        )
+
+
+def test_target_platform_absent_in_task_mode():
+    normalized = validate_dbt_task_fields(_task(dbt_execution="task"))
+    assert "dbt_target_platform" not in normalized
+
+
+def test_valid_target_platforms_frozen():
+    assert VALID_DBT_TARGET_PLATFORMS == frozenset(
+        {"postgres", "spark", "databricks"}
+    )
+
+
+def test_target_platform_control_chars_fail_loud():
+    with pytest.raises(ValueError, match="dbt_target_platform"):
+        validate_dbt_task_fields(_task(dbt_target_platform="spa\nrk"))

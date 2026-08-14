@@ -89,6 +89,8 @@ _DBT_FIELD_KEYS = (
     "dbt_execution",
     "dbt_test_behavior",
     "emit_datasets",
+    # F6.4 (EX-D035) — cosmos-mode adapter/profile selector
+    "dbt_target_platform",
 )
 STUDIO_VALID_SCRIPT_RUN_ENVIRONMENTS = {"source", "target"}
 _BINDING_PARAM_RE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
