@@ -894,6 +894,34 @@ def normalize_file_source(item: dict[str, Any], source_type: str) -> dict[str, A
     return result
 
 
+def normalize_spark_endpoint(item: dict[str, Any]) -> dict[str, Any]:
+    """F6.2 — Iceberg/parquet uc noktasinin Studio alanlarini gecirir.
+
+    Bu alanlar `ConfigValidator`in **zorunlu** kildigi alanlardir; Studio
+    tasiyicisina eklenmezlerse kullanici formu doldursa bile validator onlari
+    HIC gormez ve "catalog_type zorunludur" hatasi kullanicinin duzeltemeyecegi
+    bir 422'ye donusurdu.
+    """
+    result: dict[str, Any] = {}
+    source_type = str(item.get("source_type") or "").strip().lower()
+    target_type = str(item.get("target_type") or "db").strip().lower()
+    if "iceberg" in (source_type, target_type):
+        catalog_type = str(item.get("catalog_type") or "").strip()
+        if catalog_type:
+            result["catalog_type"] = catalog_type
+        publish_mode = str(item.get("publish_mode") or "").strip()
+        if publish_mode:
+            result["publish_mode"] = publish_mode
+    if source_type == "parquet":
+        file_path = str(item.get("file_path") or "").strip()
+        if not file_path:
+            raise ValueError("file_path is required for a parquet source.")
+        result["file_path"] = file_path
+    if target_type == "iceberg":
+        result["target_type"] = "iceberg"
+    return result
+
+
 def normalize_file_target(item: dict[str, Any]) -> dict[str, Any] | None:
     """F1.5 — extract + validate file-target fields (target_type='file')."""
     target_type = str(item.get("target_type") or "db").strip().lower()
@@ -3575,6 +3603,13 @@ def _apply_file_endpoints(
     file_target = normalize_file_target(item)
     if file_target is not None:
         task.update(file_target)
+    # F6.2 — Iceberg/parquet uc noktasi alanlari (EX-D030/EX-D033).
+    spark_endpoint = normalize_spark_endpoint(item)
+    if spark_endpoint:
+        if "file_path" in spark_endpoint:
+            task["source_schema"] = ""
+            task["source_table"] = ""
+        task.update(spark_endpoint)
 
 
 def build_task_dict_for_validation_from_task(

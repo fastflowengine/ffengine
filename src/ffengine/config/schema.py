@@ -5,14 +5,17 @@ CONFIG_SCHEMA.md ile senkronize edilmiştir.
 """
 
 VALID_SOURCE_TYPES: frozenset[str] = frozenset(
-    {"table", "view", "sql", "csv", "json", "script"}
+    {"table", "view", "sql", "csv", "json", "script", "iceberg", "parquet"}
 )
 
 # F1.4/F1.5 — file source/target (transport ⟂ format).
 # source_type ∈ {csv, json} = FILE source; json_mode "flat" only ("raw" → F1.4b).
 FILE_SOURCE_TYPES: frozenset[str] = frozenset({"csv", "json"})
 VALID_JSON_MODES: frozenset[str] = frozenset({"flat"})  # "raw" deferred (F1.4b)
-VALID_TARGET_TYPES: frozenset[str] = frozenset({"db", "file"})
+# F6.2 — `iceberg` additive olarak eklendi. Kendi başına bir motor seçimi
+# DEĞİLDİR: `_check_engine` bu uç noktayı yalnız AÇIK `engine.preference: spark`
+# ile kabul eder, Community'de edition kapısına takılır.
+VALID_TARGET_TYPES: frozenset[str] = frozenset({"db", "file", "iceberg"})
 
 VALID_LOAD_METHODS: frozenset[str] = frozenset(
     {
@@ -87,8 +90,74 @@ DEFERRED_SPARK_SUBMIT_MODES: dict[str, str] = {
     ),
 }
 VALID_SPARK_SOURCE_TYPES: frozenset[str] = frozenset(
-    {"table", "view", "sql", "iceberg"}
+    {"table", "view", "sql", "iceberg", "parquet"}
 )
+#: Yalniz Spark motorunda anlamli kaynak/hedef tipleri. Bunlar Standard/Pipeline
+#: motorlarinda **calismaz**, bu yuzden acik `engine.preference: spark` sart --
+#: aksi halde config dogrulamayi gecer ve hata calisma anina kayardi (INV-1).
+#: `parquet` F6.2'de eklendi (EX-D033): dosya kaynagi ama Spark yolunda okunur.
+SPARK_ONLY_ENDPOINT_TYPES: frozenset[str] = frozenset({"iceberg", "parquet"})
+# F6.2 — Iceberg uç noktası (EX-D030).
+#
+# `catalog_type` config'de **zorunlu ve sırsızdır**; `auto` yoktur. Bağlantı
+# detayı (uri, warehouse) ve kimlik **yalnız Airflow Connection**'da yaşar —
+# validator Connection okumaz (DAG-parse'ta ağ/DB erişimi yok), bu yüzden tip
+# seçimi burada kalır ve reddi DAG-parse'ta doğar.
+ICEBERG_TYPE: str = "iceberg"
+ICEBERG_CATALOG_TYPE_FIELD: str = "catalog_type"
+ICEBERG_PUBLISH_MODE_FIELD: str = "publish_mode"
+VALID_ICEBERG_CATALOG_TYPES: frozenset[str] = frozenset({"jdbc", "hive", "rest"})
+#: TANINAN ama gerekçeli REDDEDİLEN katalog tipleri. `DEFERRED_SPARK_SUBMIT_MODES`
+#: ile aynı desen: "geçersiz tip" mesajı kullanıcıya NEDENİNİ söylemez.
+REJECTED_ICEBERG_CATALOG_TYPES: dict[str, str] = {
+    "glue": (
+        "the Glue catalog is AWS-only and needs outbound internet, which "
+        "violates this delivery's air-gapped guarantee; the image also ships "
+        "no AWS SDK (B12). Use 'jdbc' (the reference: the catalog store is "
+        "your existing RDBMS), 'hive' or 'rest'"
+    ),
+    "hadoop": (
+        "the Hadoop catalog resolves the current table version from the "
+        "warehouse directory, and object stores have no atomic rename, so two "
+        "concurrent commits silently lose a snapshot. Use 'jdbc', 'hive' or "
+        "'rest' -- all of them keep a transactional pointer"
+    ),
+}
+#: `write.wap.enabled` tablo özelliğiyle çalışan staged yayım. Alan verilmezse
+#: **direct**: bu bir "auto" değil, belgelenmiş varsayılandır (T-F6.1-6 ayrımı).
+VALID_ICEBERG_PUBLISH_MODES: frozenset[str] = frozenset({"direct", "wap"})
+DEFAULT_ICEBERG_PUBLISH_MODE: str = "direct"
+#: `VALID_LOAD_METHODS` **genişletilmez**; Iceberg bağlamında koşullu reddedilen
+#: üç değer ve her birinin doğru alternatifi.
+REJECTED_ICEBERG_LOAD_METHODS: dict[str, str] = {
+    "create_if_not_exists_or_truncate": (
+        "truncate + insert is two commits on an Iceberg table, so readers see "
+        "an EMPTY table between them. Use load_method='replace': "
+        "overwritePartitions() lands the same result in a single atomic commit"
+    ),
+    "drop_if_exists_and_create": (
+        "dropping the table destroys its snapshot history, so time-travel and "
+        "rollback -- the audit trail this delivery relies on -- are gone. Use "
+        "load_method='replace', which rewrites the data and keeps the history"
+    ),
+    "script": (
+        "load_method='script' runs arbitrary SQL through the writer path, "
+        "which bypasses the Iceberg commit and the K1 reconciliation built on "
+        "its snapshot summary. Use task_type='script_run' for standalone SQL"
+    ),
+}
+#: Config'de sır aranırken kullanılan anahtar parçaları (INV-5). Değer değil
+#: ANAHTAR adına bakılır: değeri incelemek sırrı log'a taşıma riski doğurur.
+SECRET_FIELD_HINTS: tuple[str, ...] = (
+    "password",
+    "secret",
+    "token",
+    "credential",
+    "access_key",
+    "private_key",
+    "passphrase",
+)
+
 #: Alan verilmezse kullanılan belirgin varsayılan (EX-D021: `auto` korunur).
 DEFAULT_ENGINE_PREFERENCE: str = "auto"
 #: Loader'ın task runtime dict'ine koyduğu private anahtar
@@ -137,6 +206,11 @@ TASK_DEFAULTS: dict = {
     "target_columns_meta": None,
     "upsert_match_columns": None,
     "mapping_file": None,
+    # F6.2 — Iceberg uç noktası. Varsayılanları None: "verilmedi" ile
+    # "açıkça verildi" ayrımı korunur (T-F6.1-6). `publish_mode` yokken
+    # DEFAULT_ICEBERG_PUBLISH_MODE uygulanır.
+    "catalog_type": None,
+    "publish_mode": None,
     "partitioning": {
         "enabled": False,
         "mode": "auto_numeric",

@@ -16,6 +16,8 @@ def _task(**overrides):
         "target_schema": "bronze",
         "target_table": "orders",
         "target_type": "iceberg",
+        # F6.2: Iceberg ucunda `catalog_type` zorunlu (EX-D030).
+        "catalog_type": "jdbc",
         "load_method": "append",
         "_engine_preference": "spark",
         "_engine_spark": {"submit_mode": "k8s", "conn_id": "spark_prod"},
@@ -28,17 +30,12 @@ def _task(**overrides):
 
 
 def _validate_with_iceberg(monkeypatch, task):
-    """F6.2 adds the enum; isolate F6.1 rules through the public validator."""
-    import ffengine.config.validator as validator_module
+    """F6.1 kurallarini public validator uzerinden dogrular.
 
-    monkeypatch.setattr(
-        validator_module, "VALID_TARGET_TYPES", frozenset({"db", "file", "iceberg"})
-    )
-    monkeypatch.setattr(
-        validator_module,
-        "VALID_SOURCE_TYPES",
-        frozenset({"table", "view", "sql", "csv", "json", "script", "iceberg"}),
-    )
+    F6.2 `iceberg`i gercekten enum'a ekledigi icin buradaki monkeypatch'ler
+    KALDIRILDI: yamali kalsalardi bu testler urunun gercek whitelist'ini degil
+    kendi yamalarini dogrulamaya devam ederdi.
+    """
     ConfigValidator().validate(task)
 
 
@@ -144,11 +141,20 @@ def test_yarn_is_not_a_shipped_mode(monkeypatch):
     assert "yarn" in DEFERRED_SPARK_SUBMIT_MODES
 
 
-def test_local_submit_connection_is_optional_at_config_layer(monkeypatch):
+def test_local_submit_connection_is_required_once_iceberg_ships(monkeypatch):
+    """F6.1'de `conn_id` yalniz `k8s` icin zorunluydu; F6.2 bunu SIKILASTIRDI.
+
+    Gerekce: F6.1'in kendi kurali Spark hedefini `iceberg`e zorluyor ve EX-D030
+    katalog uri/warehouse/kimligini yalniz Airflow Connection'a veriyor. Bu
+    ikisi birlikte, `local` submit'te bile Connection'i zorunlu kilar --
+    aksi halde config dogrulamayi gecer, motor katalogu kuramaz ve hata
+    calisma anina kayardi.
+    """
     monkeypatch.setenv("FFENGINE_EDITION", "enterprise")
-    _validate_with_iceberg(
-        monkeypatch, _task(_engine_spark={"submit_mode": "local"})
-    )
+    with pytest.raises(ValidationError, match="conn_id"):
+        _validate_with_iceberg(
+            monkeypatch, _task(_engine_spark={"submit_mode": "local"})
+        )
 
 
 @pytest.mark.parametrize("target_type", [None, "db", "file"])

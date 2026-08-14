@@ -23,8 +23,18 @@ from ffengine.config.schema import (
     VALID_TARGET_TYPES,
     VALID_ENGINE_SPARK_FIELDS,
     VALID_SPARK_SOURCE_TYPES,
+    SPARK_ONLY_ENDPOINT_TYPES,
     DEFERRED_SPARK_SUBMIT_MODES,
     VALID_SPARK_SUBMIT_MODES,
+    DEFAULT_ICEBERG_PUBLISH_MODE,
+    ICEBERG_CATALOG_TYPE_FIELD,
+    ICEBERG_PUBLISH_MODE_FIELD,
+    ICEBERG_TYPE,
+    REJECTED_ICEBERG_CATALOG_TYPES,
+    REJECTED_ICEBERG_LOAD_METHODS,
+    SECRET_FIELD_HINTS,
+    VALID_ICEBERG_CATALOG_TYPES,
+    VALID_ICEBERG_PUBLISH_MODES,
 )
 
 _log = logging.getLogger(__name__)
@@ -57,6 +67,9 @@ class ConfigValidator:
         self._check_source_type(task)
         self._check_target_type(task)
         self._check_load_method(task)
+        # F6.2 — genel whitelist'ten SONRA: "gecersiz load_method" ile
+        # "Iceberg'de bu load_method reddedildi, sunu kullan" farkli mesajlar.
+        self._check_iceberg(task)
         self._check_upsert_config(task)
         self._check_column_mapping_mode(task)
         self._check_extraction_method(task)
@@ -74,7 +87,11 @@ class ConfigValidator:
         required_fields = list(REQUIRED_TASK_FIELDS)
         source_type = task.get("source_type")
         # sql and file sources carry no source_schema.
-        if source_type == "sql" or source_type in FILE_SOURCE_TYPES:
+        if (
+            source_type == "sql"
+            or source_type in FILE_SOURCE_TYPES
+            or source_type == "parquet"
+        ):
             required_fields = [f for f in required_fields if f != "source_schema"]
         # A file target is a path, not a schema.table.
         if task.get("target_type") == "file":
@@ -101,6 +118,130 @@ class ConfigValidator:
             raise ValidationError(
                 f"Gecersiz load_method: '{value}'. "
                 f"Gecerli degerler: {sorted(VALID_LOAD_METHODS)}"
+            )
+
+    def _check_iceberg(self, task: dict) -> None:
+        """F6.2 — Iceberg uc noktasinin kosullu kurallari (EX-D030).
+
+        `VALID_LOAD_METHODS` GENISLETILMEZ; uc deger yalnizca Iceberg
+        baglaminda ve GEREKCESIYLE reddedilir. `catalog_type` config'de zorunlu
+        ve sirsizdir: baglanti detayi/kimlik Airflow Connection'da yasar ama
+        validator Connection okumaz (DAG-parse'ta ag/DB erisimi yok), bu yuzden
+        tip secimi burada kalir ve red DAG-parse'ta dogar.
+        """
+        source_type = str(task.get("source_type") or "").strip().lower()
+        target_type = str(task.get("target_type") or "db").strip().lower()
+        is_iceberg = ICEBERG_TYPE in (source_type, target_type)
+
+        if not is_iceberg:
+            # Iceberg'e ozgu alanlari sessizce yok saymak, kullaniciya HIC
+            # uygulanmayan bir ayar sunmaktir (INV-1). Deger-bazli kontrol:
+            # `catalog_type: null` acik bir varsayilandir, reddedilmez.
+            stray = [
+                field
+                for field in (ICEBERG_CATALOG_TYPE_FIELD, ICEBERG_PUBLISH_MODE_FIELD)
+                if task.get(field) is not None
+            ]
+            if stray:
+                raise ValidationError(
+                    f"{stray} yalniz Iceberg kaynak/hedefinde anlamlidir; "
+                    f"bu task'in source_type='{source_type}', "
+                    f"target_type='{target_type}'."
+                )
+            return
+
+        self._check_iceberg_secrets(task)
+        self._check_iceberg_catalog(task)
+        self._check_iceberg_publish_mode(task)
+        self._check_iceberg_load_method(task)
+        self._check_iceberg_connection(task)
+
+    def _check_iceberg_secrets(self, task: dict) -> None:
+        """INV-5: kimlik yalniz Airflow Connection'da; config'de sir olamaz.
+
+        ANAHTAR adina bakilir, degere degil: degeri incelemek (ornegin
+        "sifreye benziyor mu") sirri hata mesajina ve log'a tasima riski dogurur.
+        """
+        leaked = sorted(
+            key
+            for key in task
+            if isinstance(key, str)
+            and any(hint in key.lower() for hint in SECRET_FIELD_HINTS)
+        )
+        if leaked:
+            raise ValidationError(
+                f"Iceberg config'inde kimlik tasiyan alan(lar) var: {leaked}. "
+                "Katalog kimligi yalniz Airflow Connection / Secrets Backend'de "
+                "yasar; config'e yazilan sir DAG dosyasina ve loglara sizar."
+            )
+
+    def _check_iceberg_catalog(self, task: dict) -> None:
+        raw = task.get(ICEBERG_CATALOG_TYPE_FIELD)
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValidationError(
+                f"Iceberg icin '{ICEBERG_CATALOG_TYPE_FIELD}' zorunludur; "
+                "'auto' yoktur (katalog tipi calisma aninda tahmin edilemez). "
+                f"Gecerli degerler: {sorted(VALID_ICEBERG_CATALOG_TYPES)}."
+            )
+        catalog_type = raw.strip().lower()
+        reason = REJECTED_ICEBERG_CATALOG_TYPES.get(catalog_type)
+        if reason is not None:
+            raise ValidationError(
+                f"{ICEBERG_CATALOG_TYPE_FIELD}='{catalog_type}' taniniyor ama "
+                f"bu teslimde reddedilir: {reason}."
+            )
+        if catalog_type not in VALID_ICEBERG_CATALOG_TYPES:
+            raise ValidationError(
+                f"Gecersiz {ICEBERG_CATALOG_TYPE_FIELD}: '{raw}'. "
+                f"Gecerli degerler: {sorted(VALID_ICEBERG_CATALOG_TYPES)}."
+            )
+        # Normalize edilmis degeri geri yaz: motor tarafi tam esleme arar
+        # (F6.1'de `submit_mode`'da ogrenilen tuzak).
+        task[ICEBERG_CATALOG_TYPE_FIELD] = catalog_type
+
+    def _check_iceberg_publish_mode(self, task: dict) -> None:
+        raw = task.get(ICEBERG_PUBLISH_MODE_FIELD)
+        if raw is None:
+            return  # belgelenmis varsayilan: DEFAULT_ICEBERG_PUBLISH_MODE
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValidationError(
+                f"{ICEBERG_PUBLISH_MODE_FIELD} bos olamaz. Gecerli degerler: "
+                f"{sorted(VALID_ICEBERG_PUBLISH_MODES)} "
+                f"(verilmezse '{DEFAULT_ICEBERG_PUBLISH_MODE}')."
+            )
+        mode = raw.strip().lower()
+        if mode not in VALID_ICEBERG_PUBLISH_MODES:
+            raise ValidationError(
+                f"Gecersiz {ICEBERG_PUBLISH_MODE_FIELD}: '{raw}'. "
+                f"Gecerli degerler: {sorted(VALID_ICEBERG_PUBLISH_MODES)}."
+            )
+        task[ICEBERG_PUBLISH_MODE_FIELD] = mode
+
+    def _check_iceberg_load_method(self, task: dict) -> None:
+        load_method = task.get("load_method")
+        reason = REJECTED_ICEBERG_LOAD_METHODS.get(load_method)
+        if reason is not None:
+            raise ValidationError(
+                f"load_method='{load_method}' Iceberg hedefinde reddedilir: "
+                f"{reason}."
+            )
+
+    def _check_iceberg_connection(self, task: dict) -> None:
+        """Katalog kanali = Airflow Connection, submit modundan bagimsiz.
+
+        F6.1'de `conn_id` yalniz `k8s` icin zorunluydu (submit hedefi). Iceberg
+        icin Connection AYRICA katalog uri/warehouse/kimlik kanalidir; `local`
+        submit'te de eksik olamaz, yoksa motor katalogu kuramaz.
+        """
+        options = task.get(ENGINE_SPARK_KEY)
+        if not isinstance(options, dict):
+            return  # engine blogu kurallari `_check_engine`de zaten zorlandi
+        conn_id = options.get("conn_id")
+        if not isinstance(conn_id, str) or not conn_id.strip():
+            raise ValidationError(
+                "Iceberg kaynak/hedefi icin engine.spark.conn_id zorunludur: "
+                "katalog uri/warehouse ve kimligi yalniz Airflow Connection'dan "
+                "gelir."
             )
 
     def _check_upsert_config(self, task: dict) -> None:
@@ -182,7 +323,9 @@ class ConfigValidator:
         raw_pref = task.get(ENGINE_PREFERENCE_KEY)
         source_type = str(task.get("source_type") or "").strip().lower()
         target_type = str(task.get("target_type") or "").strip().lower()
-        iceberg_endpoint = "iceberg" in (source_type, target_type)
+        iceberg_endpoint = bool(
+            SPARK_ONLY_ENDPOINT_TYPES & {source_type, target_type}
+        )
 
         # Sıcak yol: her DAG-parse'ta çalışır → engine bloğu yoksa ve Iceberg
         # uç yoksa sıfır import/iş (bkz. _check_bulk_api deseni).
@@ -218,7 +361,7 @@ class ConfigValidator:
 
         if iceberg_endpoint and preference != "spark":
             raise ValidationError(
-                "Iceberg kaynak/hedef yalniz ACIK engine.preference: spark ile "
+                "Iceberg/parquet kaynak/hedef yalniz ACIK engine.preference: spark ile "
                 f"kullanilir; verilen: '{preference}'. 'auto' Spark'i asla "
                 "secmez (yalniz 'pipeline' provider'ini arar) -> sessizce "
                 "yanlis motorda calisma riski fail-loud kapatildi."
@@ -364,6 +507,10 @@ class ConfigValidator:
                 )
             return
 
+        if source_type == "parquet":
+            self._check_parquet_source(task)
+            return
+
         if source_type in FILE_SOURCE_TYPES:
             self._check_file_source(task)
             return
@@ -374,13 +521,28 @@ class ConfigValidator:
                 "source_type='table|view|script' icin 'source_table' zorunludur."
             )
 
+    def _check_parquet_source(self, task: dict) -> None:
+        """F6.2/EX-D033 — parquet dosya kaynagi (yalniz Spark yolunda).
+
+        `csv|json`in `column_mapping_mode='mapping_file'` sarti BURAYA
+        UYGULANMAZ: o kural tipsiz metin formatlari icindir (tip cikarimi
+        yasak). Parquet **kendi semasini tasir**, dolayisiyla ayni sarti
+        dayatmak kullaniciya gereksiz bir mapping dosyasi yazdirmak olurdu.
+        """
+        file_path = str(task.get("file_path") or "").strip()
+        if not file_path:
+            raise ValidationError(
+                "source_type='parquet' icin 'file_path' zorunludur "
+                "('source_table' degil)."
+            )
+
     def _check_file_source(self, task: dict) -> None:
         """F1.4/F1.5 — csv/json file source: file_path + explicit mapping."""
         file_path = str(task.get("file_path") or "").strip()
         if not file_path:
             raise ValidationError(
-                "source_type='csv|json' icin 'file_path' zorunludur "
-                "('source_table' degil)."
+                f"source_type='{task.get('source_type')}' icin 'file_path' "
+                "zorunludur ('source_table' degil)."
             )
         if task.get("column_mapping_mode") != "mapping_file":
             raise ValidationError(

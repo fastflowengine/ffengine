@@ -540,17 +540,15 @@ def test_f6_0_validate_accepts_canonical_values(monkeypatch):
         _validate(_validated_task(_engine_preference=preference))
 
     # F6.1 makes `spark` canonical but deliberately constrained: nested
-    # options + Iceberg target are required. F6.2 adds the enum itself.
-    import ffengine.config.validator as validator_module
-
-    monkeypatch.setattr(
-        validator_module, "VALID_TARGET_TYPES", frozenset({"db", "file", "iceberg"})
-    )
+    # options + Iceberg target are required. F6.2 shipped the enum, so this no
+    # longer monkeypatches VALID_TARGET_TYPES -- it exercises the real one, and
+    # carries what F6.2 additionally requires (catalog_type + conn_id).
     _validate(
         _validated_task(
             target_type="iceberg",
+            catalog_type="jdbc",
             _engine_preference="spark",
-            _engine_spark={"submit_mode": "local"},
+            _engine_spark={"submit_mode": "local", "conn_id": "iceberg_cat"},
         )
     )
 
@@ -639,24 +637,28 @@ def _write_config(tmp_path, engine_block: str = ""):
 def test_f6_0_root_engine_preference_reaches_runtime_task(tmp_path, monkeypatch):
     from ffengine.config.loader import ConfigLoader
     from ffengine.config.schema import ENGINE_PREFERENCE_KEY, ENGINE_SPARK_KEY
-    import ffengine.config.validator as validator_module
 
     monkeypatch.setenv("FFENGINE_EDITION", "enterprise")
-    monkeypatch.setattr(
-        validator_module, "VALID_TARGET_TYPES", frozenset({"db", "file", "iceberg"})
-    )
     path = _write_config(
         tmp_path,
-        "engine:\n  preference: spark\n  spark:\n    submit_mode: local\n",
+        "engine:\n  preference: spark\n  spark:\n    submit_mode: local\n"
+        "    conn_id: iceberg_cat\n",
     )
     text = Path(path).read_text(encoding="utf-8")
     Path(path).write_text(
-        text.replace("    load_method: append\n", "    load_method: append\n    target_type: iceberg\n"),
+        text.replace(
+            "    load_method: append\n",
+            "    load_method: append\n    target_type: iceberg\n"
+            "    catalog_type: jdbc\n",
+        ),
         encoding="utf-8",
     )
     task = ConfigLoader().load(path, "t1")
     assert task[ENGINE_PREFERENCE_KEY] == "spark"
-    assert task[ENGINE_SPARK_KEY] == {"submit_mode": "local"}
+    assert task[ENGINE_SPARK_KEY] == {
+        "submit_mode": "local",
+        "conn_id": "iceberg_cat",
+    }
 
 
 def test_f6_0_missing_engine_block_defaults_to_auto(tmp_path):
