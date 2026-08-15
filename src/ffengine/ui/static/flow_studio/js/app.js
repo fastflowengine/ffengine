@@ -3957,10 +3957,24 @@ async function studioFetch(path, options) {
       setVal(".source-file-json-mode", values.json_mode || "flat");
       const targetType = String(values.target_type || "db").trim() || "db";
       setVal(".target-type", targetType);
+      // F6.2 acik kalemi: iceberg hedef karta yalniz yuklu config'ten gelir
+      // (Target Type seciciden secilemez). Bayrak, append-rerun notu icindir.
+      card.dataset.icebergTarget = targetType === "iceberg" ? "1" : "0";
+      syncIcebergAppendHint(card);
       setVal(".target-file-path", values.target_file_path || "");
       setVal(".target-file-delimiter", values.target_delimiter || "");
       setVal(".target-file-encoding", values.target_encoding || "");
       setChk(".target-file-header", values.target_header !== false);
+    }
+
+    // Iceberg hedefte `append` rerun'i satirlari ciftler (idempotent degil);
+    // dogrulama yolunda warnings kanali olmadigi icin uyari istemciden verilir.
+    function syncIcebergAppendHint(card) {
+      const note = card.querySelector(".iceberg-append-note");
+      if (!note) return;
+      const isIceberg = card.dataset.icebergTarget === "1";
+      const loadMethod = String(card.querySelector(".load-method")?.value || "").trim();
+      note.hidden = !(isIceberg && loadMethod === "append");
     }
 
     function toggleTargetMode(card) {
@@ -5345,9 +5359,15 @@ async function studioFetch(path, options) {
       const targetTypeSelect = card.querySelector(".target-type");
       if (targetTypeSelect) {
         targetTypeSelect.addEventListener("change", () => {
+          // Secici db|file sunar; elle degisiklik yuklu iceberg hedefini terk eder.
+          card.dataset.icebergTarget = "0";
+          syncIcebergAppendHint(card);
           toggleTargetMode(card);
           refreshTaskCardHeaders();
         });
+      }
+      if (loadMethodSelect) {
+        loadMethodSelect.addEventListener("change", () => syncIcebergAppendHint(card));
       }
 
       sourceSchemaInput.addEventListener("input", () => {

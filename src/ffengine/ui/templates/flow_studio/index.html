@@ -401,6 +401,11 @@
                 <option value="script">script</option>
               </select>
             </label>
+            <div class="muted-note iceberg-append-note" hidden>
+              Iceberg target with <strong>append</strong>: re-running this task DUPLICATES rows
+              (append is not idempotent). For rerun-safe publishes use load method
+              <strong>replace</strong> (single atomic commit) or a <strong>wap</strong> publish mode.
+            </div>
             <div class="row-2 target-table-wrap">
               <label>
                 <span class="global-control-label">Target Schema</span>
