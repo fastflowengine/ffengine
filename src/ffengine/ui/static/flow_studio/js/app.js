@@ -6225,3 +6225,126 @@ async function studioFetch(path, options) {
     }
 
     initPage();
+
+// F6.3 (EX-D036) - CDC Operations paneli: lag / checkpoint / blocked / auditli skip.
+// Kanonik kaynak target-side kontrol tablolaridir; bu panel yalniz okur ve
+// exact-match skip REQUEST'i yazar (uygulama kararini koordinator verir).
+(function cdcOpsPanel() {
+  const panel = document.getElementById("cdc_ops_panel");
+  if (!panel) return;
+  const el = (id) => document.getElementById(id);
+  const statusEl = el("cdc_ops_status");
+  const tablesEl = el("cdc_ops_tables");
+  const skipEl = el("cdc_ops_skip");
+  let lastStatus = null;
+
+  function opsPayload() {
+    return {
+      kafka_conn_id: el("cdc_ops_kafka_conn").value.trim(),
+      target_conn_id: el("cdc_ops_target_conn").value.trim(),
+      flow_id: el("cdc_ops_flow").value.trim(),
+      task_group_id: el("cdc_ops_tg").value.trim(),
+      topic: el("cdc_ops_topic").value.trim(),
+    };
+  }
+
+  async function cdcPost(url, body) {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    let data = {};
+    try { data = await resp.json(); } catch (_e) { data = {}; }
+    if (!resp.ok) {
+      throw new Error(data.detail || data.message || (resp.status + " HTTP"));
+    }
+    return data;
+  }
+
+  function esc(value) {
+    return String(value == null ? "" : value).replace(/[&<>"]/g, (ch) => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]
+    ));
+  }
+
+  function renderStatus(data) {
+    lastStatus = data;
+    if (!data.initialized) {
+      tablesEl.innerHTML = "";
+      skipEl.hidden = true;
+      statusEl.textContent =
+        "Akis henuz kosmadi (kontrol tablolari yok); ilk batch bootstrap yapar.";
+      return;
+    }
+    const lag = data.lag || {};
+    const lagNote = data.lag_error
+      ? "lag: BILINMIYOR (broker erisilemedi: " + esc(data.lag_error) + ")"
+      : "";
+    const rows = (data.checkpoints || []).map((c) => {
+      const l = lag[c.partition];
+      return "<tr><td>" + c.partition + "</td><td>" + c.next_offset +
+        "</td><td>" + c.high_watermark + "</td><td>" +
+        (l == null ? "?" : l) + "</td><td>" + esc(c.status) + "</td><td>" +
+        esc(c.updated_at) + "</td></tr>";
+    }).join("");
+    const blocked = (data.blocked || []).map((b) => (
+      "<tr><td>" + b.partition + "</td><td>" + b.offset + "</td><td>" +
+      esc(b.reason) + "</td><td>" + esc(b.created_at) + "</td></tr>"
+    )).join("");
+    const pend = (data.pending_skip_requests || []).map((s) => (
+      "<tr><td>" + s.partition + "</td><td>" + s.offset + "</td><td>" +
+      esc(s.reason) + "</td><td>" + esc(s.requested_by) + "</td></tr>"
+    )).join("");
+    tablesEl.innerHTML =
+      "<h4>Checkpoint / Lag</h4><table class=\"table\"><thead><tr>" +
+      "<th>part</th><th>next_offset</th><th>high</th><th>lag</th>" +
+      "<th>status</th><th>updated_at</th></tr></thead><tbody>" +
+      (rows || "<tr><td colspan=6>-</td></tr>") + "</tbody></table>" +
+      "<h4>Bloklu Offset</h4><table class=\"table\"><thead><tr>" +
+      "<th>part</th><th>offset</th><th>sebep</th><th>ne zaman</th></tr>" +
+      "</thead><tbody>" + (blocked || "<tr><td colspan=4>-</td></tr>") +
+      "</tbody></table>" +
+      (pend ? "<h4>Bekleyen Skip Istekleri</h4><table class=\"table\"><tbody>" +
+        pend + "</tbody></table>" : "");
+    skipEl.hidden = (data.blocked || []).length === 0;
+    statusEl.textContent = lagNote || "Guncellendi.";
+  }
+
+  el("cdc_ops_refresh").addEventListener("click", async () => {
+    statusEl.textContent = "Yukleniyor...";
+    try {
+      renderStatus(await cdcPost("/api/cdc/status", opsPayload()));
+    } catch (err) {
+      tablesEl.innerHTML = "";
+      skipEl.hidden = true;
+      statusEl.textContent = "Hata: " + err.message;
+    }
+  });
+
+  el("cdc_skip_submit").addEventListener("click", async () => {
+    const blockedRows = (lastStatus && lastStatus.blocked) || [];
+    if (!blockedRows.length) {
+      statusEl.textContent = "Bloklu event yok; skip istegi anlamsiz.";
+      return;
+    }
+    const blocked = blockedRows[0];
+    const body = Object.assign(opsPayload(), {
+      partition: blocked.partition,
+      offset: blocked.offset,
+      config_hash: blocked.config_hash,
+      source_cluster_fingerprint: el("cdc_skip_cluster").value.trim(),
+      reason: el("cdc_skip_reason").value.trim(),
+      requested_by: el("cdc_skip_by").value.trim(),
+    });
+    statusEl.textContent = "Skip istegi gonderiliyor...";
+    try {
+      await cdcPost("/api/cdc/skip-request", body);
+      statusEl.textContent =
+        "Skip istegi kaydedildi (part " + blocked.partition + ", offset " +
+        blocked.offset + "); sonraki kosuda eslesirse auditli uygulanir.";
+    } catch (err) {
+      statusEl.textContent = "Hata: " + err.message;
+    }
+  });
+})();

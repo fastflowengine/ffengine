@@ -35,6 +35,13 @@ from ffengine.config.schema import (
     SECRET_FIELD_HINTS,
     VALID_ICEBERG_CATALOG_TYPES,
     VALID_ICEBERG_PUBLISH_MODES,
+    CDC_APPLY_LOAD_METHOD,
+    CDC_MAX_BATCH_RECORDS_FIELD,
+    CDC_START_OFFSETS_FIELD,
+    CDC_START_POLICY_FIELD,
+    KAFKA_TOPIC_FIELD,
+    KAFKA_TYPE,
+    VALID_CDC_START_POLICIES,
 )
 
 _log = logging.getLogger(__name__)
@@ -58,6 +65,10 @@ class ConfigValidator:
 
     def validate(self, task: dict) -> None:
         self._check_required(task)
+        # F6.3 — INV-5 sır taraması artık kaynak/hedef-agnostik ve KOŞULSUZ
+        # çalışır (eskiden yalnız Iceberg'de). Ucuz bir anahtar-adı taramasıdır;
+        # kafka SASL alanlarının config'e sızmasını da aynı kapı yakalar.
+        self._check_no_secret_fields(task)
         # F6.0 — engine bağlama kuralları source/target whitelist'inden ÖNCE
         # çalışır: `iceberg` hedefinde "açık spark gerekir" mesajı, "geçersiz
         # target_type" mesajından daha aktörlenebilirdir. Mevcut kontrollerin
@@ -71,6 +82,9 @@ class ConfigValidator:
         # "Iceberg'de bu load_method reddedildi, sunu kullan" farkli mesajlar.
         self._check_iceberg(task)
         self._check_upsert_config(task)
+        # F6.3 — `_check_upsert_config`'tan SONRA: normalize edilmiş
+        # `upsert_match_columns` değerine ihtiyaç duyar.
+        self._check_kafka(task)
         self._check_column_mapping_mode(task)
         self._check_extraction_method(task)
         self._check_bulk_api(task)
@@ -91,6 +105,8 @@ class ConfigValidator:
             source_type == "sql"
             or source_type in FILE_SOURCE_TYPES
             or source_type == "parquet"
+            # F6.3 — bir Kafka topic'i schema.table cifti degildir.
+            or source_type == KAFKA_TYPE
         ):
             required_fields = [f for f in required_fields if f != "source_schema"]
         # A file target is a path, not a schema.table.
@@ -150,14 +166,17 @@ class ConfigValidator:
                 )
             return
 
-        self._check_iceberg_secrets(task)
         self._check_iceberg_catalog(task)
         self._check_iceberg_publish_mode(task)
         self._check_iceberg_load_method(task)
         self._check_iceberg_connection(task)
 
-    def _check_iceberg_secrets(self, task: dict) -> None:
+    def _check_no_secret_fields(self, task: dict) -> None:
         """INV-5: kimlik yalniz Airflow Connection'da; config'de sir olamaz.
+
+        F6.3'te `_check_iceberg_secrets`'tan hoist edildi ve KOSULSUZ calisir:
+        kural hicbir zaman Iceberg'e ozgu degildi, config'e yazilan her sir
+        DAG dosyasina ve loglara sizar (kafka SASL alanlari dahil).
 
         ANAHTAR adina bakilir, degere degil: degeri incelemek (ornegin
         "sifreye benziyor mu") sirri hata mesajina ve log'a tasima riski dogurur.
@@ -170,8 +189,8 @@ class ConfigValidator:
         )
         if leaked:
             raise ValidationError(
-                f"Iceberg config'inde kimlik tasiyan alan(lar) var: {leaked}. "
-                "Katalog kimligi yalniz Airflow Connection / Secrets Backend'de "
+                f"Config'de kimlik tasiyan alan(lar) var: {leaked}. "
+                "Kimlik yalniz Airflow Connection / Secrets Backend'de "
                 "yasar; config'e yazilan sir DAG dosyasina ve loglara sizar."
             )
 
@@ -274,6 +293,157 @@ class ConfigValidator:
         if task.get("load_method") == "upsert" and not normalized:
             raise ValidationError(
                 "load_method='upsert' icin upsert_match_columns zorunludur."
+            )
+
+    def _check_kafka(self, task: dict) -> None:
+        """F6.3 — CDC/kafka uc noktasinin kosullu kurallari (EX-D036).
+
+        Debezium/Connect deployment-owned'dir; burasi yalnizca config
+        sozlesmesini dogrular. Broker adresi/kimligi Airflow Connection'da
+        yasar ve validator Connection OKUMAZ (DAG-parse'ta ag erisimi yok).
+        Teslim garantisi: at-least-once consumption + transactionally
+        idempotent / effectively-once target effects.
+        """
+        source_type = str(task.get("source_type") or "").strip().lower()
+        load_method = task.get("load_method")
+        is_kafka = source_type == KAFKA_TYPE
+
+        if not is_kafka:
+            # cdc_apply yalniz kafka kaynaginda anlamlidir; CDC alanlarini
+            # sessizce yok saymak kullaniciya HIC uygulanmayan ayar sunmaktir
+            # (INV-1, Iceberg stray-field emsali).
+            if load_method == CDC_APPLY_LOAD_METHOD:
+                raise ValidationError(
+                    f"load_method='{CDC_APPLY_LOAD_METHOD}' yalniz "
+                    f"source_type='{KAFKA_TYPE}' ile kullanilir; bu task'in "
+                    f"source_type='{source_type}'. Debezium CDC olmayan "
+                    "yukler icin 'append'/'replace'/'upsert' kullanin."
+                )
+            stray = [
+                field
+                for field in (
+                    KAFKA_TOPIC_FIELD,
+                    CDC_START_POLICY_FIELD,
+                    CDC_START_OFFSETS_FIELD,
+                    CDC_MAX_BATCH_RECORDS_FIELD,
+                )
+                if task.get(field) is not None
+            ]
+            if stray:
+                raise ValidationError(
+                    f"{stray} yalniz source_type='{KAFKA_TYPE}' ile anlamlidir; "
+                    f"bu task'in source_type='{source_type}'."
+                )
+            return
+
+        # --- kafka kaynagi ---
+        # Edition kapisi: CDC runtime'i Enterprise provider'dadir. Lazy import
+        # (_check_bulk_api deseni): sicak yol kafka-olmayan configlerde sifir is.
+        from ffengine.core.edition import is_enterprise_enabled
+
+        if not is_enterprise_enabled():
+            raise ValidationError(
+                f"source_type='{KAFKA_TYPE}' Enterprise gerektirir "
+                "(FFENGINE_EDITION=enterprise): CDC apply/ledger runtime'i "
+                "Enterprise provider'da yasar."
+            )
+
+        if load_method != CDC_APPLY_LOAD_METHOD:
+            raise ValidationError(
+                f"source_type='{KAFKA_TYPE}' yalniz "
+                f"load_method='{CDC_APPLY_LOAD_METHOD}' ile kullanilir "
+                f"(verilen: '{load_method}'). Debezium envelope'u op bazli "
+                "(c/r/u/d + tombstone) uygulanir; append/replace bu kaynakta "
+                "veri kaybi/cift riski tasir (fail-loud, sessiz donusum yok)."
+            )
+
+        target_type = str(task.get("target_type") or "db").strip().lower()
+        if target_type not in ("db", ICEBERG_TYPE):
+            raise ValidationError(
+                f"kafka kaynagi icin target_type='db' (Track A, sirali "
+                f"transactional apply) ya da '{ICEBERG_TYPE}' (F6.3b, acik "
+                f"engine.preference: spark ile) gerekir; verilen: "
+                f"'{target_type}'."
+            )
+
+        topic = task.get(KAFKA_TOPIC_FIELD)
+        if not isinstance(topic, str) or not topic.strip():
+            raise ValidationError(
+                f"source_type='{KAFKA_TYPE}' icin '{KAFKA_TOPIC_FIELD}' "
+                "zorunludur (dolu string)."
+            )
+        task[KAFKA_TOPIC_FIELD] = topic.strip()
+
+        raw_policy = task.get(CDC_START_POLICY_FIELD)
+        if not isinstance(raw_policy, str) or not raw_policy.strip():
+            raise ValidationError(
+                f"'{CDC_START_POLICY_FIELD}' zorunludur; SESSIZ VARSAYILAN "
+                f"YOKTUR (EX-D036). Gecerli degerler: "
+                f"{sorted(VALID_CDC_START_POLICIES)}. 'earliest' partition'in "
+                "low watermark'idir (retention sonrasi gercek alt sinir), "
+                "'latest' aktivasyon anindaki high watermark, 'explicit' tam "
+                "partition->offset haritasi ister."
+            )
+        policy = raw_policy.strip().lower()
+        if policy not in VALID_CDC_START_POLICIES:
+            raise ValidationError(
+                f"Gecersiz {CDC_START_POLICY_FIELD}: '{raw_policy}'. "
+                f"Gecerli degerler: {sorted(VALID_CDC_START_POLICIES)}."
+            )
+        task[CDC_START_POLICY_FIELD] = policy
+
+        offsets = task.get(CDC_START_OFFSETS_FIELD)
+        if policy == "explicit":
+            if not isinstance(offsets, dict) or not offsets:
+                raise ValidationError(
+                    f"{CDC_START_POLICY_FIELD}='explicit' icin "
+                    f"'{CDC_START_OFFSETS_FIELD}' zorunludur: TUM "
+                    "partition'lar icin {partition: offset} haritasi "
+                    "(eksik partition insan karari olmadan calistirilmaz — "
+                    "fail-loud)."
+                )
+            normalized_offsets: dict[int, int] = {}
+            for raw_part, raw_off in offsets.items():
+                try:
+                    part = int(raw_part)
+                    off = int(raw_off)
+                except (TypeError, ValueError):
+                    raise ValidationError(
+                        f"'{CDC_START_OFFSETS_FIELD}' anahtar ve degerleri "
+                        f"tamsayi olmalidir; verilen: {raw_part!r}: {raw_off!r}."
+                    )
+                if part < 0 or off < 0:
+                    raise ValidationError(
+                        f"'{CDC_START_OFFSETS_FIELD}' negatif olamaz: "
+                        f"{part}: {off}."
+                    )
+                normalized_offsets[part] = off
+            task[CDC_START_OFFSETS_FIELD] = normalized_offsets
+        elif offsets is not None:
+            raise ValidationError(
+                f"'{CDC_START_OFFSETS_FIELD}' yalniz "
+                f"{CDC_START_POLICY_FIELD}='explicit' ile anlamlidir "
+                f"(verilen politika: '{policy}')."
+            )
+
+        raw_budget = task.get(CDC_MAX_BATCH_RECORDS_FIELD)
+        if raw_budget is not None:
+            if not isinstance(raw_budget, int) or isinstance(raw_budget, bool) \
+                    or raw_budget < 1:
+                raise ValidationError(
+                    f"'{CDC_MAX_BATCH_RECORDS_FIELD}' pozitif tamsayi olmali "
+                    f"(TOPLAM butce, partition basina degil); verilen: "
+                    f"{raw_budget!r}."
+                )
+
+        # Debezium key kolonlari = MERGE/UPSERT eslesme anahtari. Normalize
+        # edilmis deger `_check_upsert_config`ta yazildi (cagri sirasi).
+        if not task.get("upsert_match_columns"):
+            raise ValidationError(
+                f"load_method='{CDC_APPLY_LOAD_METHOD}' icin "
+                "'upsert_match_columns' zorunludur: Debezium key kolonlariyla "
+                "birebir eslesir (calisma aninda key payload'ina karsi "
+                "dogrulanir; uyusmazlik fail-loud)."
             )
 
     def _check_column_mapping_mode(self, task: dict) -> None:
@@ -513,6 +683,11 @@ class ConfigValidator:
 
         if source_type in FILE_SOURCE_TYPES:
             self._check_file_source(task)
+            return
+
+        # F6.3 — kafka kaynagi source_table tasimaz; topic zorunlulugu
+        # `_check_kafka`da dogrulanir.
+        if source_type == KAFKA_TYPE:
             return
 
         source_table = str(task.get("source_table") or "").strip()

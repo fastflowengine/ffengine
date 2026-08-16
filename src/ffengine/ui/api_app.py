@@ -30,6 +30,7 @@ from ffengine.config.schema import (
     FILE_SOURCE_TYPES,
     VALID_JSON_MODES,
     VALID_TARGET_TYPES,
+    VALID_CDC_START_POLICIES,
 )
 from ffengine.errors import http_status_for, normalize_exception
 from ffengine.errors.exceptions import ValidationError as ConfigValidationError
@@ -148,6 +149,78 @@ def _normalize_upsert_match_columns(raw: Any) -> list[str]:
         seen.add(col)
         out.append(col)
     return out
+
+
+_KAFKA_ONLY_PAYLOAD_FIELDS: tuple[str, ...] = (
+    "kafka_topic",
+    "cdc_start_policy",
+    "cdc_start_offsets",
+    "max_batch_records",
+)
+
+
+def _validate_kafka_task_payload(payload: Any) -> None:
+    """F6.3 — kafka/CDC task payload rules (shared by both payload models).
+
+    Mirrors ``config/validator.py::_check_kafka``: the canonical contract
+    lives there; this is the HTTP-side pre-validation so Studio users get a
+    422 with an actionable message instead of a DAG-parse failure later.
+    """
+    source_type = str(payload.source_type or "").strip()
+    load_method = str(payload.load_method or "").strip()
+
+    if source_type != "kafka":
+        if load_method == "cdc_apply":
+            raise ValueError(
+                "load_method='cdc_apply' is only valid with source_type='kafka'."
+            )
+        stray = [
+            name
+            for name in _KAFKA_ONLY_PAYLOAD_FIELDS
+            if getattr(payload, name, None) is not None
+        ]
+        if stray:
+            raise ValueError(
+                f"{stray} are only meaningful with source_type='kafka'."
+            )
+        return
+
+    if load_method != "cdc_apply":
+        raise ValueError(
+            "source_type='kafka' requires load_method='cdc_apply' "
+            f"(got {load_method!r}); the Debezium envelope is applied op-by-op "
+            "(c/r/u/d + tombstone), other load methods risk data loss/duplication."
+        )
+    if str(payload.target_type or "db").strip() == "file":
+        raise ValueError(
+            "source_type='kafka' requires target_type='db' (Track A, ordered "
+            "transactional apply) or 'iceberg' (F6.3b, explicit Spark engine)."
+        )
+    if not str(payload.kafka_topic or "").strip():
+        raise ValueError("kafka_topic is required when source_type='kafka'.")
+
+    policy = str(payload.cdc_start_policy or "").strip().lower()
+    if not policy:
+        raise ValueError(
+            "cdc_start_policy is required (no silent default): one of "
+            f"{sorted(VALID_CDC_START_POLICIES)}."
+        )
+    if policy not in VALID_CDC_START_POLICIES:
+        raise ValueError(
+            f"Invalid cdc_start_policy: {payload.cdc_start_policy!r}. Valid: "
+            f"{sorted(VALID_CDC_START_POLICIES)}."
+        )
+    offsets = payload.cdc_start_offsets
+    if policy == "explicit":
+        if not isinstance(offsets, dict) or not offsets:
+            raise ValueError(
+                "cdc_start_policy='explicit' requires cdc_start_offsets: a "
+                "{partition: offset} map covering ALL partitions."
+            )
+    elif offsets is not None:
+        raise ValueError(
+            "cdc_start_offsets is only meaningful with cdc_start_policy='explicit'."
+        )
 
 
 def _validate_bindings_expression_contract(
@@ -388,6 +461,11 @@ class FlowTaskPayload(BaseModel):
     dbt_test_behavior: str | None = None
     emit_datasets: bool | None = None
     dbt_target_platform: str | None = None
+    # F6.3 — CDC/kafka source (EX-D036); canonical rules in config/validator.py
+    kafka_topic: str | None = None
+    cdc_start_policy: str | None = None
+    cdc_start_offsets: dict[int, int] | None = None
+    max_batch_records: int | None = Field(default=None, ge=1)
     # F1.4/F1.5 — file source (csv/json) + file target
     file_path: str | None = None
     delimiter: str | None = None
@@ -419,9 +497,9 @@ class FlowTaskPayload(BaseModel):
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
-        if v not in {"table", "view", "sql", "csv", "json"}:
+        if v not in {"table", "view", "sql", "csv", "json", "kafka"}:
             raise ValueError(
-                "source_type must be one of: table, view, sql, csv, json."
+                "source_type must be one of: table, view, sql, csv, json, kafka."
             )
         if v not in VALID_SOURCE_TYPES:
             raise ValueError(f"Invalid source_type: {v!r}")
@@ -514,8 +592,17 @@ class FlowTaskPayload(BaseModel):
                 raise ValueError(
                     "upsert_match_columns is required when load_method='upsert'."
                 )
-        elif self.load_method == "upsert":
-            raise ValueError("load_method='upsert' is only valid for source_target tasks.")
+            # F6.3 — kafka/CDC rules (incl. the cdc_apply <-> kafka lock).
+            _validate_kafka_task_payload(self)
+            if self.load_method == "cdc_apply" and not normalized_upsert_match_columns:
+                raise ValueError(
+                    "upsert_match_columns is required when load_method='cdc_apply' "
+                    "(the Debezium key columns)."
+                )
+        elif self.load_method in {"upsert", "cdc_apply"}:
+            raise ValueError(
+                f"load_method='{self.load_method}' is only valid for source_target tasks."
+            )
         elif normalized_upsert_match_columns:
             raise ValueError(
                 "upsert_match_columns is only supported when task_type='source_target'."
@@ -825,6 +912,11 @@ class DagUpsertPayload(BaseModel):
     dbt_test_behavior: str | None = None
     emit_datasets: bool | None = None
     dbt_target_platform: str | None = None
+    # F6.3 — CDC/kafka source (EX-D036); canonical rules in config/validator.py
+    kafka_topic: str | None = None
+    cdc_start_policy: str | None = None
+    cdc_start_offsets: dict[int, int] | None = None
+    max_batch_records: int | None = Field(default=None, ge=1)
     # F1.4/F1.5 — file source (csv/json) + file target (single-task DAG path)
     file_path: str | None = None
     delimiter: str | None = None
@@ -853,9 +945,9 @@ class DagUpsertPayload(BaseModel):
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
-        if v not in {"table", "view", "sql", "csv", "json"}:
+        if v not in {"table", "view", "sql", "csv", "json", "kafka"}:
             raise ValueError(
-                "source_type must be one of: table, view, sql, csv, json."
+                "source_type must be one of: table, view, sql, csv, json, kafka."
             )
         if v not in VALID_SOURCE_TYPES:
             raise ValueError(f"Invalid source_type: {v!r}")
@@ -931,10 +1023,18 @@ class DagUpsertPayload(BaseModel):
                 raise ValueError(
                     "upsert_match_columns is required when load_method='upsert'."
                 )
-        else:
-            if self.load_method == "upsert":
+            # F6.3 — kafka/CDC rules (incl. the cdc_apply <-> kafka lock).
+            _validate_kafka_task_payload(self)
+            if self.load_method == "cdc_apply" and not normalized_upsert_match_columns:
                 raise ValueError(
-                    "load_method='upsert' is only valid for source_target tasks."
+                    "upsert_match_columns is required when load_method='cdc_apply' "
+                    "(the Debezium key columns)."
+                )
+        else:
+            if self.load_method in {"upsert", "cdc_apply"}:
+                raise ValueError(
+                    f"load_method='{self.load_method}' is only valid for "
+                    "source_target tasks."
                 )
             if normalized_upsert_match_columns:
                 raise ValueError(
@@ -1075,9 +1175,9 @@ class MappingGeneratePayload(BaseModel):
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
-        if v not in {"table", "view", "sql", "csv", "json"}:
+        if v not in {"table", "view", "sql", "csv", "json", "kafka"}:
             raise ValueError(
-                "source_type must be one of: table, view, sql, csv, json."
+                "source_type must be one of: table, view, sql, csv, json, kafka."
             )
         if v not in VALID_SOURCE_TYPES:
             raise ValueError(f"Invalid source_type: {v!r}")
@@ -1241,6 +1341,57 @@ def api_dbt_assets(_: None = Depends(_optional_api_key_dep)) -> dict[str, Any]:
     try:
         data = list_dbt_asset_options()
         return {"ok": True, **data}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+def _cdc_ops_capability(name: str):
+    """F6.3 (EX-D036) — CDC operasyon yetenegi cift kapili cozulur.
+
+    Yetenek yoksa 422 (Enterprise + cdc_ops provider gerekir); Studio
+    webserver'i Kafka'ya dogrudan baglanmaz, yetenek kisa timeout + cache ile
+    calisir (Enterprise tarafi).
+    """
+    from ffengine.airflow.task_type_registry import get_task_type_capability
+
+    capability = get_task_type_capability("cdc", name)
+    if capability is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "CDC operations require Enterprise edition and the cdc_ops "
+                "provider; both gates must be enabled."
+            ),
+        )
+    return capability
+
+
+@flow_studio_app.post("/api/cdc/status")
+def api_cdc_status(
+    payload: dict[str, Any],
+    _: None = Depends(_optional_api_key_dep),
+) -> dict[str, Any]:
+    """F6.3 — lag / checkpoint / bloklu offset / bekleyen skip gorunumu."""
+    capability = _cdc_ops_capability("ops_status")
+    try:
+        return {"ok": True, **capability(payload)}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@flow_studio_app.post("/api/cdc/skip-request")
+def api_cdc_skip_request(
+    payload: dict[str, Any],
+    _: None = Depends(_optional_api_key_dep),
+) -> dict[str, Any]:
+    """F6.3 — auditli skip istegi (EXACT partition/offset + config_hash)."""
+    capability = _cdc_ops_capability("ops_skip_request")
+    try:
+        return {"ok": True, **capability(payload)}
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:

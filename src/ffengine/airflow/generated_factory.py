@@ -427,12 +427,38 @@ def build_generated_dag(
     # (or assets without asset mode) must fail the parse, not silently
     # degrade to cron/manual scheduling (independent-review finding).
     trigger_type = str(scheduler.get("trigger_type") or "").strip()
-    if trigger_type and trigger_type not in ("manual", "cron", "asset"):
+    if trigger_type and trigger_type not in (
+        "manual", "cron", "asset", "continuous"
+    ):
         raise ValueError(
             f"Unsupported scheduler.trigger_type: '{trigger_type}'. Valid "
-            "values: manual, cron, asset. There is no silent fallback "
-            "(fail-loud)."
+            "values: manual, cron, asset, continuous. There is no silent "
+            "fallback (fail-loud)."
         )
+    # F6.3 (EX-D036) — @continuous CDC zinciri: backlog yoksa deferrable
+    # bekleme, mesaj gelince bounded batch, run biter, sonraki run baslar.
+    continuous_mode = trigger_type == "continuous"
+    if continuous_mode:
+        from ffengine.core.edition import is_enterprise_enabled
+        from ffengine.core.engine_registry import get_engine_provider
+
+        if not is_enterprise_enabled() or get_engine_provider("cdc") is None:
+            raise ValueError(
+                "scheduler.trigger_type='continuous' requires Enterprise "
+                "edition and the CDC engine provider; both gates must be "
+                "enabled (fail-loud)."
+            )
+        if cron_expression:
+            raise ValueError(
+                "scheduler.trigger_type='continuous' cannot be combined "
+                "with a cron_expression (fail-loud)."
+            )
+        if upstream_ids:
+            raise ValueError(
+                "scheduler.trigger_type='continuous' cannot be combined "
+                "with upstream DAG dependencies; pick one trigger source "
+                "(fail-loud)."
+            )
     if scheduler.get("assets") and trigger_type != "asset":
         raise ValueError(
             "scheduler.assets is only valid with "
@@ -500,6 +526,8 @@ def build_generated_dag(
     edges = _resolve_task_dependencies(task_defs)
     if asset_schedule is not None:
         effective_schedule = asset_schedule
+    elif continuous_mode:
+        effective_schedule = "@continuous"
     else:
         effective_schedule = None if upstream_ids else cron_expression
     task_ids_with_upstream = {downstream for _upstream, downstream in edges}
@@ -523,6 +551,9 @@ def build_generated_dag(
             ).items()
         }
 
+    # @continuous zinciri run'lari ardisik kosar; paralel run bounded-batch
+    # tek-yazar modelini bozar (EX-D036).
+    continuous_kwargs = {"max_active_runs": 1} if continuous_mode else {}
     with DAG(
         dag_id=dag_id,
         schedule=effective_schedule,
@@ -532,6 +563,7 @@ def build_generated_dag(
         params=dag_params,
         is_paused_upon_creation=not dag_active,
         deadline=deadline_alert,
+        **continuous_kwargs,
         **notify_kwargs,
     ) as dag:
         task_groups: dict[str, Any] = {}
@@ -667,6 +699,16 @@ def build_generated_dag(
                     target_conn_id=target_conn_id,
                     binding_sources=_flow_binding_sources(task_def),
                     task_id=task_id_value,
+                    # F6.3 — @continuous + kafka: backlog yokken deferrable
+                    # bekleme (worker slotu tuketmez). Diger akislar icin
+                    # False -> davranis degismez.
+                    cdc_deferrable=(
+                        continuous_mode
+                        and str(task_def.get("source_type") or "")
+                        .strip()
+                        .lower()
+                        == "kafka"
+                    ),
                 )
                 continue
             group_id = (

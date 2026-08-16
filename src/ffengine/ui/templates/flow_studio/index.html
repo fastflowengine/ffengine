@@ -917,6 +917,32 @@
   </div>
   <datalist id="mapping_editor_source_options"></datalist>
 
+  <!-- F6.3 (EX-D036) — CDC Operations: lag / checkpoint / blocked / audited skip.
+       Durum kaynagi target-side kontrol tablolari; webserver Kafka'ya dogrudan
+       baglanmaz (Enterprise service capability + kisa cache). -->
+  <details class="card" id="cdc_ops_panel" style="margin:12px">
+    <summary style="cursor:pointer;font-weight:600">CDC Operations (kafka/cdc_apply)</summary>
+    <div class="cdc-ops-form" style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0">
+      <input id="cdc_ops_kafka_conn" placeholder="Kafka conn id" />
+      <input id="cdc_ops_target_conn" placeholder="Target conn id" />
+      <input id="cdc_ops_flow" placeholder="flow id (config stem)" />
+      <input id="cdc_ops_tg" placeholder="task_group_id" />
+      <input id="cdc_ops_topic" placeholder="topic" />
+      <button class="btn btn-secondary" id="cdc_ops_refresh" type="button">Durumu Getir</button>
+    </div>
+    <div id="cdc_ops_status" class="muted-note">Enterprise + cdc_ops provider gerekir.</div>
+    <div id="cdc_ops_tables"></div>
+    <div id="cdc_ops_skip" hidden style="margin-top:10px">
+      <div class="muted-note">Auditli skip: YALNIZ bloklu (partition, offset) + guncel config_hash birebir eslesirse uygulanir.</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px">
+        <input id="cdc_skip_cluster" placeholder="cluster fingerprint" />
+        <input id="cdc_skip_reason" placeholder="sebep" />
+        <input id="cdc_skip_by" placeholder="isteyen (kim)" />
+        <button class="btn btn-primary" id="cdc_skip_submit" type="button">Skip Iste</button>
+      </div>
+    </div>
+  </details>
+
   <script src="/flow-studio/static/flow_studio/js/app.js?v=99"></script>
 </body>
 </html>

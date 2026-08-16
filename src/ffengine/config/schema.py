@@ -5,7 +5,7 @@ CONFIG_SCHEMA.md ile senkronize edilmiştir.
 """
 
 VALID_SOURCE_TYPES: frozenset[str] = frozenset(
-    {"table", "view", "sql", "csv", "json", "script", "iceberg", "parquet"}
+    {"table", "view", "sql", "csv", "json", "script", "iceberg", "parquet", "kafka"}
 )
 
 # F1.4/F1.5 — file source/target (transport ⟂ format).
@@ -25,6 +25,7 @@ VALID_LOAD_METHODS: frozenset[str] = frozenset(
         "upsert",
         "drop_if_exists_and_create",
         "script",
+        "cdc_apply",
     }
 )
 
@@ -90,7 +91,7 @@ DEFERRED_SPARK_SUBMIT_MODES: dict[str, str] = {
     ),
 }
 VALID_SPARK_SOURCE_TYPES: frozenset[str] = frozenset(
-    {"table", "view", "sql", "iceberg", "parquet"}
+    {"table", "view", "sql", "iceberg", "parquet", "kafka"}
 )
 #: Yalniz Spark motorunda anlamli kaynak/hedef tipleri. Bunlar Standard/Pipeline
 #: motorlarinda **calismaz**, bu yuzden acik `engine.preference: spark` sart --
@@ -146,6 +147,35 @@ REJECTED_ICEBERG_LOAD_METHODS: dict[str, str] = {
         "its snapshot summary. Use task_type='script_run' for standalone SQL"
     ),
 }
+# F6.3 — CDC uç noktası (EX-D036). Debezium/Connect deployment-owned;
+# FFEngine hazır CDC topic'lerini okur. Teslim garantisi sözleşmesi:
+# at-least-once consumption + transactionally idempotent / effectively-once
+# target effects — uçtan uca "exactly-once" İDDİA EDİLMEZ.
+#
+# `kafka` kendi başına motor seçimi DEĞİLDİR:
+#   target_type: db      → Track A (sıralı transactional apply, Spark'sız)
+#   target_type: iceberg → Track B/F6.3b (açık `engine.preference: spark` —
+#                          `iceberg` hedefi SPARK_ONLY üzerinden zaten zorlar)
+# Broker adresi/kimliği YALNIZ Airflow Connection'da yaşar; validator
+# Connection okumaz (DAG-parse'ta ağ erişimi yok — Iceberg emsali).
+KAFKA_TYPE: str = "kafka"
+CDC_APPLY_LOAD_METHOD: str = "cdc_apply"
+KAFKA_TOPIC_FIELD: str = "kafka_topic"
+CDC_START_POLICY_FIELD: str = "cdc_start_policy"
+CDC_START_OFFSETS_FIELD: str = "cdc_start_offsets"
+CDC_MAX_BATCH_RECORDS_FIELD: str = "max_batch_records"
+#: Başlangıç politikası AÇIK seçimdir; sessiz default YOK (EX-D036).
+#: `earliest` = partition'ın LOW WATERMARK'ı (sıfır değil — retention sonrası
+#: gerçek alt sınır) · `latest` = aktivasyon anındaki high watermark ·
+#: `explicit` = tüm partition'lar için offset haritası zorunlu.
+VALID_CDC_START_POLICIES: frozenset[str] = frozenset(
+    {"earliest", "latest", "explicit"}
+)
+#: `max_batch_records` verilmezse kullanılan BELGELENMİŞ toplam bütçe
+#: (partition başına değil — bounded allocator toplamı water-fill dağıtır;
+#: `sum(ending-starting) <= bütçe` invariant'ı).
+DEFAULT_CDC_MAX_BATCH_RECORDS: int = 100_000
+
 #: Config'de sır aranırken kullanılan anahtar parçaları (INV-5). Değer değil
 #: ANAHTAR adına bakılır: değeri incelemek sırrı log'a taşıma riski doğurur.
 SECRET_FIELD_HINTS: tuple[str, ...] = (
@@ -211,6 +241,14 @@ TASK_DEFAULTS: dict = {
     # DEFAULT_ICEBERG_PUBLISH_MODE uygulanır.
     "catalog_type": None,
     "publish_mode": None,
+    # F6.3 — CDC uç noktası. Varsayılanlar None: "verilmedi" ile "açıkça
+    # verildi" ayrımı korunur. `cdc_start_policy` kafka kaynağında ZORUNLUDUR
+    # (sessiz default yok); `max_batch_records` yokken
+    # DEFAULT_CDC_MAX_BATCH_RECORDS uygulanır (belgelenmiş varsayılan).
+    "kafka_topic": None,
+    "cdc_start_policy": None,
+    "cdc_start_offsets": None,
+    "max_batch_records": None,
     "partitioning": {
         "enabled": False,
         "mode": "auto_numeric",

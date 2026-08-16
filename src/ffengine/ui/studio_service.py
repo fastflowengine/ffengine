@@ -407,7 +407,7 @@ def _normalize_scheduler_start_date(raw: Any, *, timezone_name: str) -> str:
     return parsed.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-_VALID_SCHEDULER_TRIGGER_TYPES = {"manual", "cron", "asset"}
+_VALID_SCHEDULER_TRIGGER_TYPES = {"manual", "cron", "asset", "continuous"}
 
 
 def _normalize_scheduler_assets(raw: Any) -> list[str]:
@@ -449,7 +449,8 @@ def _validate_scheduler_trigger(
         )
     if trigger_type not in _VALID_SCHEDULER_TRIGGER_TYPES:
         raise ValueError(
-            "scheduler.trigger_type must be manual, cron, or asset."
+            "scheduler.trigger_type must be manual, cron, asset, or "
+            "continuous."
         )
     if trigger_type != "asset":
         if assets_raw not in (None, []):
@@ -466,6 +467,23 @@ def _validate_scheduler_trigger(
                 "scheduler.trigger_type='manual' contradicts a "
                 "cron_expression; clear one of them (fail-loud)."
             )
+        if trigger_type == "continuous":
+            # F6.3 (EX-D036) — @continuous CDC zinciri. Cift kapi: edition +
+            # cdc engine provider (asset kapisiyla ayni disiplin).
+            if cron_expression:
+                raise ValueError(
+                    "scheduler.trigger_type='continuous' cannot be combined "
+                    "with a cron_expression (fail-loud)."
+                )
+            from ffengine.core.edition import is_enterprise_enabled
+            from ffengine.core.engine_registry import get_engine_provider
+
+            if not is_enterprise_enabled() or get_engine_provider("cdc") is None:
+                raise ValueError(
+                    "scheduler.trigger_type='continuous' requires Enterprise "
+                    "edition and the CDC engine provider; both gates must be "
+                    "enabled (fail-loud)."
+                )
         return trigger_type, None
 
     # Asset-triggered scheduling is an Enterprise capability (consumer half
@@ -921,6 +939,42 @@ def normalize_spark_endpoint(item: dict[str, Any]) -> dict[str, Any]:
         result["file_path"] = file_path
     if target_type == "iceberg":
         result["target_type"] = "iceberg"
+    return result
+
+
+def normalize_kafka_cdc(item: dict[str, Any]) -> dict[str, Any]:
+    """F6.3 — kafka/CDC alanlarini gecirir (EX-D036).
+
+    `normalize_spark_endpoint` deseni: alanlar tasiyiciya eklenmezse
+    `ConfigValidator._check_kafka` onlari HIC gormez ve zorunlu-alan hatasi
+    kullanicinin duzeltemeyecegi bir 422'ye donusur. Deger dogrulamasi
+    ConfigValidator'da kalir (tek kanonik kaynak); burasi yalniz tasima +
+    tip normalizasyonu yapar.
+    """
+    result: dict[str, Any] = {}
+    source_type = str(item.get("source_type") or "").strip().lower()
+    if source_type != "kafka":
+        return result
+    topic = str(item.get("kafka_topic") or "").strip()
+    if topic:
+        result["kafka_topic"] = topic
+    policy = str(item.get("cdc_start_policy") or "").strip().lower()
+    if policy:
+        result["cdc_start_policy"] = policy
+    offsets = item.get("cdc_start_offsets")
+    if isinstance(offsets, dict) and offsets:
+        try:
+            result["cdc_start_offsets"] = {
+                int(part): int(off) for part, off in offsets.items()
+            }
+        except (TypeError, ValueError):
+            raise ValueError(
+                "cdc_start_offsets keys/values must be integers "
+                "({partition: offset})."
+            )
+    budget = item.get("max_batch_records")
+    if isinstance(budget, int) and not isinstance(budget, bool):
+        result["max_batch_records"] = budget
     return result
 
 
@@ -2745,6 +2799,25 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                     if isinstance(task.get("emit_datasets"), bool)
                     else None
                 ),
+                # F6.3 — kafka/CDC alanlari (ayni explicit-key round-trip
+                # sozlesmesi: burada olmayan anahtar resave'de sessizce duser).
+                "kafka_topic": str(task.get("kafka_topic") or "").strip() or None,
+                "cdc_start_policy": str(
+                    task.get("cdc_start_policy") or ""
+                ).strip()
+                or None,
+                "cdc_start_offsets": (
+                    dict(task.get("cdc_start_offsets"))
+                    if isinstance(task.get("cdc_start_offsets"), dict)
+                    and task.get("cdc_start_offsets")
+                    else None
+                ),
+                "max_batch_records": (
+                    task.get("max_batch_records")
+                    if isinstance(task.get("max_batch_records"), int)
+                    and not isinstance(task.get("max_batch_records"), bool)
+                    else None
+                ),
             }
         )
 
@@ -2806,6 +2879,10 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "target_delimiter": first_task["target_delimiter"],
         "target_encoding": first_task["target_encoding"],
         "target_header": first_task["target_header"],
+        "kafka_topic": first_task["kafka_topic"],
+        "cdc_start_policy": first_task["cdc_start_policy"],
+        "cdc_start_offsets": first_task["cdc_start_offsets"],
+        "max_batch_records": first_task["max_batch_records"],
         "flow_tasks": normalized_tasks,
     }
     if isinstance(raw.get("engine"), dict):
@@ -3612,6 +3689,11 @@ def _apply_file_endpoints(
             task["source_schema"] = ""
             task["source_table"] = ""
         task.update(spark_endpoint)
+    # F6.3 — kafka/CDC alanlari (EX-D036); topic schema.table cifti degildir.
+    if str(source_type or "").strip().lower() == "kafka":
+        task["source_schema"] = ""
+        task["source_table"] = ""
+        task.update(normalize_kafka_cdc(item))
 
 
 def build_task_dict_for_validation_from_task(
@@ -4765,6 +4847,14 @@ def create_or_update_dag(
                     auto_source_table = _slugify(
                         os.path.basename(file_source["file_path"]) or "file", "file"
                     )
+                elif str(source_type).strip().lower() == "kafka":
+                    # F6.3 — bir topic schema.table cifti degildir (EX-D036).
+                    normalized_source_schema = ""
+                    normalized_source_table = ""
+                    auto_source_schema = "kafka"
+                    auto_source_table = _slugify(
+                        str(item.get("kafka_topic") or "") or "topic", "topic"
+                    )
                 else:
                     normalized_source_schema = source_schema or (
                         "sql" if source_type == "sql" else ""
@@ -4916,6 +5006,11 @@ def create_or_update_dag(
                 task_cfg.update(file_source)
             if file_target is not None:
                 task_cfg.update(file_target)
+            # F6.3 — kafka/CDC alanlari YAML'a tasinir (round-trip; sessiz
+            # dusurme = INV-1). Kafka-olmayan task'larda dict bos -> YAML
+            # byte-ayni kalir.
+            if task_type == STUDIO_TASK_TYPE_SOURCE_TARGET:
+                task_cfg.update(normalize_kafka_cdc(item))
             mode = str(task_cfg.get("column_mapping_mode") or "source")
             mapping_content = str(item.get("mapping_content") or "")
             if mapping_content.strip() and save_src_dialect and save_tgt_dialect:

@@ -555,6 +555,38 @@ def _engine_preflight(
     """
     from ffengine.core.base_engine import BaseEngine
 
+    # F6.3 (EX-D036) — kafka+db (Track A) bir motor TERCIHI degil, kaynak
+    # sozlesmesidir: dogrudan Enterprise 'cdc' provider'ina gider. Provider
+    # yoksa/unavailable ise fail-loud (sessiz StandardEngine dususu YOK —
+    # Standard motorda kafka okuyucusu yoktur). kafka+iceberg dali acik
+    # `engine.preference: spark` ile normal preflight'tan gecer.
+    source_type = str(task_config.get("source_type") or "").strip().lower()
+    target_type = str(task_config.get("target_type") or "db").strip().lower()
+    if source_type == "kafka" and target_type == "db":
+        from ffengine.core import engine_registry
+
+        if mapped_path:
+            raise EngineError(
+                "Partition'li calisma CDC (kafka) kaynaginda desteklenmiyor: "
+                "siralama sozlesmesi partition-icidir ve bounded batch "
+                "koordinatoru tek task'ta calisir."
+            )
+        provider = engine_registry.get_engine_provider("cdc")
+        if provider is None:
+            raise EngineError(
+                "source_type='kafka' requires the Enterprise 'cdc' engine "
+                "provider, but none is registered (entry point group "
+                f"'{engine_registry.ENTRY_POINT_GROUP}'). Install/enable "
+                "FFEngine Enterprise."
+            )
+        engine = provider()
+        if not engine.is_available():
+            raise EngineError(
+                "Engine provider 'cdc' is registered but reports unavailable "
+                "— check the Enterprise edition/license/confluent-kafka state."
+            )
+        return engine, "cdc"
+
     preference = _resolve_engine_preference(task_config, operator_arg)
     # F6.1: operator argumani YAML'da olmayan bir tercih dayattiysa motor
     # config kurallari burada yeniden kosar -- provider aramasindan ONCE,
@@ -1036,6 +1068,7 @@ class FFEngineOperator(BaseOperator):
         binding_task_ids: list[str] | None = None,
         binding_sources: dict[str, str] | None = None,
         task_id: str = "ffengine_etl",
+        cdc_deferrable: bool = False,
         **kwargs,
     ):
         super().__init__(task_id=task_id, **kwargs)
@@ -1045,11 +1078,24 @@ class FFEngineOperator(BaseOperator):
         self.source_conn_id = source_conn_id
         self.target_conn_id = target_conn_id
         self.engine = engine
+        # F6.3 (EX-D036) — yalniz `@continuous` CDC akislarinda anlamli:
+        # backlog yokken worker slotu tuketmeden deferrable trigger'da bekle.
+        self.cdc_deferrable = bool(cdc_deferrable)
         self._airflow_context = airflow_context
         self.binding_sources = dict(binding_sources or {})
         source_task_ids = dict.fromkeys(self.binding_sources.values())
         self.binding_task_ids = list(binding_task_ids or source_task_ids)
         self._active_engine = None
+
+    def execute_complete(self, context: dict | None = None, event=None) -> dict:
+        """F6.3 — deferrable CDC beklemesinden donus: yeniden execute.
+
+        Uyandiktan sonra backlog vardir ve normal yol bounded batch'i kosar;
+        yaris durumunda (mesaj kaybolmadi ama baska batch tuketti — tek-yazar
+        kilidi geregi ancak ayni flow'un onceki run'i olabilir) en kotu sonuc
+        yeniden defer'dir, veri etkisi yoktur.
+        """
+        return self.execute(context)
 
     def execute(self, context: dict | None = None) -> dict:
         """
@@ -1388,6 +1434,25 @@ class FFEngineOperator(BaseOperator):
             source_conn_id=self.source_conn_id,
             target_conn_id=self.target_conn_id,
         )
+        # F6.3 (EX-D036) — deferrable CDC beklemesi: backlog yoksa bounded
+        # batch HIC baslatilmaz; motoron urettigi (secret-free) wake-up
+        # trigger'iyla triggerer'da beklenir. Kancalar duck-typed'dir:
+        # Community Enterprise'i import etmez; kanca yoksa davranis degismez.
+        if self.cdc_deferrable and engine_type == "cdc":
+            has_backlog = getattr(engine, "has_backlog", None)
+            build_trigger = getattr(engine, "build_wakeup_trigger", None)
+            if callable(has_backlog) and callable(build_trigger):
+                if not has_backlog(
+                    self.config_path, self.task_group_id, context=run_contract
+                ):
+                    self.defer(
+                        trigger=build_trigger(
+                            self.config_path,
+                            self.task_group_id,
+                            context=run_contract,
+                        ),
+                        method_name="execute_complete",
+                    )
         self._active_engine = engine
         try:
             if callable(runner):
