@@ -21,6 +21,7 @@ services:
       context: ../
       dockerfile: docker/Dockerfile
     environment:
+      # Not: init servisi ../src mount'u tasimaz; imajdaki kurulu paket kullanilir.
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__PARALLELISM: "8"
       AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "4"
@@ -47,6 +48,9 @@ services:
       dockerfile: docker/Dockerfile
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      # Dev: kod ../src mount'undan okunur (imajdaki wheel gölgede kalir),
+      # boylece kod degisikligi rebuild gerektirmez -- yalniz restart yeter.
+      PYTHONPATH: /opt/airflow/src
       AIRFLOW__CORE__PARALLELISM: "8"
       AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "4"
       AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "2"
@@ -84,6 +88,9 @@ services:
       dockerfile: docker/Dockerfile
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      # Dev: kod ../src mount'undan okunur (imajdaki wheel gölgede kalir),
+      # boylece kod degisikligi rebuild gerektirmez -- yalniz restart yeter.
+      PYTHONPATH: /opt/airflow/src
       AIRFLOW__CORE__PARALLELISM: "8"
       AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "4"
       AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "2"
@@ -118,6 +125,9 @@ services:
       dockerfile: docker/Dockerfile
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      # Dev: kod ../src mount'undan okunur (imajdaki wheel gölgede kalir),
+      # boylece kod degisikligi rebuild gerektirmez -- yalniz restart yeter.
+      PYTHONPATH: /opt/airflow/src
       AIRFLOW__CORE__PARALLELISM: "8"
       AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "4"
       AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "2"
