@@ -422,3 +422,26 @@ def test_extract_sql_select_columns_postgres_lenient_on_unparameterized_numeric(
 
     assert cols[0]["source_type"] == "NUMERIC"
     assert cols[0]["source_precision"] is None
+
+
+def test_extract_sql_select_columns_unsized_string_falls_back_to_draft_varchar():
+    # CASE/fonksiyon ifadelerinde surucu uzunluk bildirmez (display_size None).
+    # Taslak uretimi durmaz: guvenli genislikte VARCHAR verilir, kullanici
+    # Mapping Editor'de daraltir (unparameterized numeric ile ayni yaklasim).
+    cursor = _Cursor(
+        description=[
+            _DescriptionColumn("pool_type", 1043, type_display="varchar"),
+            _DescriptionColumn("label", 25, type_display="text"),
+        ]
+    )
+    session = _Session(cursor)
+    postgres = _dialect("PostgresDialect")
+
+    cols = ss.extract_sql_select_columns(
+        session, postgres, "SELECT CASE WHEN x THEN 'a' ELSE y END pool_type, l label FROM t"
+    )
+
+    expected = f"VARCHAR({ss.DEFAULT_EXPRESSION_VARCHAR_LENGTH})"
+    assert cols[0]["source_type"] == expected
+    # TEXT uzunluk tasimaz; dokunulmadan gecer.
+    assert cols[1]["source_type"] == "TEXT"

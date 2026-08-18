@@ -1824,6 +1824,11 @@ def _normalize_target_type_for_strict(
     return target_base
 
 
+# CASE/fonksiyon iceren ifade kolonlarinda surucu uzunluk bildirmeyebilir;
+# taslak mapping bu genislikle uretilir, kullanici Mapping Editor'de degistirir.
+DEFAULT_EXPRESSION_VARCHAR_LENGTH = 1000
+
+
 def _wrap_zero_row_sql_for_dialect(inline_sql: str, dialect_name: str) -> str:
     base = str(inline_sql or "").strip().rstrip(";")
     if not base:
@@ -1979,9 +1984,10 @@ def extract_sql_select_columns(
 
         if source_type in {"STR", "STRING", "UNICODE"}:
             if source_length is None:
-                raise ValueError(
-                    f"SQL metadata extraction failed: '{name}' length could not be resolved."
-                )
+                # CASE/fonksiyon gibi ifade kolonlarinda surucu uzunluk
+                # bildirmez; taslakta guvenli genislikte VARCHAR verilir,
+                # kullanici Mapping Editor'de daraltabilir.
+                source_length = DEFAULT_EXPRESSION_VARCHAR_LENGTH
             source_type = f"VARCHAR({source_length})"
         elif source_type in {"BYTES", "BYTEARRAY", "MEMORYVIEW"}:
             if source_length is None:
@@ -2001,9 +2007,8 @@ def extract_sql_select_columns(
                     source_type = f"{source_type}({source_precision},{source_scale})"
         elif source_type in LENGTH_BEARING_TYPES:
             if source_length is None:
-                raise ValueError(
-                    f"SQL metadata extraction failed: '{name}' length could not be resolved."
-                )
+                # Uzunluk tasiyan string tipte de ayni taslak varsayilani.
+                source_length = DEFAULT_EXPRESSION_VARCHAR_LENGTH
             source_type = f"{source_type}({source_length})"
         elif source_type == "INT":
             source_type = "INTEGER"
