@@ -1233,7 +1233,18 @@ def studio_index(response: Response) -> str:
 
 
 @flow_studio_app.get("/dag-explorer", response_class=HTMLResponse)
-def dag_explorer_index(response: Response) -> str:
+def dag_explorer_index(response: Response):
+    # F7.5 (EX-D039.9): DAG Explorer sahipligi FF Governance'a tasindi.
+    # ffgovernance kuruluysa compat redirect (T-F7.5-14); kurulu DEGILSE
+    # yerlesik Explorer AYNEN calisir (T-F7.5-13). Import'lar fonksiyon
+    # icinde: compat dokunusunun diff'i bu route govdesiyle sinirli kalir.
+    from fastapi.responses import RedirectResponse
+
+    from ffengine.ui import dag_explorer_compat
+
+    target = dag_explorer_compat.ffgovernance_explorer_url()
+    if target is not None:
+        return RedirectResponse(url=target, status_code=307)
     response.headers["Cache-Control"] = "no-store"
     return _load_dag_explorer_html()
 
