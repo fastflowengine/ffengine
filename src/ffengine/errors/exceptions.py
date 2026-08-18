@@ -105,6 +105,19 @@ class ReconciliationError(FFEngineError):
     default_code = "reconciliation_error"
 
 
+class ReconciliationUnavailableError(ReconciliationError):
+    """Otoritatif sayaç yokken muhasebe garantisi istendi (F4.3E).
+
+    ``counter_source = unavailable`` + ``require_reconciliation = true``
+    birleşimi sessiz garanti düşürme olurdu; task **başında**, kaynağa hiç
+    bağlanılmadan fail-loud olunur. Bilinçli vazgeçiş yalnız kök config'te
+    ``require_reconciliation: false`` ile yapılır (sayaçlar açık ``null``,
+    ``reconciliation_status = not_applicable``).
+    """
+
+    default_code = "reconciliation_unavailable"
+
+
 class FileSourceError(FFEngineError):
     """Dosya kaynağı okuma/parse hatası (F1.4 — bozuk satır, nested, vb.)."""
 

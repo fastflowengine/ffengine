@@ -25,12 +25,25 @@ except Exception:  # pragma: no cover - airflow olmayan ortamlarda import fallba
                 self.task_id = kwargs.get("task_id")
 
 
+from ffengine.airflow import governance_schema as _gov
 from ffengine.core.base_engine import FlowResult
 from ffengine.config.dag_param_flow import BUILTIN_DAG_PARAM_BINDING_ERROR
+from ffengine.config.schema import (
+    DEFAULT_REQUIRE_RECONCILIATION,
+    REQUIRE_RECONCILIATION_KEY,
+)
 from ffengine.errors import error_payload, normalize_exception
 from ffengine.errors.exceptions import ConfigError, EngineError
 
 _log = logging.getLogger(__name__)
+
+
+def _require_reconciliation(task_config: dict) -> bool:
+    """F4.3E — kök `require_reconciliation` (varsayılan ``true``)."""
+    value = task_config.get(REQUIRE_RECONCILIATION_KEY)
+    if value is None:
+        return DEFAULT_REQUIRE_RECONCILIATION
+    return bool(value)
 
 
 def _log_structured(
@@ -58,7 +71,10 @@ def _log_structured(
         "message": message,
     }
     for k, v in optional.items():
-        if v is not None:
+        # F4.3E — kanonik şemanın çekirdek alanları None-filtresine takılmaz:
+        # `null` bir DEĞERDİR (örn. hata yolunda reconciliation_status=null).
+        # Şema dışı opsiyonel alanların davranışı değişmedi.
+        if v is not None or k in _gov.CORE_NULLABLE_FIELDS:
             payload[k] = v
     _log.log(level, "%s", payload)
 
@@ -518,6 +534,70 @@ def _revalidate_engine_selection(task_config: dict[str, Any], preference: str) -
     ConfigValidator().validate_engine_selection(effective)
 
 
+def _governance_event_fields(
+    *,
+    context: dict | None,
+    event_scope: str,
+    outcome: str,
+    engine_type: str | None,
+    task_config: dict | None,
+    task_group_id: str,
+    source_conn_id: str | None,
+    target_conn_id: str | None,
+    config_path: str | None,
+    raw_file_path: str | None = None,
+    raw_target_file_path: str | None = None,
+    paths_rendered: bool = True,
+    counter_source: str | None = None,
+) -> dict[str, Any]:
+    """F4.3E — kanonik `ffgov` v1 alanlarını TEK noktadan üretir.
+
+    Mevcut summary/error payload sözlüklerine **additive** eklenir; yeni XCom
+    anahtarı açılmaz. Bilinmeyen/çözülememiş bilgi ``null`` yayımlanır —
+    uydurma değer yazılmaz. `config_revision` task başına tek ucuz dosya
+    okumasıdır (EX-D039.6; sıcak yolda ek sorgu 0).
+    """
+    fields = _gov.event_header(event_scope=event_scope, outcome=outcome)
+    fields.update(_gov.airflow_identity(context))
+    if isinstance(task_config, dict):
+        fields.update(
+            _gov.dataset_identity(
+                task_config,
+                task_group_id=task_group_id,
+                source_conn_id=source_conn_id,
+                target_conn_id=target_conn_id,
+                raw_file_path=raw_file_path,
+                raw_target_file_path=raw_target_file_path,
+                paths_rendered=paths_rendered,
+            )
+        )
+    else:
+        # Config yüklenemeden hata: dataset kimliği dürüstçe null (yalnız
+        # conn_id bilinir — INV-5 gereği zaten yalnız o yayımlanır).
+        fields.update(
+            {
+                "source_conn_id": (
+                    None if source_conn_id is None else str(source_conn_id)
+                ),
+                "target_conn_id": (
+                    None if target_conn_id is None else str(target_conn_id)
+                ),
+                "source_type": None,
+                "target_type": None,
+                "source_dataset": None,
+                "source_dataset_resolved": None,
+                "target_dataset": None,
+                "target_dataset_resolved": None,
+            }
+        )
+    fields["engine_type"] = engine_type
+    fields["counter_source"] = counter_source
+    fields["config_revision"] = _gov.config_revision_for(
+        config_path, fields.get("dag_id")
+    )
+    return fields
+
+
 def _is_standard_engine(engine: Any) -> bool:
     from ffengine.core.flow_manager import StandardEngine
 
@@ -636,6 +716,11 @@ def _resolve_task_runtime(
     task_config = ConfigLoader().load(config_path, task_group_id)
     # --- F6.0 preflight: buradan onceye hicbir I/O girmez ---
     _engine, engine_type = _engine_preflight(task_config, mapped_path=True)
+    # F4.3E — sessiz garanti düşürme yasağı: sayaç otoritesi olmayan motor +
+    # require_reconciliation=true → kaynağa bağlanmadan fail-loud (T-F4.3E-10).
+    _gov.preflight_reconciliation(
+        engine_type, require_reconciliation=_require_reconciliation(task_config)
+    )
     src_params = AirflowConnectionAdapter.get_connection_params(source_conn_id)
     tgt_params = AirflowConnectionAdapter.get_connection_params(target_conn_id)
     src_dialect = resolve_dialect(src_params["conn_type"])
@@ -881,7 +966,7 @@ def run_partition_for_task(
                 skip_prepare=True,
             )
 
-    return {
+    payload = {
         "rows": int(result.rows),
         "duration_seconds": float(result.duration_seconds),
         "throughput": float(result.throughput),
@@ -898,6 +983,28 @@ def run_partition_for_task(
         # non-Standard preflight'ta fail-loud olur).
         "engine_type": engine_type,
     }
+    # F4.3E — kanonik `ffgov` v1 alanları mevcut payload sözlüğüne ADDITIVE
+    # eklenir; mapped task event'i `event_scope=partition` + `map_index`
+    # taşır (T-F4.3E-15). Yeni XCom anahtarı açılmaz.
+    payload.update(
+        _governance_event_fields(
+            context=airflow_context,
+            event_scope=_gov.EVENT_SCOPE_PARTITION,
+            outcome=_gov.OUTCOME_SUCCEEDED,
+            engine_type=engine_type,
+            task_config=effective,
+            task_group_id=task_group_id,
+            source_conn_id=source_conn_id,
+            target_conn_id=target_conn_id,
+            config_path=config_path,
+            counter_source=_gov.resolve_counter_source(
+                engine_type,
+                rows_read=payload["rows_read"],
+                rows_written=payload["rows_written"],
+            ),
+        )
+    )
+    return payload
 
 
 def aggregate_partition_payloads(
@@ -939,7 +1046,7 @@ def aggregate_partition_payloads(
     )
 
     aggregated = aggregate_results(flow_results)
-    return {
+    summary = {
         "rows": aggregated.rows,
         "duration_seconds": aggregated.duration_seconds,
         "throughput": aggregated.throughput,
@@ -952,6 +1059,34 @@ def aggregate_partition_payloads(
         # Legacy payload'lar taşımaz → None (uydurma değer yazılmaz).
         "engine_type": engine_type,
     }
+    # F4.3E — aggregate task-scope event'tir; kimlik alanları partition
+    # payload'larından TEK tutarlı değerse taşınır, aksi hâlde null (legacy
+    # payload'lar alan taşımaz — uydurma birleştirme yapılmaz).
+    summary.update(
+        _gov.event_header(
+            event_scope=_gov.EVENT_SCOPE_TASK, outcome=_gov.OUTCOME_SUCCEEDED
+        )
+    )
+    for field in (
+        "dag_id",
+        "run_id",
+        "source_conn_id",
+        "target_conn_id",
+        "source_type",
+        "target_type",
+        "source_dataset",
+        "source_dataset_resolved",
+        "target_dataset",
+        "target_dataset_resolved",
+        "counter_source",
+        "config_revision",
+    ):
+        summary[field] = _gov.uniform_value(payloads, field)
+    # Aggregate ayrı bir Airflow task'ıdır; partition'ların task_id/map_index
+    # kimliği ona MAL EDİLMEZ (null bir değerdir).
+    summary["task_id"] = None
+    summary["map_index"] = None
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -1149,6 +1284,12 @@ class FFEngineOperator(BaseOperator):
         ti = context.get("ti")
         source_db = "unknown"
         target_db = "unknown"
+        # F4.3E — hata yolunda dürüst (null) governance kimliği üretebilmek
+        # için çözüm ilerledikçe doldurulan durum.
+        engine_type = None
+        gov_task_config = None
+        raw_file_path = None
+        raw_target_file_path = None
         try:
             _log_structured(
                 level=logging.DEBUG,
@@ -1173,12 +1314,24 @@ class FFEngineOperator(BaseOperator):
 
             # 1. Config yükle
             task_config = ConfigLoader().load(self.config_path, self.task_group_id)
+            gov_task_config = task_config
+            # F4.3E — şablonlu dosya yolları render EDİLMEDEN yakalanır:
+            # `*_dataset` = şablon, `*_dataset_resolved` = render sonrası.
+            raw_file_path = task_config.get("file_path")
+            raw_target_file_path = task_config.get("target_file_path")
 
             # 1b. F6.0 — engine preflight: runtime guard'dan SONRA, herhangi
             # bir connection/DB dokunuşundan ÖNCE. Provider yok/unavailable →
             # fail-loud EngineError; hedefe hiçbir şey yazılmadan durur.
             engine, engine_type = _engine_preflight(
                 task_config, mapped_path=False, operator_arg=self.engine
+            )
+            # 1c. F4.3E — sessiz garanti düşürme yasağı: sayaç otoritesi
+            # `unavailable` + require_reconciliation=true → task başında,
+            # kaynağa hiç bağlanılmadan fail-loud (T-F4.3E-10).
+            _gov.preflight_reconciliation(
+                engine_type,
+                require_reconciliation=_require_reconciliation(task_config),
             )
             if not _is_standard_engine(engine):
                 # Harici motor tüm task-group'u kendi çalıştırır (W2 sözleşmesi);
@@ -1189,6 +1342,7 @@ class FFEngineOperator(BaseOperator):
                     retry_telemetry=retry_telemetry,
                     task_config=task_config,
                     airflow_ctx=airflow_ctx,
+                    context=context,
                 )
 
             # 2. Connection parametreleri
@@ -1222,6 +1376,7 @@ class FFEngineOperator(BaseOperator):
             resolver = BindingResolver()
             task_config = resolver.resolve(task_config, airflow_ctx)
             task_config = _render_file_paths(task_config, airflow_ctx)
+            gov_task_config = task_config
 
             # 5. Session'lar aç (yalnız DB uçları), mapping/partition/çalıştır
             with ExitStack() as stack:
@@ -1349,6 +1504,29 @@ class FFEngineOperator(BaseOperator):
                 # XCom'uyla taşınır, yeni anahtar açılmaz.
                 "engine_type": engine_type,
             }
+            # F4.3E — kanonik `ffgov` v1 alanları mevcut return_value
+            # sözlüğüne ADDITIVE eklenir (yeni XCom anahtarı yok, T-F4.3E-16).
+            counter_source = _gov.resolve_counter_source(
+                engine_type,
+                rows_read=aggregated.rows_read,
+                rows_written=aggregated.rows_written,
+            )
+            summary.update(
+                _governance_event_fields(
+                    context=context,
+                    event_scope=_gov.EVENT_SCOPE_TASK,
+                    outcome=_gov.OUTCOME_SUCCEEDED,
+                    engine_type=engine_type,
+                    task_config=gov_task_config,
+                    task_group_id=self.task_group_id,
+                    source_conn_id=self.source_conn_id,
+                    target_conn_id=self.target_conn_id,
+                    config_path=self.config_path,
+                    raw_file_path=raw_file_path,
+                    raw_target_file_path=raw_target_file_path,
+                    counter_source=counter_source,
+                )
+            )
             _log_structured(
                 level=logging.INFO,
                 stage="airflow",
@@ -1365,6 +1543,13 @@ class FFEngineOperator(BaseOperator):
                 rows_rejected=aggregated.rows_rejected,
                 reconciliation_status=aggregated.reconciliation_status,
                 engine_type=engine_type,
+                schema_version=summary["schema_version"],
+                event_scope=summary["event_scope"],
+                outcome=summary["outcome"],
+                counter_source=summary["counter_source"],
+                config_revision=summary["config_revision"],
+                source_dataset=summary["source_dataset"],
+                target_dataset=summary["target_dataset"],
             )
             return summary
         except Exception as exc:
@@ -1372,6 +1557,44 @@ class FFEngineOperator(BaseOperator):
             payload = error_payload(norm)
             err_details = dict(payload.get("details") or {})
             payload["retry_telemetry"] = retry_telemetry
+            # F4.3E — hata event'i de kanonik şemayı taşır (additive; mevcut
+            # error_summary anahtarları aynen durur). ReconciliationError
+            # dışında muhasebe İDDİA EDİLMEZ: `reconciliation_status` anahtarı
+            # null DEĞERİYLE bulunur (T-F4.3E-12; null bir değerdir).
+            from ffengine.errors.exceptions import (
+                ReconciliationError,
+                ReconciliationUnavailableError,
+            )
+
+            payload.update(
+                _governance_event_fields(
+                    context=context,
+                    event_scope=_gov.EVENT_SCOPE_TASK,
+                    outcome=_gov.OUTCOME_FAILED,
+                    engine_type=engine_type,
+                    task_config=gov_task_config,
+                    task_group_id=self.task_group_id,
+                    source_conn_id=self.source_conn_id,
+                    target_conn_id=self.target_conn_id,
+                    config_path=self.config_path,
+                    raw_file_path=raw_file_path,
+                    raw_target_file_path=raw_target_file_path,
+                    counter_source=(
+                        None
+                        if engine_type is None
+                        else _gov.expected_counter_source(engine_type)
+                    ),
+                )
+            )
+            # "failed" yalnız KOŞMUŞ muhasebenin tutmadığı durumdur; preflight
+            # reddi (ReconciliationUnavailableError) aktarım hiç başlamadan
+            # durur → dürüst değer null (review-fix MINOR-2).
+            payload["reconciliation_status"] = (
+                "failed"
+                if isinstance(norm, ReconciliationError)
+                and not isinstance(norm, ReconciliationUnavailableError)
+                else None
+            )
             _log_structured(
                 level=logging.ERROR,
                 stage="airflow",
@@ -1389,6 +1612,14 @@ class FFEngineOperator(BaseOperator):
                 db_root_cause=err_details.get("db_root_cause"),
                 sql_preview=err_details.get("sql_preview"),
                 retry_telemetry=retry_telemetry,
+                schema_version=payload.get("schema_version"),
+                event_scope=payload.get("event_scope"),
+                outcome=payload.get("outcome"),
+                error_code=payload.get("error_code"),
+                reconciliation_status=payload.get("reconciliation_status"),
+                counter_source=payload.get("counter_source"),
+                config_revision=payload.get("config_revision"),
+                engine_type=engine_type,
             )
             if ti is not None:
                 ti.xcom_push(key="error_summary", value=payload)
@@ -1405,6 +1636,7 @@ class FFEngineOperator(BaseOperator):
         retry_telemetry: dict,
         task_config: dict,
         airflow_ctx: dict,
+        context: dict | None = None,
     ) -> dict:
         """F6.0 — harici (non-Standard) motor dispatch'i.
 
@@ -1482,6 +1714,28 @@ class FFEngineOperator(BaseOperator):
                 f"reported='{reported_engine}'."
             )
         resolved = engine_type
+        # F4.3E — fiili counter_source sonuç kanıtından türetilir; otoritatif
+        # sayı yoksa dürüstlük: `unavailable` → sayaçlar açık null,
+        # reconciliation_status = not_applicable (T-F4.3E-11). Bu dala yalnız
+        # require_reconciliation=false ile gelinebilir (preflight aksi hâlde
+        # task başında durdurur).
+        counter_source = _gov.resolve_counter_source(
+            resolved,
+            rows_read=getattr(result, "rows_read", None),
+            rows_written=getattr(result, "rows_written", None),
+            snapshot_id=getattr(result, "snapshot_id", None),
+            reconciliation_status=getattr(result, "reconciliation_status", None),
+        )
+        if counter_source == _gov.COUNTER_SOURCE_UNAVAILABLE:
+            rows_read = None
+            rows_written = None
+            rows_rejected = None
+            reconciliation_status = _gov.RECONCILIATION_NOT_APPLICABLE
+        else:
+            rows_read = result.rows_read
+            rows_written = result.rows_written
+            rows_rejected = result.rows_rejected
+            reconciliation_status = result.reconciliation_status
         summary = {
             "rows": result.rows,
             "duration_seconds": result.duration_seconds,
@@ -1489,14 +1743,34 @@ class FFEngineOperator(BaseOperator):
             "partitions_completed": result.partitions_completed,
             "errors": list(result.errors or []),
             "retry_telemetry": retry_telemetry,
-            "rows_read": result.rows_read,
-            "rows_written": result.rows_written,
-            "rows_rejected": result.rows_rejected,
-            "reconciliation_status": result.reconciliation_status,
+            "rows_read": rows_read,
+            "rows_written": rows_written,
+            "rows_rejected": rows_rejected,
+            "reconciliation_status": reconciliation_status,
             "engine_type": resolved,
             "application_id": result.application_id,
             "snapshot_id": result.snapshot_id,
         }
+        summary.update(
+            _governance_event_fields(
+                context=context,
+                event_scope=_gov.EVENT_SCOPE_TASK,
+                outcome=_gov.OUTCOME_SUCCEEDED,
+                engine_type=resolved,
+                task_config=task_config,
+                task_group_id=self.task_group_id,
+                source_conn_id=self.source_conn_id,
+                target_conn_id=self.target_conn_id,
+                config_path=self.config_path,
+                # Harici motor dispatch'i `_render_file_paths`'ten ÖNCEDİR:
+                # dosya-yolu alanları şablon hâlindedir → dataset=şablon,
+                # `*_resolved`=null (dürüstlük — review-fix MINOR-3).
+                raw_file_path=task_config.get("file_path"),
+                raw_target_file_path=task_config.get("target_file_path"),
+                paths_rendered=False,
+                counter_source=counter_source,
+            )
+        )
         _log_structured(
             level=logging.INFO,
             stage="airflow",
@@ -1508,13 +1782,20 @@ class FFEngineOperator(BaseOperator):
             duration_seconds=result.duration_seconds,
             throughput=result.throughput,
             delivery_semantics="best_effort",
-            rows_read=result.rows_read,
-            rows_written=result.rows_written,
-            rows_rejected=result.rows_rejected,
-            reconciliation_status=result.reconciliation_status,
+            rows_read=rows_read,
+            rows_written=rows_written,
+            rows_rejected=rows_rejected,
+            reconciliation_status=reconciliation_status,
             engine_type=resolved,
             application_id=result.application_id,
             snapshot_id=result.snapshot_id,
+            schema_version=summary["schema_version"],
+            event_scope=summary["event_scope"],
+            outcome=summary["outcome"],
+            counter_source=counter_source,
+            config_revision=summary["config_revision"],
+            source_dataset=summary["source_dataset"],
+            target_dataset=summary["target_dataset"],
         )
         return summary
 

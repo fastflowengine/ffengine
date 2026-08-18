@@ -15,6 +15,8 @@ from ffengine.config.schema import (
     ENGINE_PREFERENCE_KEY,
     ENGINE_SPARK_FIELD,
     ENGINE_SPARK_KEY,
+    REQUIRE_RECONCILIATION_FIELD,
+    REQUIRE_RECONCILIATION_KEY,
     REQUIRED_ROOT_FIELDS,
     TASK_DEFAULTS,
     VALID_ENGINE_BLOCK_FIELDS,
@@ -59,6 +61,7 @@ class ConfigLoader:
         normalized = self._apply_defaults(task)
         self._resolve_mapping_file_path(normalized, config_path)
         self._attach_engine_preference(raw, normalized)
+        self._attach_require_reconciliation(raw, normalized)
         ConfigValidator().validate(normalized)
         return normalized
 
@@ -104,7 +107,11 @@ class ConfigLoader:
         return result
 
     def _reject_reserved_task_fields(self, task: dict) -> None:
-        reserved = (ENGINE_PREFERENCE_KEY, ENGINE_SPARK_KEY)
+        reserved = (
+            ENGINE_PREFERENCE_KEY,
+            ENGINE_SPARK_KEY,
+            REQUIRE_RECONCILIATION_KEY,
+        )
         for field in reserved:
             if field in task:
                 raise ConfigError(
@@ -150,6 +157,16 @@ class ConfigLoader:
                     f"{sorted(VALID_ENGINE_SPARK_FIELDS)}."
                 )
             task[ENGINE_SPARK_KEY] = copy.deepcopy(spark)
+
+    def _attach_require_reconciliation(self, raw: dict, task: dict) -> None:
+        """F4.3E — kök ``require_reconciliation`` alanını task dict'ine taşır.
+
+        Varsayılan davranış (alan yok) = ``true``; tip kontrolü
+        ``ConfigValidator._check_require_reconciliation`` içindedir
+        (``ValidationError``/422 — engine bloğu deseni).
+        """
+        if REQUIRE_RECONCILIATION_FIELD in raw:
+            task[REQUIRE_RECONCILIATION_KEY] = raw[REQUIRE_RECONCILIATION_FIELD]
 
     def _resolve_mapping_file_path(self, task: dict, config_path: str) -> None:
         """mapping_file relatif ise config dosyasina gore absolute cozumler."""

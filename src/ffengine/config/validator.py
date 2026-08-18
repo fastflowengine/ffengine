@@ -12,6 +12,8 @@ from ffengine.config.schema import (
     DEFAULT_ENGINE_PREFERENCE,
     ENGINE_PREFERENCE_KEY,
     ENGINE_SPARK_KEY,
+    REQUIRE_RECONCILIATION_FIELD,
+    REQUIRE_RECONCILIATION_KEY,
     REQUIRED_TASK_FIELDS,
     VALID_SOURCE_TYPES,
     VALID_LOAD_METHODS,
@@ -75,6 +77,8 @@ class ConfigValidator:
         # sırası değişmedi; bu YENİ bir kontroldür ve engine bloğu olmayan +
         # iceberg olmayan config'ler için no-op'tur.
         self._check_engine(task)
+        # F4.3E — kök `require_reconciliation` tip kontrolü (additive alan).
+        self._check_require_reconciliation(task)
         self._check_source_type(task)
         self._check_target_type(task)
         self._check_load_method(task)
@@ -96,6 +100,31 @@ class ConfigValidator:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _check_require_reconciliation(self, task: dict) -> None:
+        """F4.3E — `require_reconciliation` kuralları.
+
+        - Task seviyesinde public ad **fail-loud reddedilir** (review-fix
+          MINOR-1): bu bir garanti bayrağıdır; sessiz yok-sayma, sessiz
+          garanti değişikliğine bitişik bir tuzaktır. Task-level override
+          spec'te TANIMLI DEĞİLDİR (epic kartı + CONFIG_AND_DATA_CONTRACTS:
+          "kök alan").
+        - Kök değer boolean olmalıdır (verilmişse). Sessiz tip düzeltmesi
+          yapılmaz: "yes"/1 truthy diye kabul edilirse geliştirici garantiyi
+          yanlışlıkla kapatabilir/açabilir.
+        """
+        if REQUIRE_RECONCILIATION_FIELD in task:
+            raise ValidationError(
+                f"'{REQUIRE_RECONCILIATION_FIELD}' is a root-level field and "
+                "is not supported at task level. Move it to the top of the "
+                "flow config (next to source_db_var/target_db_var)."
+            )
+        value = task.get(REQUIRE_RECONCILIATION_KEY)
+        if value is not None and not isinstance(value, bool):
+            raise ValidationError(
+                "Root field 'require_reconciliation' must be a boolean "
+                f"(true/false); got {value!r}."
+            )
 
     def _check_required(self, task: dict) -> None:
         required_fields = list(REQUIRED_TASK_FIELDS)

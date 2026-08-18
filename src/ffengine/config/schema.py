@@ -188,6 +188,19 @@ SECRET_FIELD_HINTS: tuple[str, ...] = (
     "passphrase",
 )
 
+# F4.3E — sessiz garanti düşürme yasağı (kök alan, opsiyonel, additive).
+#
+#     require_reconciliation: true   # varsayılan; false = bilinçli vazgeçiş
+#
+# `counter_source = unavailable` bildiren bir motorla `true` birleşirse task
+# BAŞINDA, kaynağa hiç bağlanılmadan fail-loud olunur (T-F4.3E-10). Tip
+# kontrolü `ConfigValidator._check_require_reconciliation` içindedir.
+REQUIRE_RECONCILIATION_FIELD: str = "require_reconciliation"
+#: Loader'ın task runtime dict'ine koyduğu private anahtar
+#: (`_engine_preference` konvansiyonu).
+REQUIRE_RECONCILIATION_KEY: str = "_require_reconciliation"
+DEFAULT_REQUIRE_RECONCILIATION: bool = True
+
 #: Alan verilmezse kullanılan belirgin varsayılan (EX-D021: `auto` korunur).
 DEFAULT_ENGINE_PREFERENCE: str = "auto"
 #: Loader'ın task runtime dict'ine koyduğu private anahtar
