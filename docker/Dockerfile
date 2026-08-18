@@ -39,7 +39,7 @@ ENV AIRFLOW__CORE__PLUGINS_FOLDER=/opt/airflow/plugins
 COPY --from=wheel-builder --chown=airflow:0 /tmp/ffengine-wheels /tmp/ffengine-wheels
 
 RUN pip install --no-cache-dir --no-index --find-links=/tmp/ffengine-wheels \
-    ffengine==0.1.0 \
+    ffengine \
     --constraint "${HOME}/constraints.txt" && \
     rm -rf /tmp/ffengine-wheels
 
