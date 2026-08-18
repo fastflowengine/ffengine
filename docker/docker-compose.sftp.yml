@@ -1,0 +1,28 @@
+﻿# SFTP test servisi (F1.5 canli dogrulama) — Community stack'i ile ayni Docker agi.
+#
+# Kullanim:
+#   docker compose -f docker-compose.yml -f docker-compose.sftp.yml up -d sftp
+#
+# Kimlik: ffuser / ffpass  ·  Host (konteynerler icinden): core-sftp:22
+# Host makineden:            localhost:2222
+#
+# Dizin duzeni (konteyner ici):
+#   /home/ffuser/upload/inbox/   -> kaynak dosyalar (customer.csv)
+#   /home/ffuser/upload/outbox/  -> FFEngine SFTP hedef yazimlari
+# Not: atmoz/sftp'de yalniz /home/<user>/upload yazilabilirdir (ust dizin root'a aittir).
+
+name: ffengine-core
+
+services:
+  sftp:
+    container_name: core-sftp
+    image: atmoz/sftp:alpine
+    ports:
+      - "2222:22"
+    volumes:
+      - sftp-data:/home/ffuser/upload
+    command: ffuser:ffpass:1001
+
+volumes:
+  sftp-data:
+    name: ffengine-sftp-data

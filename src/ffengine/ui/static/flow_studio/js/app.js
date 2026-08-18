@@ -1,4 +1,4 @@
-﻿const STUDIO_BASE_CANDIDATES = (() => {
+const STUDIO_BASE_CANDIDATES = (() => {
   const pathname = (window.location.pathname || "").toLowerCase();
   const candidates = [];
   if (pathname.startsWith("/plugin/flow-studio")) {
@@ -1677,6 +1677,20 @@ async function studioFetch(path, options) {
       return {
         upstream_dag_ids: upstreamDagIds,
       };
+    }
+
+    // Kopyala-yapistir kaynaklari (Word/Confluence/sohbet) ASCII disi bosluk
+    // uretebiliyor; PostgreSQL bunlari bosluk DEGIL identifier karakteri sayar
+    // ve "syntax error at or near ..." ile patlar. Yalniz bosluk sinifi
+    // hedeflenir: SQL string literallerindeki Turkce harf/emoji korunur.
+    const NON_ASCII_SPACE_RE =
+      /[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/g;
+    const ZERO_WIDTH_RE = /[\u200b\u200c\u200d\ufeff]/g;
+
+    function normalizeSqlWhitespace(text) {
+      return String(text == null ? "" : text)
+        .replace(NON_ASCII_SPACE_RE, " ")
+        .replace(ZERO_WIDTH_RE, "");
     }
 
     function pushToast(message, variant = "success", persistent = false) {
@@ -5355,6 +5369,33 @@ async function studioFetch(path, options) {
         schedulePartitionColumnRefresh();
         scheduleUpsertColumnRefresh();
       });
+
+      const inlineSqlInput = card.querySelector(".source-inline-sql");
+      if (inlineSqlInput) {
+        inlineSqlInput.addEventListener("paste", (event) => {
+          const clipboard = event.clipboardData || window.clipboardData;
+          if (!clipboard) return;
+          const pasted = clipboard.getData("text");
+          const cleaned = normalizeSqlWhitespace(pasted);
+          if (cleaned === pasted) return;
+          // Gorunmez bosluk bulundu: yapistirmayi biz yapiyoruz ki kullanici
+          // temizlenmis metni ekranda gorsun (Ctrl+Z ile geri alinabilir).
+          event.preventDefault();
+          const start = inlineSqlInput.selectionStart;
+          const end = inlineSqlInput.selectionEnd;
+          const before = inlineSqlInput.value.slice(0, start);
+          const after = inlineSqlInput.value.slice(end);
+          inlineSqlInput.value = before + cleaned + after;
+          const caret = start + cleaned.length;
+          inlineSqlInput.setSelectionRange(caret, caret);
+          inlineSqlInput.dispatchEvent(new Event("input", { bubbles: true }));
+          pushToast(
+            "Yapistirilan SQL'de gorunmez bosluk karakterleri bulundu ve normal " +
+              "bosluga cevrildi (veritabani bunlari bosluk saymaz).",
+            "success"
+          );
+        });
+      }
 
       const targetTypeSelect = card.querySelector(".target-type");
       if (targetTypeSelect) {
