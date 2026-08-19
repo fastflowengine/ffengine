@@ -1459,8 +1459,14 @@
       }
     }
 
+    /* Kart ici (editor disi) mapping listesi. Editor listesi (.mapping-io-list)
+       kendi compact araligini yukarida tanimlar; bu kuralin genis padding'i
+       oraya sizmasin diye kapsam disi birakildi. */
     .mapping-column-item {
       border-top: 1px solid color-mix(in srgb, var(--line) 85%, var(--card) 15%);
+    }
+
+    :not(.mapping-io-list) > .mapping-column-item {
       padding: 10px 0;
     }
 
@@ -1468,7 +1474,8 @@
       border-top: none;
     }
 
-    .mapping-column-row {
+    /* Kart ici satir duzeni; editor listesi kendi grid template'ini kullanir. */
+    :not(.mapping-io-list) > .mapping-column-item > .mapping-column-row {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;

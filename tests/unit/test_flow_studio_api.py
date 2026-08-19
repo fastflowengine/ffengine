@@ -238,7 +238,7 @@ def test_advanced_dag_parameter_uses_parameter_type_label():
 
     assert "Parameter Type" in index_html
     assert "Data Type" not in index_html
-    assert "style.css?v=66" in index_html
+    assert "style.css?v=67" in index_html
 
 
 def test_connection_selector_uses_generic_source_and_target_labels():
