@@ -1287,8 +1287,12 @@
        little scroll. ALL controls (incl. the remove button) are border-box at
        the same 30px height, so the button never drives the row taller than the
        inputs — `min-height:0` cancels the global 40px on .btn / input,select. */
-    .mapping-io-list .mapping-column-item {
-      padding: 2px 0;
+    /* NOT: asagidaki genel `.mapping-column-item { padding:10px 0 }` kurali bu
+       dosyada DAHA SONRA geldigi icin ayni ozgullukte oldugunda onu eziyordu;
+       compact satir araligi bu yuzden hic uygulanmiyordu. Ozgullugu artirarak
+       (iki sinif) kesin hale getirildi. */
+    .mapping-io-list.mapping-io-list .mapping-column-item {
+      padding: 1px 0;
     }
 
     /* Shared column template for the header + every row (fixed last two tracks
@@ -1299,6 +1303,12 @@
       grid-template-columns: 100px minmax(0, 1.15fr) minmax(0, 1.15fr) minmax(0, 1fr) 72px 40px;
       gap: 6px;
       align-items: center;
+    }
+
+    /* Satirlar arasi ayirici cizgiyi de sikistir: kalin border + genis padding
+       yerine ince ayirici, boylece ekrana daha cok kolon sigar. */
+    .mapping-io-list.mapping-io-list .mapping-column-item + .mapping-column-item {
+      border-top-color: color-mix(in srgb, var(--line) 55%, var(--card) 45%);
     }
 
     /* Sticky header row inside the scrolling list: same width + gutter as rows,
@@ -1329,10 +1339,10 @@
       min-width: 0;
       width: 100%;
       box-sizing: border-box;
-      height: 30px;
+      height: 28px;
       min-height: 0;
       margin-top: 0;
-      padding: 2px 8px;
+      padding: 1px 8px;
       font-size: 12px;
       line-height: 1.2;
     }
