@@ -15,8 +15,23 @@ import csv
 import json
 from typing import Generator
 
+from ffengine.config.schema import DEFAULT_FILE_FORMAT, VALID_SOURCE_FILE_FORMATS
 from ffengine.errors.exceptions import FileSourceError
 from ffengine.pipeline.file_transport import open_read, resolve_read_paths
+
+FORMAT_CSV = "csv"
+FORMAT_JSON = "json"
+
+
+def _resolve_format(value) -> str:
+    """Kaynak dosya formatini coz (verilmezse CSV) — writer ile simetrik."""
+    name = str(value or "").strip().lower() or DEFAULT_FILE_FORMAT
+    if name not in VALID_SOURCE_FILE_FORMATS:
+        raise FileSourceError(
+            f"Gecersiz source_file_format: '{name}'. "
+            f"Gecerli degerler: {sorted(VALID_SOURCE_FILE_FORMATS)}."
+        )
+    return name
 
 
 class FileSourceReader:
@@ -26,6 +41,7 @@ class FileSourceReader:
         self.batch_size = int(config.get("batch_size", 10_000) or 10_000)
         self.source_columns = list(config.get("source_columns") or [])
         self.options = dict(getattr(file_ctx, "options", {}) or {})
+        self.file_format = _resolve_format(self.options.get("format"))
 
     # ------------------------------------------------------------------
     # Public API — mirrors SourceReader.read()
@@ -59,7 +75,7 @@ class FileSourceReader:
         encoding = str(self.options.get("encoding") or "utf-8")
         lines = _decode_lines(handle.stream, encoding)
         try:
-            if self.ctx.source_type == "csv":
+            if self.file_format == FORMAT_CSV:
                 yield from self._read_csv(lines, path)
             else:
                 yield from self._read_json_flat(lines, path)

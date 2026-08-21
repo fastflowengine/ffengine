@@ -17,7 +17,8 @@ from ffengine.pipeline.file_transport import FileSourceContext, FileTargetContex
 def _cfg(**overrides):
     cfg = {
         "task_group_id": "t",
-        "source_type": "csv",
+        "source_type": "file",
+        "source_file_format": "csv",
         "target_type": "file",
         "source_columns": ["id", "name"],
         "target_columns": ["id", "name"],
@@ -30,7 +31,7 @@ def _cfg(**overrides):
 def _run(src, out, cfg):
     src_ctx = FileSourceContext(
         conn_id="fs", conn_type="fs", file_path=str(src),
-        source_type=cfg["source_type"], options={},
+        options={"format": cfg.get("source_file_format", "csv")},
     )
     tgt_ctx = FileTargetContext(
         conn_id="fs", conn_type="fs", file_path=str(out), options={}
@@ -70,6 +71,47 @@ def test_json_flat_to_file(tmp_path):
     src = tmp_path / "in.jsonl"
     src.write_text('{"id":1,"name":"a"}\n{"id":2,"name":"b"}\n', encoding="utf-8")
     out = tmp_path / "out.csv"
-    result = _run(src, out, _cfg(source_type="json"))
+    result = _run(src, out, _cfg(source_file_format="json"))
     assert result.rows == 2
     assert out.read_text("utf-8").splitlines() == ["id,name", "1,a", "2,b"]
+
+
+def test_jsonl_target_output_is_readable_by_json_source(tmp_path):
+    """ROUND-TRIP: FFEngine'in yazdigi JSONL'i FFEngine geri okuyabilmeli.
+
+    Bu, JSONL secimini (tek JSON array DEGIL) muhurler: array yazsaydik
+    `_read_json_flat` kendi ciktimizi okuyamazdi ('[' satirinda parse hatasi).
+    """
+    from decimal import Decimal
+
+    from ffengine.pipeline.file_source_reader import FileSourceReader
+    from ffengine.pipeline.file_target_writer import FileTargetWriter
+
+    path = tmp_path / "rt.jsonl"
+    cols = ["id", "name", "amount"]
+
+    writer = FileTargetWriter(
+        FileTargetContext(
+            conn_id="fs_default",
+            conn_type="fs",
+            file_path=str(path),
+            options={"format": "json", "encoding": "utf-8"},
+        )
+    )
+    cfg = {"target_columns": cols}
+    writer.prepare(cfg)
+    writer.write_batch([(1, "Şişli", Decimal("10.50")), (2, None, Decimal("0.10"))], cfg)
+    writer.finalize()
+
+    reader = FileSourceReader(
+        FileSourceContext(
+            conn_id="fs_default",
+            conn_type="fs",
+            file_path=str(path),
+            options={"format": "json", "json_mode": "flat", "encoding": "utf-8"},
+        ),
+        {"source_columns": cols, "batch_size": 100},
+    )
+    rows = [row for batch in reader.read() for row in batch]
+    # Decimal string olarak korunur (precision kaybi yok); None -> null -> None.
+    assert rows == [(1, "Şişli", "10.50"), (2, None, "0.10")]

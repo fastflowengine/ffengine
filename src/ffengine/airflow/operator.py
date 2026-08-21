@@ -8,7 +8,6 @@ FFEngineOperator, Airflow ortamında FFEngine Flow pipeline'ını orkestre eder:
 import json
 import logging
 import re
-from datetime import UTC, datetime
 from typing import Any
 
 try:
@@ -51,25 +50,32 @@ def _log_structured(
     level: int,
     stage: str,
     message: str,
-    task_group_id: str,
+    # Airflow log kaydinda zaten var (asagidaki nota bakiniz); imzada 18 cagri
+    # yeri oldugu icin korunur, log govdesine YAZILMAZ.
+    task_group_id: str,  # noqa: ARG001
     source_db: str,
     target_db: str,
     rows: int = 0,
     duration_seconds: float = 0.0,
     **optional,
 ) -> None:
+    # Airflow log kaydi zaten timestamp/level/logger/dag_id/run_id/task_id ve
+    # task_group_id'yi kendi basina yaziyor; ayni degerleri tekrar etmek asil
+    # parametreleri (uc kimligi, satir sayisi, hata detayi) gorunmez kiliyordu
+    # (kullanici geri bildirimi 2026-08-19). Zarf alanlari cikarildi.
+    #
+    # NOT: bu YALNIZCA log satirinin bicimidir. F4.3E kanonik event semasi
+    # (XCom payload'i) degismedi -- orada tam alan kumesi korunur.
     payload = {
-        "timestamp": datetime.now(UTC).isoformat(),
-        "level": logging.getLevelName(level),
-        "logger": __name__,
+        "message": message,
         "stage": stage,
-        "task_group_id": task_group_id,
         "source_db": source_db,
         "target_db": target_db,
-        "rows": rows,
-        "duration_seconds": round(float(duration_seconds), 3),
-        "message": message,
     }
+    if rows:
+        payload["rows"] = rows
+    if duration_seconds:
+        payload["duration_seconds"] = round(float(duration_seconds), 3)
     for k, v in optional.items():
         # F4.3E — kanonik şemanın çekirdek alanları None-filtresine takılmaz:
         # `null` bir DEĞERDİR (örn. hata yolunda reconciliation_status=null).
@@ -77,6 +83,23 @@ def _log_structured(
         if v is not None or k in _gov.CORE_NULLABLE_FIELDS:
             payload[k] = v
     _log.log(level, "%s", payload)
+
+
+def _endpoint_host(params: Any) -> str | None:
+    """Log icin uc sunucu adi (yalnizca HOST).
+
+    Kullanici karari (2026-08-19): "hangi sunucudan nereye" sorusu loglardan
+    okunabilmeli; host yayimlanir. PORT, KULLANICI ADI ve PAROLA yayimlanmaz
+    (AGENTS.md "no credentials": secret yalnizca Connection/Secrets Backend'de).
+    Dosya/SFTP uclarinda host yoksa ``null`` doner -- uydurma deger yazilmaz.
+    """
+    if not isinstance(params, dict):
+        return None
+    host = params.get("host")
+    if host is None:
+        return None
+    host = str(host).strip()
+    return host or None
 
 
 # ---------------------------------------------------------------------------
@@ -1128,8 +1151,8 @@ def _file_source_context(conn_id: str, params: dict, task_config: dict):
         conn_id=conn_id,
         conn_type=str(params.get("conn_type") or ""),
         file_path=str(task_config.get("file_path") or ""),
-        source_type=str(task_config.get("source_type") or "csv"),
         options={
+            "format": task_config.get("source_file_format"),
             "delimiter": task_config.get("delimiter"),
             "encoding": task_config.get("encoding"),
             "header": task_config.get("header", True),
@@ -1150,6 +1173,8 @@ def _file_target_context(conn_id: str, params: dict, task_config: dict):
             "delimiter": task_config.get("target_delimiter"),
             "encoding": task_config.get("target_encoding"),
             "header": task_config.get("target_header", True),
+            # Hedef dosya formati (csv|json); verilmezse writer CSV'ye duser.
+            "format": task_config.get("target_file_format"),
         },
     )
 
@@ -1244,7 +1269,7 @@ class FFEngineOperator(BaseOperator):
 
         from ffengine.config.loader import ConfigLoader
         from ffengine.config.binding_resolver import BindingResolver
-        from ffengine.config.schema import FILE_SOURCE_TYPES
+        from ffengine.config.schema import is_file_source
         from ffengine.db.airflow_adapter import AirflowConnectionAdapter
         from ffengine.db.session import DBSession
         from ffengine.mapping import MappingResolver
@@ -1290,6 +1315,9 @@ class FFEngineOperator(BaseOperator):
         gov_task_config = None
         raw_file_path = None
         raw_target_file_path = None
+        # Uc host'lari: baglanti cozulmeden hata olursa dürüstce None kalir.
+        src_params = None
+        tgt_params = None
         try:
             _log_structured(
                 level=logging.DEBUG,
@@ -1356,10 +1384,7 @@ class FFEngineOperator(BaseOperator):
             target_db = tgt_params.get("conn_type", "unknown")
 
             # F1.4/F1.5 — file uçları DB dialect/session çözümünü atlar.
-            source_is_file = (
-                str(task_config.get("source_type") or "").strip().lower()
-                in FILE_SOURCE_TYPES
-            )
+            source_is_file = is_file_source(task_config)
             target_is_file = (
                 str(task_config.get("target_type") or "db").strip().lower() == "file"
             )
@@ -1435,6 +1460,20 @@ class FFEngineOperator(BaseOperator):
                 )
 
                 # ---- Phase 2: PREPARE (DB hedef; dosya hedef FlowManager içinde) ----
+                # Uc kimligi (conn_id + host + dataset/dosya yolu) faz loglarina
+                # yazilir: "hangi sunucudan nereye" sorusu tek satirda cevaplanir.
+                # Sinir (kullanici karari 2026-08-19): HOST yayimlanir; port,
+                # kullanici adi ve parola YAYIMLANMAZ (AGENTS.md "no credentials").
+                endpoints = _gov.dataset_identity(
+                    task_config,
+                    task_group_id=self.task_group_id,
+                    source_conn_id=self.source_conn_id,
+                    target_conn_id=self.target_conn_id,
+                    raw_file_path=raw_file_path,
+                    raw_target_file_path=raw_target_file_path,
+                )
+                endpoints["source_host"] = _endpoint_host(src_params)
+                endpoints["target_host"] = _endpoint_host(tgt_params)
                 _log_structured(
                     level=logging.INFO,
                     stage="airflow",
@@ -1442,6 +1481,7 @@ class FFEngineOperator(BaseOperator):
                     task_group_id=self.task_group_id,
                     source_db=source_db,
                     target_db=target_db,
+                    **endpoints,
                 )
                 if not target_is_file:
                     TargetWriter(tgt_session, tgt_dialect).prepare(task_config)
@@ -1455,6 +1495,7 @@ class FFEngineOperator(BaseOperator):
                     source_db=source_db,
                     target_db=target_db,
                     partition_id=len(specs),
+                    **endpoints,
                 )
                 base_where = task_config.get("_resolved_where")
                 results: list[FlowResult] = []
@@ -1620,6 +1661,17 @@ class FFEngineOperator(BaseOperator):
                 counter_source=payload.get("counter_source"),
                 config_revision=payload.get("config_revision"),
                 engine_type=engine_type,
+                # Hata satirinda da uc kimligi gorunur: "hangi baglantidan
+                # nereye" bilgisi olmadan izin/yol hatalarini teshis etmek
+                # loglari tek tek okumayi gerektiriyordu.
+                source_conn_id=payload.get("source_conn_id"),
+                target_conn_id=payload.get("target_conn_id"),
+                source_host=_endpoint_host(src_params),
+                target_host=_endpoint_host(tgt_params),
+                source_dataset=payload.get("source_dataset"),
+                source_dataset_resolved=payload.get("source_dataset_resolved"),
+                target_dataset=payload.get("target_dataset"),
+                target_dataset_resolved=payload.get("target_dataset_resolved"),
             )
             if ti is not None:
                 ti.xcom_push(key="error_summary", value=payload)

@@ -136,7 +136,14 @@ def _reference_expression(task: dict[str, Any]) -> str:
         return str(task.get("script_sql") or "")
     if task_type == "dbt":
         return dbt_vars_expression_text(task)
-    return str(task.get("where") or "")
+    # F1.5 — dosya yollari da `{{ p }}` sablonu tasir ve operator bunlari
+    # render eder (`_render_file_paths`). Burada taranmazlarsa binding
+    # kaynaklari sessizce bos kalir ve calisma aninda "cozulemeyen deger"
+    # hatasina donusur -- yukaridaki sozlesmenin tam olarak uyardigi durum.
+    return "\n".join(
+        str(task.get(field) or "")
+        for field in ("where", "file_path", "target_file_path")
+    )
 
 
 def _task_references(task: dict[str, Any], declared: set[str]) -> set[str]:

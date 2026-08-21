@@ -107,7 +107,8 @@ class TestSourceType:
 def _file_source_task(**overrides) -> dict:
     """A valid csv/json file-source task (explicit mapping, no source_schema)."""
     t = _task(
-        source_type="csv",
+        source_type="file",
+        source_file_format="csv",
         source_schema=None,
         source_table=None,
         file_path="/incoming/orders.csv",
@@ -124,11 +125,11 @@ class TestFileSource:
 
     def test_json_flat_passes(self):
         ConfigValidator().validate(
-            _file_source_task(source_type="json", json_mode="flat")
+            _file_source_task(source_file_format="json", json_mode="flat")
         )
 
     def test_json_defaults_to_flat(self):
-        ConfigValidator().validate(_file_source_task(source_type="json"))
+        ConfigValidator().validate(_file_source_task(source_file_format="json"))
 
     def test_csv_requires_file_path_not_source_table(self):
         # T-F1.4-3: csv needs file_path; a source_table alone is not enough.
@@ -146,12 +147,26 @@ class TestFileSource:
     def test_json_raw_mode_rejected_this_slice(self):
         with pytest.raises(ValidationError, match="json_mode"):
             ConfigValidator().validate(
-                _file_source_task(source_type="json", json_mode="raw")
+                _file_source_task(source_file_format="json", json_mode="raw")
             )
 
     def test_file_source_without_source_schema_passes(self):
         # source_schema is not required for a file source.
         ConfigValidator().validate(_file_source_task(source_schema=None))
+
+    def test_source_file_format_defaults_to_csv(self):
+        # Format verilmezse CSV: `source_type: file` tek basina gecerlidir.
+        task = _file_source_task()
+        task.pop("source_file_format", None)
+        ConfigValidator().validate(task)
+
+    def test_invalid_source_file_format_rejected(self):
+        # Format bir VERI sozlesmesidir (hangi ayristirici kosacagini belirler),
+        # bu yuzden fail-loud — hedef tarafla simetrik.
+        with pytest.raises(ValidationError, match="source_file_format"):
+            ConfigValidator().validate(
+                _file_source_task(source_file_format="parquet")
+            )
 
 
 class TestTargetType:
@@ -177,6 +192,48 @@ class TestTargetType:
                 target_file_path="/out/orders.csv",
             )
         )
+
+    # target_file_format (kullanici karari 2026-08-19): transport ⟂ format.
+    def test_file_target_accepts_json_format(self):
+        ConfigValidator().validate(
+            _task(
+                target_type="file",
+                target_schema=None,
+                target_table=None,
+                target_file_path="/out/orders.jsonl",
+                target_file_format="json",
+            )
+        )
+
+    def test_file_target_rejects_unknown_format(self):
+        with pytest.raises(ValidationError, match="target_file_format"):
+            ConfigValidator().validate(
+                _task(
+                    target_type="file",
+                    target_schema=None,
+                    target_table=None,
+                    target_file_path="/out/orders.xml",
+                    target_file_format="xml",
+                )
+            )
+
+    def test_format_is_rejected_on_non_file_target(self):
+        # Sessiz yok sayma yerine fail-loud: "JSON yazdim ama DB'ye gitti" yok.
+        with pytest.raises(ValidationError, match="target_file_format"):
+            ConfigValidator().validate(_task(target_file_format="json"))
+
+    def test_json_format_rejects_csv_only_options(self):
+        with pytest.raises(ValidationError, match="target_header"):
+            ConfigValidator().validate(
+                _task(
+                    target_type="file",
+                    target_schema=None,
+                    target_table=None,
+                    target_file_path="/out/orders.jsonl",
+                    target_file_format="json",
+                    target_header=True,
+                )
+            )
 
 
 # ---------------------------------------------------------------------------

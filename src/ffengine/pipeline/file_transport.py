@@ -43,12 +43,15 @@ def resolve_transport_kind(conn_type: str | None) -> str:
 
 @dataclass
 class FileSourceContext:
-    """A file SOURCE endpoint: transport + path + format options."""
+    """A file SOURCE endpoint: transport + path + format options.
+
+    Format `options["format"]` icindedir (csv|json) — `FileTargetContext` ile
+    birebir simetrik. Tasima (conn_type) formattan bagimsizdir.
+    """
 
     conn_id: str
     conn_type: str
     file_path: str
-    source_type: str            # "csv" | "json"
     options: dict[str, Any] = field(default_factory=dict)
 
 
@@ -203,7 +206,21 @@ def open_write(
         return TransportWriteHandle(open(tmp, "wb"), kind, tmp, final)
     tmp = final_path + tmp_suffix
     hook, client = _sftp_connect(conn_id)
-    stream = client.open(tmp, "wb")
+    try:
+        stream = client.open(tmp, "wb")
+    except Exception as exc:
+        # Paramiko'nun ham mesaji cogu zaman tek kelimedir ("Failure" =
+        # SFTP_FAILURE protokol kodu) ve hangi yolun acilamadigini soylemez.
+        # En sik neden: hedef yolun DOSYA degil DIZIN olmasi (ornegin
+        # `/upload/outbox` verilip `/upload/outbox.fftmp-*` acilmaya
+        # calisilmasi). Yolu ve altta yatan istisna tipini mesaja tasi.
+        _safe_close(client)
+        raise FileTransportError(
+            f"SFTP hedef dosyasi acilamadi: '{tmp}' "
+            f"({type(exc).__name__}: {exc}). "
+            f"Hedef yol bir DOSYA olmali; '{final_path}' bir dizin ise "
+            f"dosya adi ekleyin (ornegin '{final_path.rstrip('/')}/veri.csv')."
+        ) from exc
     return TransportWriteHandle(
         stream, kind, tmp, final_path, client=client, hook=hook
     )
@@ -222,7 +239,16 @@ def _sftp_promote(client, tmp: str, final: str) -> None:
             client.remove(final)
         except IOError:
             pass
-        client.rename(tmp, final)
+        try:
+            client.rename(tmp, final)
+        except Exception as exc:
+            # Ayni teshis sorunu promote asamasinda da olusabilir (ornegin
+            # hedef bir dizin): yol + istisna tipi mesaja tasinir.
+            raise FileTransportError(
+                f"SFTP gecici dosya hedefe tasinamadi: '{tmp}' -> '{final}' "
+                f"({type(exc).__name__}: {exc}). "
+                f"Hedef yol bir DOSYA olmali; dizin ise dosya adi ekleyin."
+            ) from exc
 
 
 # ---------------------------------------------------------------------------

@@ -12,12 +12,42 @@ leaves a partial final file (INV-1). M=1: a single writer instance per transfer
 from __future__ import annotations
 
 import csv
+import datetime as _dt
+import decimal
 import io
+import json
 import os
 import re
 
 from ffengine.errors.exceptions import FileTargetError
 from ffengine.pipeline.file_transport import open_write
+
+# Hedef dosya formatlari. `csv` varsayilandir (geriye uyum: `target_file_format`
+# tasimayan mevcut configler aynen CSV yazar).
+FORMAT_CSV = "csv"
+FORMAT_JSON = "json"
+VALID_TARGET_FILE_FORMATS = frozenset({FORMAT_CSV, FORMAT_JSON})
+
+
+def _json_default(value):
+    """JSON'a serilestirilemeyen tipler icin donusum (fail-loud).
+
+    CSV yolu her degeri str()'e cevirir; json.dumps ise Decimal/date/datetime/
+    bytes icin TypeError atar -- DB kaynakli satirlarda Decimal neredeyse her
+    numeric kolonda vardir.
+
+    `Decimal` -> str: float'a cevirmek sessiz precision kaybidir (INV-1).
+    Bilinmeyen tip -> fail-loud; sessiz str() ile veriyi bozmayiz.
+    """
+    if isinstance(value, decimal.Decimal):
+        return str(value)
+    if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
+        return value.isoformat()
+    raise FileTargetError(
+        f"JSON hedefine yazilamayan deger tipi: {type(value).__name__}. "
+        "Desteklenenler: metin, sayi, bool, null, Decimal, date/datetime. "
+        "Binary kolonlar icin CSV formatini kullanin."
+    )
 
 
 class FileTargetWriter:
@@ -28,6 +58,7 @@ class FileTargetWriter:
         self._columns: list[str] = []
         self._encoding = "utf-8"
         self._delimiter = ","
+        self._format = FORMAT_CSV
         self._rows_written = 0
 
     # ------------------------------------------------------------------
@@ -46,13 +77,16 @@ class FileTargetWriter:
             )
         self._encoding = str(self.options.get("encoding") or "utf-8")
         self._delimiter = str(self.options.get("delimiter") or ",")
+        self._format = _resolve_format(self.options.get("format"))
         self._handle = open_write(
             self.ctx.conn_id,
             self.ctx.conn_type,
             self.ctx.file_path,
             tmp_suffix=_tmp_suffix(task_config),
         )
-        if self.options.get("header", True):
+        # Header yalniz CSV'de anlamlidir: JSON (JSONL) her satirda kolon
+        # adlarini anahtar olarak tasir, ayri bir baslik satiri yoktur.
+        if self._format == FORMAT_CSV and self.options.get("header", True):
             self._handle.stream.write(self._encode_rows([self._columns]))
 
     def write_batch(self, rows: list[tuple], task_config: dict) -> int:
@@ -86,10 +120,46 @@ class FileTargetWriter:
     # ------------------------------------------------------------------
 
     def _encode_rows(self, rows) -> bytes:
+        if self._format == FORMAT_JSON:
+            return self._encode_json(rows)
+        return self._encode_csv(rows)
+
+    def _encode_csv(self, rows) -> bytes:
         sio = io.StringIO()
         writer = csv.writer(sio, delimiter=self._delimiter, lineterminator="\n")
         writer.writerows(rows)
         return sio.getvalue().encode(self._encoding)
+
+    def _encode_json(self, rows) -> bytes:
+        """JSONL: satir basina tek JSON obje.
+
+        Tek buyuk JSON array DEGIL. Uc gerekce: (1) kaynak okuyucu
+        (`file_source_reader._read_json_flat`) JSONL bekler -- kendi ciktimizi
+        geri okuyabilmeliyiz; (2) writer batch batch akitir, array acilis/kapanis
+        parantezi finalize'a icerik yazma sorumlulugu bindirir ve abort'ta yarim
+        dosya riski dogurur; (3) sabit-RAM sozlesmesi korunur.
+
+        `ensure_ascii=False`: aksi halde `target_encoding: utf-8` anlamsizlasir
+        ve Turkce karakterler `\\u00e7` olarak kacar. Anahtar sirasi
+        `target_columns` sirasidir (dict ekleme sirasini korur; sort_keys YOK).
+        """
+        sio = io.StringIO()
+        for row in rows:
+            obj = dict(zip(self._columns, row))
+            sio.write(json.dumps(obj, ensure_ascii=False, default=_json_default))
+            sio.write("\n")
+        return sio.getvalue().encode(self._encoding)
+
+
+def _resolve_format(value) -> str:
+    """Hedef dosya formatini coz (verilmezse CSV -- geriye uyum)."""
+    name = str(value or "").strip().lower() or FORMAT_CSV
+    if name not in VALID_TARGET_FILE_FORMATS:
+        raise FileTargetError(
+            f"Gecersiz target_file_format: '{name}'. "
+            f"Gecerli degerler: {sorted(VALID_TARGET_FILE_FORMATS)}."
+        )
+    return name
 
 
 def _tmp_suffix(task_config: dict) -> str:

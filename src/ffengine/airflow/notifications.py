@@ -19,6 +19,31 @@ from ffengine.airflow.notification_template import load_template, render_templat
 _log = logging.getLogger(__name__)
 
 
+def _smtp_host(conn_id: str) -> str | None:
+    """Log icin SMTP sunucu adi (YALNIZCA host).
+
+    Kullanici karari (2026-08-19): host yayimlanir; PORT, KULLANICI ADI ve
+    PAROLA yayimlanmaz (AGENTS.md "no credentials"). `error_type` tek basina
+    "neden gidemedi" sorusunu cevaplamiyordu -- yanlis sunucu adi gibi en sik
+    hata host gorunmeden teshis edilemiyor.
+
+    Baglanti cozulemezse ``None`` doner: bu yardimci **asla raise etmez**,
+    aksi halde uyari satirinin kendisi kaybolurdu (INV-6).
+    """
+    try:
+        try:
+            from airflow.sdk.bases.hook import BaseHook
+        except ImportError:  # pragma: no cover - eski Airflow yolu
+            from airflow.hooks.base import BaseHook
+
+        host = BaseHook.get_connection(conn_id).host
+    except Exception:  # noqa: BLE001 - teshis bilgisi ugruna uyari kaybolmaz
+        return None
+    if host is None:
+        return None
+    return str(host).strip() or None
+
+
 def build_notification_callbacks(notifications: Any) -> dict[str, Any]:
     """Return the DAG-level callback kwargs for a flow's notification policy.
 
@@ -141,8 +166,10 @@ def deadline_notification_callback(
         ).notify({})
     except Exception as exc:  # noqa: BLE001 - alerting must never raise
         _log.warning(
-            "ffengine.notification.deadline_send_failed conn_id=%s error_type=%s",
+            "ffengine.notification.deadline_send_failed "
+            "conn_id=%s host=%s error_type=%s",
             conn_id,
+            _smtp_host(conn_id),
             type(exc).__name__,
         )
 
@@ -196,9 +223,11 @@ def _send_notification(
         # Log only the exception *type* + conn_id — never the message, which
         # could carry SMTP server/credential detail (INV-5).
         _log.warning(
-            "ffengine.notification.send_failed kind=%s conn_id=%s error_type=%s",
+            "ffengine.notification.send_failed "
+            "kind=%s conn_id=%s host=%s error_type=%s",
             kind,
             conn_id,
+            _smtp_host(conn_id),
             type(exc).__name__,
         )
 

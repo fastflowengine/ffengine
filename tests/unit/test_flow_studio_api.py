@@ -225,7 +225,7 @@ def test_binding_task_hides_empty_source_card_and_uses_advanced_only_layout():
     )
     assert ".task-card.binding-task .task-layout" in style_css
     assert 'grid-template-areas: "advanced";' in style_css
-    assert "app.js?v=100" in index_html
+    assert "app.js?v=121" in index_html
 
 
 def test_advanced_dag_parameter_uses_parameter_type_label():
@@ -238,7 +238,7 @@ def test_advanced_dag_parameter_uses_parameter_type_label():
 
     assert "Parameter Type" in index_html
     assert "Data Type" not in index_html
-    assert "style.css?v=67" in index_html
+    assert "style.css?v=72" in index_html
 
 
 def test_connection_selector_uses_generic_source_and_target_labels():
@@ -254,7 +254,7 @@ def test_connection_selector_uses_generic_source_and_target_labels():
     assert "Select Target Connection" in app_js
     assert "DB Connection" not in app_js
     assert "database connection" not in index_html
-    assert "app.js?v=100" in index_html
+    assert "app.js?v=121" in index_html
 
 
 def test_binding_ui_has_conditional_default_and_searchable_variable_selector():
@@ -332,7 +332,7 @@ def test_folder_path_ui_requires_explicit_selection():
     assert '(el("level").value || "").trim() || "level1"' not in app_js
     assert 'el("flow").value.trim() || "src_to_stg"' not in app_js
     assert '(el("flow").value || "").trim() || "src_to_stg"' not in app_js
-    assert "app.js?v=100" in index_html
+    assert "app.js?v=121" in index_html
 
 
 def test_dag_explorer_html_ok(client):
@@ -475,7 +475,7 @@ def test_columns_mocked(client):
 def test_mapping_generate_mocked(client):
     mocked = {
         "mapping_content": "version: v1\ncolumns: []\n",
-        "generated_mapping_file": "mapping/1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml",
+        "generated_mapping_file": "mapping/1_1_src_c_public_orders_to_tgt_c_dwh_orders_stg.yaml",
         "warnings": [],
         "column_count": 0,
     }
@@ -501,7 +501,7 @@ def test_mapping_generate_mocked(client):
     assert body["ok"] is True
     assert (
         body["generated_mapping_file"]
-        == "mapping/1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
+        == "mapping/1_1_src_c_public_orders_to_tgt_c_dwh_orders_stg.yaml"
     )
     fn.assert_called_once()
 
@@ -657,7 +657,7 @@ def test_create_dag_writes_files(client, studio_paths):
     assert body["ok"] is True
     assert "task_group_id" in body
     assert (
-        body["task_group_id"] == "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"
+        body["task_group_id"] == "1_src_c_public_orders_to_tgt_c_dwh_orders_stg"
     )
     flow = Path(body["flow_dir"])
     assert flow.as_posix().endswith("/projects/webhook/whk/level1/src_to_stg")
@@ -684,9 +684,10 @@ def test_create_dag_writes_files(client, studio_paths):
     assert yaml_name in dag_source
 
 
-@pytest.mark.parametrize("field", ["project", "domain", "level", "flow"])
+@pytest.mark.parametrize("field", ["project", "domain"])
 @pytest.mark.parametrize("value", ["", "   "])
 def test_create_dag_rejects_unselected_folder_path(client, field, value):
+    """project/domain ZORUNLU: min 2 seviye."""
     payload = _minimal_table_payload()
     payload[field] = value
 
@@ -696,19 +697,162 @@ def test_create_dag_rejects_unselected_folder_path(client, field, value):
     assert "Select a project and DAG path" in response.text
 
 
-@pytest.mark.parametrize("field", ["project", "domain", "level", "flow"])
+@pytest.mark.parametrize("value", ["", "   "])
+def test_create_dag_accepts_empty_trailing_levels(client, studio_paths, value):
+    """level/flow OPSIYONEL: sondan kirpma 2 seviyeye kadar gecerli."""
+    payload = _minimal_table_payload()
+    payload["level"] = value
+    payload["flow"] = value
+
+    response = client.post("/api/create-dag", json=payload)
+
+    assert response.status_code == 201, response.text
+
+
+@pytest.mark.parametrize("field", ["project", "domain"])
 def test_service_rejects_unselected_folder_path_without_writes(
     studio_paths, field
 ):
+    """project/domain ZORUNLU (min 2 seviye); bos birakilirsa yazma olmaz."""
     projects_root, dag_root = studio_paths
     payload = _minimal_table_payload()
     payload[field] = "   "
 
-    with pytest.raises(ValueError, match="Select a project and DAG path"):
+    with pytest.raises(ValueError):
         ss.create_or_update_dag(payload)
 
     assert list(projects_root.iterdir()) == []
     assert list(dag_root.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "cleared,expected_depth",
+    [(["flow"], 3), (["level", "flow"], 2)],
+)
+def test_service_accepts_shorter_folder_paths(
+    studio_paths, cleared, expected_depth
+):
+    """Sondan kirpma GECERLI: 3 ve 2 seviye kabul edilir."""
+    payload = _minimal_table_payload()
+    for field in cleared:
+        payload[field] = ""
+
+    result = ss.create_or_update_dag(payload)
+
+    projects_root, _ = studio_paths
+    rel = Path(result["config_path"]).resolve().relative_to(projects_root.resolve())
+    assert len(rel.parts) - 1 == expected_depth
+
+
+def test_service_rejects_gapped_folder_path(studio_paths):
+    """DELIK yasak: level bos ama flow dolu ise sessizce sikistirilmaz."""
+    projects_root, dag_root = studio_paths
+    payload = _minimal_table_payload()
+    payload["level"] = ""
+
+    with pytest.raises(ValueError, match="without gaps"):
+        ss.create_or_update_dag(payload)
+
+    assert list(projects_root.iterdir()) == []
+    assert list(dag_root.iterdir()) == []
+
+
+def test_four_level_config_omits_folder_path_key(client, studio_paths):
+    """BYTE-STABILITY: derinlik 4 ise anahtar YAZILMAZ (legacy YAML aynen)."""
+    r = client.post("/api/create-dag", json=_minimal_table_payload())
+    assert r.status_code == 201, r.text
+    assert "folder_path" not in _read_config(r)
+
+
+@pytest.mark.parametrize(
+    "cleared,expected",
+    [(["flow"], ["webhook", "whk", "level1"]), (["level", "flow"], ["webhook", "whk"])],
+)
+def test_short_config_persists_folder_path(client, studio_paths, cleared, expected):
+    """Derinlik != 4 ise `folder_path` ACIKCA yazilir (yoldan tahmin yok)."""
+    payload = _minimal_table_payload()
+    for field in cleared:
+        payload[field] = ""
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+
+    flow = Path(r.json()["flow_dir"])
+    cfg = yaml.safe_load(
+        (flow / f"{'_'.join(expected)}_1.yaml").read_text(encoding="utf-8")
+    )
+    assert cfg["folder_path"] == expected
+
+    # ROUND-TRIP: preload derinligi geri vermeli, aksi halde update ekrani
+    # yanlis sayida sutun acar (sessiz guncelleme riski).
+    dag_id = Path(r.json()["dag_path"]).stem
+    reloaded = client.get(f"/api/dag-config?dag_id={dag_id}").json()["payload"]
+    assert reloaded["folder_path"] == expected
+
+
+def test_conflicting_dag_id_across_depths_is_rejected(client, studio_paths):
+    """`a/b_c` (2 seviye) ile `a/b/c` (3 seviye) AYNI dag_id'yi uretir.
+
+    Ikinci yazma reddedilmezse update'te hangi DAG'in guncellenecegi
+    belirsizlesirdi (kullanici sarti: sessiz guncelleme yok).
+    """
+    first = _minimal_table_payload()
+    first.update({"project": "coll", "domain": "b_c", "level": "", "flow": ""})
+    r1 = client.post("/api/create-dag", json=first)
+    assert r1.status_code == 201, r1.text
+
+    second = _minimal_table_payload()
+    second.update({"project": "coll", "domain": "b", "level": "c", "flow": ""})
+    r2 = client.post("/api/create-dag", json=second)
+    assert r2.status_code == 422, r2.text
+    assert "already exists" in r2.text
+    assert "coll_b_c_1_dag" in r2.text
+
+
+def test_auto_task_name_uses_file_names_on_both_sides(client, studio_paths):
+    """Dosya uclari task adinda "file" olarak anilir (kaynak ve hedef).
+
+    Dosya ADI bilincli olarak kullanilmaz: yol sablonlu akislarda
+    (`/out/rapor_{{ ds }}.csv`) her kosuda task adi degisirdi.
+    """
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "file",
+            "source_file_format": "csv",
+            "file_path": "/incoming/musteri.csv",
+            "source_schema": None,
+            "source_table": None,
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": _sql_mapping_yaml(["id", "name"]),
+            "target_type": "file",
+            "target_file_format": "csv",
+            "target_file_path": "/outgoing/rapor.csv",
+        }
+    )
+    payload.pop("task_group_id", None)
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+
+    task_group_id = _read_first_task(r)["task_group_id"]
+    # Dosya uclari yalnizca "file" olarak anilir; dosya ADI kullanilmaz ki
+    # yol degisince (ornegin `{{ ds }}` sablonu) task adi degismesin.
+    assert "_file_file_" in task_group_id
+    assert task_group_id.endswith("_file_file")
+    assert "musteri" not in task_group_id
+    assert "rapor" not in task_group_id
+
+
+def test_auto_task_name_keeps_schema_table_for_db_target(client, studio_paths):
+    """DB hedefinde eski davranis korunur (sema/tablo)."""
+    payload = _minimal_table_payload()
+    payload.pop("task_group_id", None)
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    task_group_id = _read_first_task(r)["task_group_id"]
+    assert task_group_id.endswith("_dwh_orders_stg")
+    # Yukleme yontemi ada GIRMEZ: adi uzatiyordu ve dosya hedefinde anlamsizdi.
+    assert "create_if_not_exists" not in task_group_id
+    assert "append" not in task_group_id
 
 
 def test_create_dag_response_includes_revision_metadata(client, studio_paths):
@@ -751,11 +895,11 @@ def test_create_dag_writes_yaml_with_supported_fields(client, studio_paths):
     assert task["source_type"] == "view"
     assert task["column_mapping_mode"] == "mapping_file"
     assert (
-        task["task_group_id"] == "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"
+        task["task_group_id"] == "1_src_c_public_orders_to_tgt_c_dwh_orders_stg"
     )
     assert (
         task["mapping_file"]
-        == "mapping/1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
+        == "mapping/1_1_src_c_public_orders_to_tgt_c_dwh_orders_stg.yaml"
     )
     assert (flow / task["mapping_file"]).is_file()
     assert task["batch_size"] == 20000
@@ -849,11 +993,84 @@ def _read_first_task(response):
     return cfg["flow_tasks"][0]
 
 
+def _file_source_payload(file_format: str) -> dict:
+    """Dosya kaynagi payload'i. Kapi artik TASIMAYA degil FORMATA uygulanir."""
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "file",
+            "source_file_format": file_format,
+            "file_path": f"/incoming/orders.{file_format}",
+            "source_schema": None,
+            "source_table": None,
+            "column_mapping_mode": "mapping_file",
+            "mapping_content": _sql_mapping_yaml(["id", "name"]),
+        }
+    )
+    return payload
+
+
+def test_file_types_gate_rejects_disabled_type(client, studio_paths, monkeypatch):
+    """FFENGINE_FILE_TYPES kapali tipte YENI akis kurmayi engeller (422).
+
+    Kapi bilincli olarak yalnizca payload katmanindadir: halihazirda calisan
+    config'lerin DAG'lari etkilenmez (bkz. core/file_types.py).
+    """
+    monkeypatch.setenv("FFENGINE_FILE_TYPES", "csv")
+
+    r = client.post("/api/create-dag", json=_file_source_payload("json"))
+    assert r.status_code == 422, r.text
+    assert "FFENGINE_FILE_TYPES" in r.text
+
+    # Acik tip ayni kurulumda calismaya devam eder.
+    assert client.post(
+        "/api/create-dag", json=_file_source_payload("csv")
+    ).status_code == 201
+
+
+def test_file_types_gate_is_open_by_default(client, studio_paths, monkeypatch):
+    # Geriye uyum muhru: env verilmediginde iki tip de kabul edilir.
+    monkeypatch.delenv("FFENGINE_FILE_TYPES", raising=False)
+    assert client.post(
+        "/api/create-dag", json=_file_source_payload("json")
+    ).status_code == 201
+
+
+def test_file_types_gate_is_injected_into_html(client, monkeypatch):
+    """UI kapisi placeholder ile enjekte edilir (yaris kosulu olmasin diye
+    /api/config gibi asenkron bir cagri DEGIL)."""
+    monkeypatch.setenv("FFENGINE_FILE_TYPES", "csv")
+    html = client.get("/").text
+    assert 'data-ffengine-file-types="csv"' in html
+    assert "__FFENGINE_FILE_TYPES__" not in html  # replace unutulursa yakalar
+
+    monkeypatch.delenv("FFENGINE_FILE_TYPES", raising=False)
+    assert 'data-ffengine-file-types="csv,json"' in client.get("/").text
+
+
+def test_file_types_gate_applies_to_mapping_generate(client, monkeypatch):
+    # Kapi UC payload noktasinin hepsinde olmali; biri unutulursa kacak olur.
+    monkeypatch.setenv("FFENGINE_FILE_TYPES", "csv")
+    r = client.post(
+        "/api/mapping/generate",
+        json={
+            "project": "webhook", "domain": "whk", "level": "level1",
+            "flow": "src_to_stg", "source_conn_id": "src_c",
+            "target_conn_id": "tgt_c", "source_type": "file",
+            "source_file_format": "json",
+            "file_path": "/incoming/orders.json",
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert "FFENGINE_FILE_TYPES" in r.text
+
+
 def test_create_dag_persists_csv_file_source(client, studio_paths):
     payload = _minimal_table_payload()
     payload.update(
         {
-            "source_type": "csv",
+            "source_type": "file",
+            "source_file_format": "csv",
             "file_path": "/incoming/orders_{{ run_date }}.csv",
             "delimiter": ";",
             "encoding": "utf-8",
@@ -863,7 +1080,8 @@ def test_create_dag_persists_csv_file_source(client, studio_paths):
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 201, r.text
     task = _read_first_task(r)
-    assert task["source_type"] == "csv"
+    assert task["source_type"] == "file"
+    assert task["source_file_format"] == "csv"
     assert task["file_path"] == "/incoming/orders_{{ run_date }}.csv"
     assert task["delimiter"] == ";"
     # file sources are always explicit-mapping (no type inference)
@@ -874,7 +1092,9 @@ def test_create_dag_persists_csv_file_source(client, studio_paths):
     dag_id = Path(r.json()["dag_path"]).stem
     reloaded = client.get(f"/api/dag-config?dag_id={dag_id}").json()["payload"]
     rt = reloaded["flow_tasks"][0]
-    assert rt["source_type"] == "csv"
+    assert rt["source_type"] == "file"
+    # ROUND-TRIP: format persist edilmezse resave'de sessizce CSV'ye doner.
+    assert rt["source_file_format"] == "csv"
     assert rt["file_path"] == "/incoming/orders_{{ run_date }}.csv"
     assert rt["delimiter"] == ";"
 
@@ -883,7 +1103,8 @@ def test_create_dag_persists_json_flat_file_source(client, studio_paths):
     payload = _minimal_table_payload()
     payload.update(
         {
-            "source_type": "json",
+            "source_type": "file",
+            "source_file_format": "json",
             "file_path": "/incoming/orders.jsonl",
             "json_mode": "flat",
             "mapping_content": _sql_mapping_yaml(["id", "name"]),
@@ -892,8 +1113,101 @@ def test_create_dag_persists_json_flat_file_source(client, studio_paths):
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 201, r.text
     task = _read_first_task(r)
-    assert task["source_type"] == "json"
+    assert task["source_type"] == "file"
+    assert task["source_file_format"] == "json"
     assert task["json_mode"] == "flat"
+
+
+def test_json_source_does_not_persist_csv_only_fields(client, studio_paths):
+    """CSV'ye ozgu alanlar JSON kaynaginda config'e YAZILMAZ.
+
+    delimiter/quotechar/header yalniz `csv.reader`a gider; JSONL'de her satir
+    kendi anahtarlarini tasir. UI bunlari JSON secilince gizler, ama kullanici
+    once CSV'yi doldurup sonra JSON'a gecerse degerler payload'da kalabilir --
+    normalize katmani bunlari dusurmezse config yaniltici olur.
+    """
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "source_type": "file",
+            "source_file_format": "json",
+            "file_path": "/incoming/orders.jsonl",
+            "json_mode": "flat",
+            "delimiter": ";",
+            "quotechar": "'",
+            "header": True,
+            "encoding": "utf-8",
+            "mapping_content": _sql_mapping_yaml(["id", "name"]),
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    task = _read_first_task(r)
+    assert "delimiter" not in task
+    assert "quotechar" not in task
+    assert "header" not in task
+    # encoding formattan bagimsizdir (bayt -> metin cozumu): KALIR.
+    assert task["encoding"] == "utf-8"
+
+
+def _read_config(response) -> dict:
+    flow = Path(response.json()["flow_dir"])
+    return yaml.safe_load(
+        (flow / "webhook_whk_level1_src_to_stg_1.yaml").read_text(encoding="utf-8")
+    )
+
+
+def test_create_dag_omits_retry_key_when_absent(client, studio_paths):
+    """BYTE-STABILITY: retry gonderilmezse YAML'da anahtar HIC olmaz."""
+    r = client.post("/api/create-dag", json=_minimal_table_payload())
+    assert r.status_code == 201, r.text
+    assert "retry" not in _read_config(r)
+
+
+def test_create_dag_omits_retry_when_disabled(client, studio_paths):
+    """retries=0 kapali demektir -> yine yazilmaz (legacy YAML degismez)."""
+    payload = _minimal_table_payload()
+    payload["retry"] = {"retries": 0}
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    assert "retry" not in _read_config(r)
+
+
+def test_create_dag_persists_retry_block(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["retry"] = {"retries": 3, "delay_seconds": 120}
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    assert _read_config(r)["retry"] == {"retries": 3, "delay_seconds": 120}
+
+    # ROUND-TRIP: preload retry'i geri vermeli, aksi halde UI'da resave'de duser.
+    dag_id = Path(r.json()["dag_path"]).stem
+    reloaded = client.get(f"/api/dag-config?dag_id={dag_id}").json()["payload"]
+    assert reloaded["retry"] == {"retries": 3, "delay_seconds": 120}
+
+
+def test_create_dag_writes_delay_default_explicitly(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["retry"] = {"retries": 2}
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    assert _read_config(r)["retry"] == {"retries": 2, "delay_seconds": 60}
+
+
+def test_create_dag_rejects_out_of_range_retry(client, studio_paths):
+    payload = _minimal_table_payload()
+    payload["retry"] = {"retries": 99}
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422, r.text
+    assert "retries" in r.text
+
+
+def test_create_dag_rejects_unknown_retry_field(client, studio_paths):
+    """`delay` yazim hatasi sessizce yutulmaz."""
+    payload = _minimal_table_payload()
+    payload["retry"] = {"retries": 2, "delay": 60}
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422, r.text
 
 
 def test_create_dag_persists_file_target(client, studio_paths):
@@ -913,10 +1227,44 @@ def test_create_dag_persists_file_target(client, studio_paths):
     assert task["target_delimiter"] == "|"
 
 
+def test_json_target_format_survives_edit_round_trip(client, studio_paths):
+    """ROUND-TRIP TUZAGI: format persist -> preload -> RESAVE zincirinde kalmali.
+
+    studio_service'teki dict'ler EXPLICIT key listesidir; `target_file_format`
+    ucunden birinde eksik olsaydi kullanici JSON hedefli bir DAG'i UI'da acip
+    kaydettiginde format SESSIZCE duser ve cikti CSV'ye donerdi.
+    """
+    payload = _minimal_table_payload()
+    payload.update(
+        {
+            "target_type": "file",
+            "target_file_path": "/out/orders.jsonl",
+            "target_file_format": "json",
+        }
+    )
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    assert _read_first_task(r)["target_file_format"] == "json"
+
+    # preload (edit) formati geri vermeli
+    dag_id = Path(r.json()["dag_path"]).stem
+    reloaded = client.get(f"/api/dag-config?dag_id={dag_id}").json()["payload"]
+    assert reloaded["flow_tasks"][0]["target_file_format"] == "json"
+
+    # ve ayni payload tekrar kaydedildiginde format HALA orada olmali
+    again = client.post("/api/create-dag", json=payload)
+    assert again.status_code in (200, 201), again.text
+    assert _read_first_task(again)["target_file_format"] == "json"
+
+
 def test_create_dag_rejects_csv_without_file_path(client, studio_paths):
     payload = _minimal_table_payload()
     payload.update(
-        {"source_type": "csv", "mapping_content": _sql_mapping_yaml(["id"])}
+        {
+            "source_type": "file",
+            "source_file_format": "csv",
+            "mapping_content": _sql_mapping_yaml(["id"]),
+        }
     )
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 422, r.text
@@ -927,7 +1275,8 @@ def test_create_dag_rejects_json_raw_mode(client, studio_paths):
     payload = _minimal_table_payload()
     payload.update(
         {
-            "source_type": "json",
+            "source_type": "file",
+            "source_file_format": "json",
             "file_path": "/x.jsonl",
             "json_mode": "raw",
             "mapping_content": _sql_mapping_yaml(["id"]),
@@ -965,7 +1314,8 @@ def test_dag_search_matches_config_content(client, studio_paths, monkeypatch):
     a = _minimal_table_payload()
     a.update(
         {
-            "source_type": "csv",
+            "source_type": "file",
+            "source_file_format": "csv",
             "file_path": "/incoming/zztophit_orders.csv",
             "mapping_content": _sql_mapping_yaml(["id", "name"]),
         }
@@ -1019,7 +1369,8 @@ def test_file_source_mapping_preview_detects_columns(tmp_path, monkeypatch):
     )
     out = ss.generate_mapping_preview(
         {
-            "source_type": "csv",
+            "source_type": "file",
+            "source_file_format": "csv",
             "source_conn_id": "fs_default",
             "target_conn_id": "tgt_c",
             "file_path": str(src),
@@ -1030,6 +1381,78 @@ def test_file_source_mapping_preview_detects_columns(tmp_path, monkeypatch):
     assert names == ["id", "name"]
     assert out["sample_rows"][0] == ["1", "alice"]
     assert all(c["target_type"] == "varchar(255)" for c in out["columns"])
+
+
+def test_json_source_mapping_preview_ignores_csv_options(tmp_path, monkeypatch):
+    # JSONL'de delimiter/header kavrami yoktur: anahtarlar kolon adlaridir.
+    src = tmp_path / "orders.jsonl"
+    src.write_text('{"id":1,"name":"a"}\n{"id":2,"name":"b"}\n', encoding="utf-8")
+    monkeypatch.setattr(
+        ss.AirflowConnectionAdapter,
+        "get_connection_params",
+        staticmethod(lambda conn_id: {"conn_type": "fs"}),
+    )
+    out = ss.generate_mapping_preview(
+        {
+            "source_type": "file",
+            "source_file_format": "json",
+            "source_conn_id": "fs_default",
+            "target_conn_id": "tgt_c",
+            "file_path": str(src),
+        }
+    )
+    assert [c["source_name"] for c in out["columns"]] == ["id", "name"]
+
+
+class _NullDBSession:
+    """MappingGenerator monkeypatch'lendigi icin baglanti hic kullanilmaz."""
+
+    def __init__(self, *args, **kwargs):
+        self.conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_mapping_preview_supports_db_source_with_file_target(monkeypatch):
+    """DB -> dosya akisinda mapping URETILEBILMELI (regresyon).
+
+    Dosya hedefinin DB dialect'i yoktur; hedef icin `resolve_dialect`
+    cagrilirsa "Desteklenmeyen Airflow connection tipi: 'sftp'" ile 400 doner
+    ve DB -> SFTP akislarinda custom mapping hic calismaz (canli bulgu).
+    """
+    seen: list[str] = []
+
+    def _params(conn_id):
+        seen.append(conn_id)
+        return {"conn_type": "sftp" if conn_id == "sftp_test" else "postgres"}
+
+    monkeypatch.setattr(
+        ss.AirflowConnectionAdapter, "get_connection_params", staticmethod(_params)
+    )
+    monkeypatch.setattr(
+        ss.MappingGenerator,
+        "generate",
+        lambda self, *a, **kw: {"version": "v1.1", "columns": []},
+    )
+    monkeypatch.setattr(ss, "DBSession", _NullDBSession)
+
+    out = ss.generate_mapping_preview(
+        {
+            "source_type": "table",
+            "target_type": "file",
+            "source_conn_id": "pg_src",
+            "target_conn_id": "sftp_test",
+            "source_schema": "public",
+            "source_table": "orders",
+        }
+    )
+    assert "mapping_content" in out
+    # Dosya hedefinin baglanti parametreleri HIC cozulmemeli.
+    assert "sftp_test" not in seen
 
 
 def test_create_dag_rejects_invalid_notification_email(client, studio_paths):
@@ -1301,7 +1724,7 @@ def test_update_dag_rejects_invalid_existing_mapping_file_and_keeps_bundle(
     mapping_path = (
         flow_dir
         / "mapping"
-        / "1_1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg.yaml"
+        / "1_1_src_c_public_orders_to_tgt_c_dwh_orders_stg.yaml"
     )
     assert mapping_path.is_file()
 
@@ -1375,13 +1798,13 @@ def test_create_dag_sql_source_persists_inline_sql(client, studio_paths):
 
     assert task["source_type"] == "sql"
     assert task["inline_sql"] == "SELECT id, amount FROM public.orders WHERE amount > 0"
-    assert task["task_group_id"] == "1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg"
+    assert task["task_group_id"] == "1_src_c_sql_query_to_tgt_c_dwh_orders_stg"
     assert (
         task["mapping_file"]
-        == "mapping/1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+        == "mapping/1_1_src_c_sql_query_to_tgt_c_dwh_orders_stg.yaml"
     )
     assert (
-        flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+        flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_dwh_orders_stg.yaml"
     ).is_file()
 
 
@@ -2084,10 +2507,16 @@ def test_create_dag_rejects_custom_tag_length_over_limit(client, studio_paths):
 
 
 def test_create_dag_requires_new_hierarchy_fields(client, studio_paths):
+    """domain ZORUNLU kalir; flow'un yoklugu artik 3 seviye demektir."""
+    payload = _minimal_table_payload()
+    payload.pop("domain")
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 422
+
     payload = _minimal_table_payload()
     payload.pop("flow")
     r = client.post("/api/create-dag", json=payload)
-    assert r.status_code == 422
+    assert r.status_code == 201, r.text
 
 
 def test_create_dag_rejects_invalid_group_no(client, studio_paths):
@@ -2140,7 +2569,7 @@ def test_update_dag_keeps_legacy_dag_id_and_path(client, studio_paths):
                 "target_db_var": "tgt_c",
                 "flow_tasks": [
                     {
-                        "task_group_id": "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg",
+                        "task_group_id": "1_src_c_public_orders_to_tgt_c_dwh_orders_stg",
                         "depends_on": [],
                         "source_schema": "public",
                         "source_table": "orders",
@@ -2287,7 +2716,7 @@ def test_update_dag_allows_adding_new_task(client, studio_paths):
             "target_table": "customers_stg",
             "load_method": "append",
             "column_mapping_mode": "source",
-            "depends_on": ["1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"],
+            "depends_on": ["1_src_c_public_orders_to_tgt_c_dwh_orders_stg"],
         },
     ]
     r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=update_payload)
@@ -2301,7 +2730,7 @@ def test_update_dag_allows_adding_new_task(client, studio_paths):
     assert tasks[1]["target_table"] == "customers_stg"
     assert tasks[0]["depends_on"] == []
     assert tasks[1]["depends_on"] == [
-        "1_src_c_public_orders_to_tgt_c_append_dwh_orders_stg"
+        "1_src_c_public_orders_to_tgt_c_dwh_orders_stg"
     ]
 
 
@@ -3119,7 +3548,9 @@ def test_update_dag_rejects_dag_id_payload_flow_mismatch(client, studio_paths):
     payload["flow"] = "src_to_dwh"
     r2 = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
     assert r2.status_code == 422
-    assert "hierarchy do not match" in r2.text
+    # Mesaj YONLENDIRICI: kullanici ne yapacagini bilmeli (Move akisi).
+    assert "Folder cannot be changed on update" in r2.text
+    assert "Move flow" in r2.text
 
 
 def test_update_dag_rejects_full_scan_partitioning_mode(client, studio_paths):
@@ -3480,7 +3911,7 @@ def test_update_dag_sql_mapping_semantic_same_does_not_touch_file(client, studio
     dag_id = Path(r1.json()["dag_path"]).stem
     flow = Path(r1.json()["flow_dir"])
     mapping_path = (
-        flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+        flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_dwh_orders_stg.yaml"
     )
     before = mapping_path.stat().st_mtime_ns
 
@@ -3530,7 +3961,7 @@ def test_update_dag_sql_mapping_task_group_change_moves_active_path_to_new_file(
     dag_id = Path(r1.json()["dag_path"]).stem
     flow = Path(r1.json()["flow_dir"])
     old_path = (
-        flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_append_dwh_orders_stg.yaml"
+        flow / "mapping" / "1_1_src_c_sql_query_to_tgt_c_dwh_orders_stg.yaml"
     )
     assert old_path.is_file()
 
@@ -3918,14 +4349,18 @@ def test_create_dag_script_run_does_not_require_target_schema_or_table(
     assert r.status_code == 201, r.text
 
 
-def test_bulk_backfill_legacy_task_type_is_idempotent_and_preserves_existing(
+def test_legacy_task_type_is_defaulted_on_read_without_rewriting_disk(
     studio_paths,
 ):
-    proj_root, _ = studio_paths
-    marker = "_ffengine_task_type_backfilled_once"
-    if hasattr(ss._bulk_backfill_legacy_task_types_once, marker):
-        delattr(ss._bulk_backfill_legacy_task_types_once, marker)
+    """task_type eksik bir config OKUMA aninda varsayilana duser.
 
+    Eskiden bir "bulk backfill" her ilk istekte `projects/` altindaki TUM
+    YAML'lari tarayip bu alani diske yazardi (~1.5 s, dosya sayisiyla buyuyen).
+    Gereksizdi: okuma yolunun kendisi (`_normalize_task_type`) zaten ayni
+    varsayilani uyguluyor. Bu test o guvenceyi muhurler -- ve dosyanin diskte
+    DEGISMEDIGINI de dogrular (arsiv/gecmis kayitlari yerinde kalmali).
+    """
+    proj_root, _ = studio_paths
     flow_dir = proj_root / "webhook" / "legacy" / "level1" / "src_to_stg"
     flow_dir.mkdir(parents=True, exist_ok=True)
     yaml_path = flow_dir / "legacy_legacy_level1_src_to_stg_group_1.yaml"
@@ -3945,13 +4380,6 @@ def test_bulk_backfill_legacy_task_type_is_idempotent_and_preserves_existing(
                         "load_method": "append",
                         "column_mapping_mode": "source",
                         "batch_size": 10000,
-                        "partitioning": {
-                            "enabled": False,
-                            "mode": "auto_numeric",
-                            "column": None,
-                            "parts": 2,
-                            "ranges": [],
-                        },
                     },
                     {
                         "task_group_id": "legacy_script_task",
@@ -3966,13 +4394,6 @@ def test_bulk_backfill_legacy_task_type_is_idempotent_and_preserves_existing(
                         "load_method": "append",
                         "column_mapping_mode": "source",
                         "batch_size": 10000,
-                        "partitioning": {
-                            "enabled": False,
-                            "mode": "auto_numeric",
-                            "column": None,
-                            "parts": 2,
-                            "ranges": [],
-                        },
                     },
                 ],
             },
@@ -3981,19 +4402,14 @@ def test_bulk_backfill_legacy_task_type_is_idempotent_and_preserves_existing(
         ),
         encoding="utf-8",
     )
+    before = yaml_path.read_text(encoding="utf-8")
 
-    ss._bulk_backfill_legacy_task_types_once()
-    cfg1 = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-    assert cfg1["flow_tasks"][0]["task_type"] == "source_target"
-    assert cfg1["flow_tasks"][1]["task_type"] == "script_run"
-    first_pass = yaml.safe_dump(cfg1, sort_keys=False, allow_unicode=False)
+    # Okuma yolu: eksik olan source_target'a duser, mevcut olan korunur.
+    assert ss._normalize_task_type(None) == "source_target"
+    assert ss._normalize_task_type("script_run") == "script_run"
 
-    if hasattr(ss._bulk_backfill_legacy_task_types_once, marker):
-        delattr(ss._bulk_backfill_legacy_task_types_once, marker)
-    ss._bulk_backfill_legacy_task_types_once()
-    cfg2 = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
-    second_pass = yaml.safe_dump(cfg2, sort_keys=False, allow_unicode=False)
-    assert second_pass == first_pass
+    # Ve dosya diskte AYNEN kalir (sessiz yeniden yazma yok).
+    assert yaml_path.read_text(encoding="utf-8") == before
 
 
 def test_api_key_required_when_env_set(client, studio_paths, monkeypatch):
@@ -4283,7 +4699,29 @@ def test_dbt_ui_card_markup_is_enterprise_gated():
     # unless the server stamped data-ffengine-edition="enterprise" on <body>.
     assert ".enterprise-only {" in style_css
     assert 'body[data-ffengine-edition="enterprise"] .enterprise-only' in style_css
-    assert "app.js?v=100" in index_html
+    assert "app.js?v=121" in index_html
+
+
+def test_engine_and_cdc_surfaces_are_enterprise_gated():
+    """Community'de anlamsiz yuzeyler gizlenir (kullanici karari 2026-08-19).
+
+    - Execution Engine: Community'de kayitli tek motor StandardEngine
+      (auto == standard); pipeline/spark Enterprise provider'i gerektirir.
+    - CDC Operations: kafka/cdc_apply yalnizca Enterprise'da calisir
+      (API zaten 422 doner); panel Community'de gorunmemeli.
+    Ikisi de DOM'da KALIR (app.js okumaya devam eder), yalnizca CSS ile gizlenir.
+    """
+    index_html = (
+        Path(api_app_module.__file__).parent
+        / "templates" / "flow_studio" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    engine_label = index_html.split('<span class="global-control-label">Execution Engine')[0]
+    assert engine_label.rstrip().endswith('<label class="enterprise-only">')
+    assert '<details class="card enterprise-only" id="cdc_ops_panel"' in index_html
+    # Alanlar silinmedi: sozlesme korunur.
+    assert 'id="engine_preference"' in index_html
+    assert 'id="cdc_ops_panel"' in index_html
 
 
 def test_dbt_ui_js_wiring_contract():
@@ -4685,3 +5123,228 @@ def test_scheduler_cron_trigger_requires_cron_expression(
     r = client.post("/api/create-dag", json=payload)
     assert r.status_code == 422
     assert "cron_expression" in r.text
+
+
+# ===========================================================================
+# DAG tasima (move): "move" degil, hedef konumda YENIDEN URETIM
+# ===========================================================================
+#
+# Bir DAG'in kimligi klasor yoluna baglidir, bu yuzden tasima kimligi
+# DEGISTIRIR ve Airflow calisma gecmisi tasinamaz. Bu gercek gizlenmez.
+#
+# Muhurlenen guvenceler: preview yazmaz - bagimlilar yeni kimlige baglanir -
+# once dogrula sonra yaz - eski DAG silinmez.
+
+def _mv_create(client, **overrides):
+    payload = _minimal_table_payload()
+    payload.update(overrides)
+    r = client.post("/api/create-dag", json=payload)
+    assert r.status_code == 201, r.text
+    return Path(r.json()["dag_path"]).stem, r.json()
+
+
+def _mv_link(client, dag_id, upstream_id, **overrides):
+    """dag_id'yi upstream_id'ye bagimli yapar."""
+    payload = _minimal_table_payload()
+    payload.update(overrides)
+    payload["dag_dependencies"] = {"upstream_dag_ids": [upstream_id]}
+    r = client.post(f"/api/update-dag?dag_id={dag_id}", json=payload)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+# --- T-MOVE-01: preview ------------------------------------------------------
+
+def test_preview_reports_new_id_without_writing(client, studio_paths):
+    projects_root, dag_root = studio_paths
+    dag_id, _ = _mv_create(client)
+    before_projects = sorted(p.as_posix() for p in projects_root.rglob("*"))
+    before_dags = sorted(p.as_posix() for p in dag_root.rglob("*"))
+
+    r = client.post(
+        "/api/move-dag/preview",
+        json={"dag_id": dag_id, "target_folder_path": ["webhook", "whk", "yeni"]},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["new_dag_id"] == "webhook_whk_yeni_1_dag"
+    assert body["target_folder_path"] == ["webhook", "whk", "yeni"]
+    assert body["blockers"] == []
+
+    # PREVIEW HICBIR SEY YAZMAZ.
+    assert sorted(p.as_posix() for p in projects_root.rglob("*")) == before_projects
+    assert sorted(p.as_posix() for p in dag_root.rglob("*")) == before_dags
+
+
+def test_preview_lists_dependent_dags(client, studio_paths):
+    dag_a, _ = _mv_create(client)
+    dag_b, _ = _mv_create(client, flow="tuketici", source_table="orders2")
+    _mv_link(client, dag_b, dag_a, flow="tuketici", source_table="orders2")
+
+    r = client.post(
+        "/api/move-dag/preview",
+        json={"dag_id": dag_a, "target_folder_path": ["webhook", "whk", "yeni"]},
+    )
+    assert r.status_code == 200, r.text
+    affected = [item["dag_id"] for item in r.json()["affected_dags"]]
+    assert dag_b in affected
+
+
+def test_preview_without_dependents_is_empty(client, studio_paths):
+    dag_id, _ = _mv_create(client)
+    r = client.post(
+        "/api/move-dag/preview",
+        json={"dag_id": dag_id, "target_folder_path": ["webhook", "whk", "yeni"]},
+    )
+    assert r.json()["affected_dags"] == []
+
+
+def test_preview_rejects_same_folder(client, studio_paths):
+    dag_id, _ = _mv_create(client)
+    r = client.post(
+        "/api/move-dag/preview",
+        json={
+            "dag_id": dag_id,
+            "target_folder_path": ["webhook", "whk", "level1", "src_to_stg"],
+        },
+    )
+    assert r.status_code == 422
+    assert "same as the current one" in r.text
+
+
+# --- T-MOVE-02: tasima -------------------------------------------------------
+
+def test_move_generates_new_dag_and_keeps_the_old_one(client, studio_paths):
+    projects_root, dag_root = studio_paths
+    dag_id, created = _mv_create(client)
+    old_config = Path(created["config_path"])
+
+    r = client.post(
+        "/api/move-dag",
+        json={"dag_id": dag_id, "target_folder_path": ["webhook", "whk", "yeni"]},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["new_dag_id"] == "webhook_whk_yeni_1_dag"
+    assert body["old_dag_id"] == dag_id
+
+    # Yeni DAG hedefte olustu.
+    assert Path(body["dag_path"]).is_file()
+    assert Path(body["config_path"]).is_file()
+
+    # ESKI DAG DURUYOR: silme ayri bir adim (kullanici karari).
+    assert old_config.is_file()
+
+
+def test_move_rewires_dependent_dag_to_the_new_id(client, studio_paths):
+    dag_a, _ = _mv_create(client)
+    dag_b, created_b = _mv_create(client, flow="tuketici", source_table="orders2")
+    _mv_link(client, dag_b, dag_a, flow="tuketici", source_table="orders2")
+
+    r = client.post(
+        "/api/move-dag",
+        json={"dag_id": dag_a, "target_folder_path": ["webhook", "whk", "yeni"]},
+    )
+    assert r.status_code == 200, r.text
+    new_id = r.json()["new_dag_id"]
+    assert dag_b in r.json()["updated_dags"]
+
+    # Bagimli DAG'in config'i YENI kimligi gostermeli (zincir kopmadi).
+    cfg = yaml.safe_load(
+        Path(created_b["config_path"]).read_text(encoding="utf-8")
+    )
+    upstream = (cfg.get("dag_dependencies") or {}).get("upstream_dag_ids") or []
+    assert upstream == [new_id]
+    assert dag_a not in upstream
+
+
+def test_moved_dag_history_starts_fresh(client, studio_paths):
+    """Revizyon gecmisi KOPYALANMAZ: yeni DAG yeni bir kimliktir."""
+    dag_id, _ = _mv_create(client)
+    r = client.post(
+        "/api/move-dag",
+        json={"dag_id": dag_id, "target_folder_path": ["webhook", "whk", "yeni"]},
+    )
+    assert r.status_code == 200, r.text
+    new_id = r.json()["new_dag_id"]
+
+    revs = client.get(f"/api/dag-revisions?dag_id={new_id}").json()
+    assert len(revs["items"]) == 1
+
+
+# --- T-MOVE-03: fail-loud ----------------------------------------------------
+
+def test_move_rejects_conflicting_dag_id(client, studio_paths):
+    """Farkli DERINLIKTEN gelen kimlik cakismasi blockers'ta raporlanir.
+
+    `_slugify` alt cizgiyi korudugu icin `webhook/whk_yeni` (2 seviye) ile
+    `webhook/whk/yeni` (3 seviye) AYNI dag_id'yi uretir. Belirsizlik sessizce
+    gecilmez.
+    """
+    dag_id, _ = _mv_create(client)
+    # 2 seviyeli: webhook/whk_yeni -> webhook_whk_yeni_1_dag
+    _mv_create(client, domain="whk_yeni", level=None, flow=None)
+
+    # 3 seviyeli hedefe tasima ayni id'yi uretir -> cakisma.
+    r = client.post(
+        "/api/move-dag/preview",
+        json={"dag_id": dag_id, "target_folder_path": ["webhook", "whk", "yeni"]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["blockers"], "cakisma blockers'ta raporlanmali"
+
+    # Tasimanin kendisi de reddedilmeli (preview bilgi, koruma yazmada).
+    r2 = client.post(
+        "/api/move-dag",
+        json={"dag_id": dag_id, "target_folder_path": ["webhook", "whk", "yeni"]},
+    )
+    assert r2.status_code == 422, r2.text
+    assert "already exists" in r2.text
+
+
+@pytest.mark.parametrize("bad", [["tek"], ["a", "b", "c", "d", "e"]])
+def test_move_rejects_invalid_depth(client, studio_paths, bad):
+    dag_id, _ = _mv_create(client)
+    r = client.post(
+        "/api/move-dag", json={"dag_id": dag_id, "target_folder_path": bad}
+    )
+    assert r.status_code == 422
+
+
+def test_move_of_unknown_dag_fails(client, studio_paths):
+    r = client.post(
+        "/api/move-dag",
+        json={"dag_id": "yok_boyle_bir_dag", "target_folder_path": ["a", "b"]},
+    )
+    assert r.status_code in (404, 422)
+
+
+def test_move_writes_nothing_when_validation_fails(client, studio_paths):
+    """ONCE DOGRULA, SONRA YAZ: gecersiz hedefte HICBIR SEY yazilmaz.
+
+    Yeni DAG da olusmamali -- yarim tasima birakmak, kullaniciyi elle
+    toparlamak zorunda birakirdi.
+    """
+    projects_root, dag_root = studio_paths
+    dag_id, _ = _mv_create(client)
+    before_projects = sorted(p.as_posix() for p in projects_root.rglob("*"))
+    before_dags = sorted(p.as_posix() for p in dag_root.rglob("*"))
+
+    # Gecersiz segment (yol gezinme) -> dogrulama fazinda reddedilir.
+    r = client.post(
+        "/api/move-dag",
+        json={"dag_id": dag_id, "target_folder_path": ["webhook", ".."]},
+    )
+    assert r.status_code == 422, r.text
+
+    assert sorted(p.as_posix() for p in projects_root.rglob("*")) == before_projects
+    assert sorted(p.as_posix() for p in dag_root.rglob("*")) == before_dags
+
+
+def test_config_carries_dag_id(client, studio_paths):
+    """`dag_id` YAML'a yazilir (kimligi yoldan ayirmanin on hazirligi)."""
+    _dag_id, created = _mv_create(client)
+    cfg = yaml.safe_load(
+        Path(created["config_path"]).read_text(encoding="utf-8")
+    )
+    assert cfg["dag_id"] == _dag_id

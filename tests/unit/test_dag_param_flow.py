@@ -167,6 +167,46 @@ def test_dbt_task_references_extracted_from_dbt_vars():
     assert plan.binding_sources_for("dbt_build") == {"test1": "bind_1"}
 
 
+def test_file_paths_are_scanned_for_param_references():
+    """F1.5 REGRESYON: dosya yollari da `{{ p }}` tasir.
+
+    Canli bulgu (2026-08-20): `target_file_path` tarama listesinde olmadigi
+    icin binding kaynaklari SESSIZCE bos kaliyordu; hata calisma aninda
+    "target_file_path sablonunda cozulemeyen deger" olarak patliyordu.
+    `_reference_expression`in kendi sozlesmesi tam bunu uyariyor (INV-6).
+    """
+    tasks = [
+        _binding("bind_1", "SBT", []),
+        {
+            "task_group_id": "aktar_1",
+            "task_type": "source_target",
+            "depends_on": ["bind_1"],
+            "target_file_path": "/out/rapor_{{ test1 }}.csv",
+        },
+    ]
+
+    plan = compile_dag_parameter_flow(_params(), tasks)
+
+    assert plan.binding_sources_for("aktar_1") == {"test1": "bind_1"}
+
+
+def test_source_file_path_is_scanned_for_param_references():
+    tasks = [
+        _binding("bind_1", "SBT", []),
+        {
+            "task_group_id": "oku_1",
+            "task_type": "source_target",
+            "depends_on": ["bind_1"],
+            "source_type": "file",
+            "file_path": "/in/veri_{{ test1 }}.csv",
+        },
+    ]
+
+    plan = compile_dag_parameter_flow(_params(), tasks)
+
+    assert plan.binding_sources_for("oku_1") == {"test1": "bind_1"}
+
+
 def test_dbt_task_without_vars_references_nothing():
     tasks = [_binding("bind_1", "1", []), _dbt("dbt_build", ["bind_1"], {})]
 

@@ -20,8 +20,12 @@ from ffengine.config.schema import (
     VALID_COLUMN_MAPPING_MODES,
     VALID_EXTRACTION_METHODS,
     VALID_PARTITION_MODES,
-    FILE_SOURCE_TYPES,
+    FILE_SOURCE_TYPE,
+    VALID_SOURCE_FILE_FORMATS,
+    is_file_source,
+    source_file_format,
     VALID_JSON_MODES,
+    VALID_TARGET_FILE_FORMATS,
     VALID_TARGET_TYPES,
     VALID_ENGINE_SPARK_FIELDS,
     VALID_SPARK_SOURCE_TYPES,
@@ -132,7 +136,7 @@ class ConfigValidator:
         # sql and file sources carry no source_schema.
         if (
             source_type == "sql"
-            or source_type in FILE_SOURCE_TYPES
+            or source_type == FILE_SOURCE_TYPE
             or source_type == "parquet"
             # F6.3 — bir Kafka topic'i schema.table cifti degildir.
             or source_type == KAFKA_TYPE
@@ -710,7 +714,7 @@ class ConfigValidator:
             self._check_parquet_source(task)
             return
 
-        if source_type in FILE_SOURCE_TYPES:
+        if source_type == FILE_SOURCE_TYPE:
             self._check_file_source(task)
             return
 
@@ -741,19 +745,30 @@ class ConfigValidator:
             )
 
     def _check_file_source(self, task: dict) -> None:
-        """F1.4/F1.5 — csv/json file source: file_path + explicit mapping."""
+        """F1.4/F1.5 — file source: file_path + format + explicit mapping.
+
+        Format bir **veri** sozlesmesidir (hangi ayristirici kosacagini
+        belirler), bu yuzden burada fail-loud dogrulanir — hedef tarafla
+        (`_check_target_type`) simetrik.
+        """
         file_path = str(task.get("file_path") or "").strip()
         if not file_path:
             raise ValidationError(
-                f"source_type='{task.get('source_type')}' icin 'file_path' "
-                "zorunludur ('source_table' degil)."
+                "source_type='file' icin 'file_path' zorunludur "
+                "('source_table' degil)."
+            )
+        fmt = source_file_format(task)
+        if fmt not in VALID_SOURCE_FILE_FORMATS:
+            raise ValidationError(
+                f"Gecersiz source_file_format: '{fmt}'. "
+                f"Gecerli degerler: {sorted(VALID_SOURCE_FILE_FORMATS)}"
             )
         if task.get("column_mapping_mode") != "mapping_file":
             raise ValidationError(
-                "Dosya kaynagi (csv/json) explicit mapping gerektirir: "
+                "Dosya kaynagi explicit mapping gerektirir: "
                 "column_mapping_mode='mapping_file' olmali (tip cikarimi yok)."
             )
-        if task.get("source_type") == "json":
+        if fmt == "json":
             json_mode = str(task.get("json_mode") or "flat").strip().lower()
             if json_mode not in VALID_JSON_MODES:
                 raise ValidationError(
@@ -770,11 +785,38 @@ class ConfigValidator:
                 f"Gecersiz target_type: '{target_type}'. "
                 f"Gecerli degerler: {sorted(VALID_TARGET_TYPES)}"
             )
+        fmt_raw = task.get("target_file_format")
         if target_type == "file":
             if not str(task.get("target_file_path") or "").strip():
                 raise ValidationError(
                     "target_type='file' icin 'target_file_path' zorunludur."
                 )
+            if fmt_raw is not None:
+                fmt = str(fmt_raw).strip().lower()
+                if fmt not in VALID_TARGET_FILE_FORMATS:
+                    raise ValidationError(
+                        f"Gecersiz target_file_format: '{fmt_raw}'. "
+                        f"Gecerli degerler: {sorted(VALID_TARGET_FILE_FORMATS)}"
+                    )
+                # JSON (JSONL) satir basina obje yazar: baslik satiri ve
+                # ayrac kavrami yoktur. Sessizce yok saymak yerine fail-loud
+                # (kafka "stray field" deseni) -- kullanici "JSON yazdim ama
+                # CSV cikti" tuzagina dusmemeli.
+                if fmt == "json":
+                    stray = [
+                        name
+                        for name in ("target_header", "target_delimiter")
+                        if task.get(name) is not None
+                    ]
+                    if stray:
+                        raise ValidationError(
+                            f"{stray} yalniz target_file_format='csv' ile "
+                            "anlamlidir; JSON hedefi satir basina obje yazar."
+                        )
+        elif fmt_raw is not None:
+            raise ValidationError(
+                "target_file_format yalniz target_type='file' ile anlamlidir."
+            )
 
     def _check_mapping_file(self, task: dict) -> None:
         if task.get("column_mapping_mode") == "mapping_file":
@@ -789,10 +831,7 @@ class ConfigValidator:
             return
 
         # File endpoints stream as a single writer (M=1) → no partitioning.
-        if (
-            task.get("source_type") in FILE_SOURCE_TYPES
-            or task.get("target_type") == "file"
-        ):
+        if is_file_source(task) or task.get("target_type") == "file":
             raise ValidationError(
                 "Dosya kaynagi/hedefi partitioning desteklemez (tek akis, M=1)."
             )

@@ -5,17 +5,38 @@ CONFIG_SCHEMA.md ile senkronize edilmiştir.
 """
 
 VALID_SOURCE_TYPES: frozenset[str] = frozenset(
-    {"table", "view", "sql", "csv", "json", "script", "iceberg", "parquet", "kafka"}
+    {"table", "view", "sql", "file", "script", "iceberg", "parquet", "kafka"}
 )
 
 # F1.4/F1.5 — file source/target (transport ⟂ format).
-# source_type ∈ {csv, json} = FILE source; json_mode "flat" only ("raw" → F1.4b).
-FILE_SOURCE_TYPES: frozenset[str] = frozenset({"csv", "json"})
+# Kaynak ve hedef simetriktir: tasima `source_type: file` / `target_type: file`
+# ile, format ayri bir alanla secilir (`source_file_format` / `target_file_format`).
+FILE_SOURCE_TYPE = "file"
+VALID_SOURCE_FILE_FORMATS: frozenset[str] = frozenset({"csv", "json"})
 VALID_JSON_MODES: frozenset[str] = frozenset({"flat"})  # "raw" deferred (F1.4b)
 # F6.2 — `iceberg` additive olarak eklendi. Kendi başına bir motor seçimi
 # DEĞİLDİR: `_check_engine` bu uç noktayı yalnız AÇIK `engine.preference: spark`
 # ile kabul eder, Community'de edition kapısına takılır.
 VALID_TARGET_TYPES: frozenset[str] = frozenset({"db", "file", "iceberg"})
+# Hedef dosya formati (transport ⟂ format): `target_type: file` DEGISMEZ,
+# format ayri bir alanla secilir. Verilmezse CSV -- geriye uyum.
+VALID_TARGET_FILE_FORMATS: frozenset[str] = frozenset({"csv", "json"})
+
+# Format okumanin TEK noktasi. Dogrudan `task["source_file_format"]` okumayin:
+# bos string / None / buyuk harf normalizasyonu burada tek yerde yapilir, aksi
+# halde her cagri noktasi kendi varsayilanini uydurur.
+DEFAULT_FILE_FORMAT = "csv"
+
+
+def source_file_format(task: dict) -> str:
+    """Dosya kaynaginin formatini dondurur (normalize, varsayilan csv)."""
+    return str(task.get("source_file_format") or DEFAULT_FILE_FORMAT).strip().lower()
+
+
+def is_file_source(task: dict) -> bool:
+    """Task bir DOSYA kaynagi mi? (`source_type: file`)"""
+    return str(task.get("source_type") or "").strip().lower() == FILE_SOURCE_TYPE
+
 
 VALID_LOAD_METHODS: frozenset[str] = frozenset(
     {
@@ -51,6 +72,93 @@ VALID_PARTITION_MODES: frozenset[str] = frozenset(
 # F1.3c — deadline eklendi (Airflow 3.2+ DeadlineAlert; süre = notify_deadline_minutes).
 # reconciliation/threshold bu dilimde YOK (Enterprise / sonraki dalga).
 VALID_NOTIFY_TRIGGERS: frozenset[str] = frozenset({"failure", "success", "deadline"})
+
+# F7.1 — DAG seviyesi retry blogu (opsiyonel; Airflow-native).
+# Retry MOTORU yazilmaz: bu degerler Airflow'un `default_args.retries` /
+# `retry_delay` alanlarina cevrilir (ARCH-09). Blok yoksa DAG'a `default_args`
+# HIC emit edilmez -- legacy config'ler bayt-ayni kalir (ARCH-11).
+RETRY_KEY: str = "retry"
+VALID_RETRY_FIELDS: frozenset[str] = frozenset({"retries", "delay_seconds"})
+#: Ust sinir kazara sonsuz donguye karsi: 10 deneme x 24 saat = pratik tavan.
+MIN_RETRIES: int = 1
+MAX_RETRIES: int = 10
+MIN_RETRY_DELAY_SECONDS: int = 1
+MAX_RETRY_DELAY_SECONDS: int = 86_400  # 24 saat
+DEFAULT_RETRY_DELAY_SECONDS: int = 60
+
+
+def _retry_int(raw, field: str, low: int, high: int) -> int:
+    """`retry` blogundaki bir tamsayiyi araligi ile birlikte cozer (fail-loud).
+
+    `bool` bilincli olarak reddedilir: Python'da `True == 1` oldugu icin
+    `retries: true` sessizce "1 deneme"ye donusurdu. Float da reddedilir --
+    2.5 deneme diye bir sey yok, sessiz kirpma INV-1 ihlali olurdu.
+    """
+    if isinstance(raw, (bool, float)):
+        raise ValueError(f"retry.{field} must be an integer.")
+    try:
+        value = int(str(raw).strip()) if isinstance(raw, str) else int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"retry.{field} must be an integer.")
+    if value < low or value > high:
+        raise ValueError(
+            f"retry.{field} must be between {low} and {high} (got {value})."
+        )
+    return value
+
+
+def normalize_retry(raw) -> dict | None:
+    """F7.1 — DAG seviyesi retry politikasini normalize eder.
+
+    Bos/tanimsiz veya ``retries < 1`` -> **None** (retry kapali). Bu durumda
+    cagiran taraf blogu config'e HIC yazmaz; boylece retry kullanmayan legacy
+    config'lerin YAML'i bayt-ayni kalir ve DAG'a `default_args` emit edilmez
+    (ARCH-11 byte-stability).
+
+    Retry MOTORU yazilmaz: cikti Airflow'un `default_args.retries` /
+    `retry_delay` alanlarina cevrilir (ARCH-09, bkz. ``airflow/retry.py``).
+
+    Bu fonksiyon bilincli olarak **schema** icinde yasar: DAG-parse yolundaki
+    ``airflow/retry.py`` bunu cagirir ve `ui.studio_service` gibi agir bir UI
+    modulunu o yola sokmak import maliyetini ~3.3 sn'ye cikariyordu.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("retry must be an object.")
+    if not raw:
+        return None
+
+    unknown = sorted(set(raw) - VALID_RETRY_FIELDS)
+    if unknown:
+        raise ValueError(
+            f"retry: unknown field(s) {unknown}. "
+            f"Valid fields: {sorted(VALID_RETRY_FIELDS)}."
+        )
+
+    retries_raw = raw.get("retries")
+    if retries_raw in (None, ""):
+        return None
+    # Kapali (0 veya negatif) -> omit. Ust sinir yine de fail-loud dogrulanir,
+    # aksi halde `retries: 999` sessizce yok sayilirdi.
+    retries = _retry_int(retries_raw, "retries", -(2**31), MAX_RETRIES)
+    if retries < MIN_RETRIES:
+        return None
+
+    delay_raw = raw.get("delay_seconds")
+    delay = (
+        DEFAULT_RETRY_DELAY_SECONDS
+        if delay_raw in (None, "")
+        else _retry_int(
+            delay_raw,
+            "delay_seconds",
+            MIN_RETRY_DELAY_SECONDS,
+            MAX_RETRY_DELAY_SECONDS,
+        )
+    )
+    # Default explicit yazilir: config'i okuyan kisi gecikmeyi gorebilmeli.
+    return {"retries": retries, "delay_seconds": delay}
+
 
 # Root seviyesinde zorunlu alanlar
 REQUIRED_ROOT_FIELDS: tuple[str, ...] = ("source_db_var", "target_db_var", "flow_tasks")

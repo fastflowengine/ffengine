@@ -154,7 +154,9 @@ _OPAQUE_SQL_SOURCE_TYPES: frozenset[str] = frozenset({"sql", "script"})
 #: Dosya-yolu taşıyan kaynak tipleri (şablonlu yol: dataset=şablon,
 #: `*_resolved`=render sonrası — T-F4.3E-5). `parquet` F6.2'de dosya
 #: kaynağıdır (Spark yolunda okunur) — kimliği yine dosya yoludur.
-_FILE_PATH_SOURCE_TYPES: frozenset[str] = frozenset({"csv", "json", "parquet"})
+#: `file` genel dosya taşımasıdır; formatı (csv/json) kimliği DEĞİŞTİRMEZ —
+#: uç kimliği her hâlükârda dosya yoludur.
+_FILE_PATH_SOURCE_TYPES: frozenset[str] = frozenset({"file", "parquet"})
 
 
 def event_header(*, event_scope: str, outcome: str) -> dict[str, Any]:

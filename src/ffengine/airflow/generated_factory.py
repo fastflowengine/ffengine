@@ -25,6 +25,7 @@ from ffengine.airflow.notifications import (
     build_deadline_alert,
     build_notification_callbacks,
 )
+from ffengine.airflow.retry import build_retry_kwargs
 from ffengine.config.dag_param_flow import (
     TRIGGER_SOURCE,
     compile_dag_parameter_flow,
@@ -395,6 +396,9 @@ def build_generated_dag(
         scheduler = {}
     # F1.3 — flow-level operational notification (Airflow-native callbacks).
     notify_kwargs = build_notification_callbacks(raw.get("notifications"))
+    # F7.1 — Airflow-native retry. Blok yoksa {} doner ve DAG'a `default_args`
+    # HIC eklenmez (zero-diff: mevcut DAG'lar bayt-ayni kalir).
+    retry_kwargs = build_retry_kwargs(raw.get("retry"))
     # F1.3c — deadline trigger (None unless configured + Airflow 3.2+).
     deadline_alert = build_deadline_alert(raw.get("notifications"))
 
@@ -565,6 +569,7 @@ def build_generated_dag(
         deadline=deadline_alert,
         **continuous_kwargs,
         **notify_kwargs,
+        **retry_kwargs,
     ) as dag:
         task_groups: dict[str, Any] = {}
         for task_def in task_defs:

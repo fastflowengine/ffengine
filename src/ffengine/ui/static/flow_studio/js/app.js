@@ -447,6 +447,8 @@ async function studioFetch(path, options) {
     let dagParamsDraftState = null;
     let notificationsAppliedState = null;
     let notificationsDraftState = null;
+    let retryAppliedState = null;
+    let retryDraftState = null;
     let allConnectionsState = [];
     let mailTemplateNamesState = ["Default"];
     let dagDepsAppliedState = null;
@@ -548,8 +550,51 @@ async function studioFetch(path, options) {
       return out;
     }
 
+    // F7.1 — retry state. `retries < 1` KAPALI demektir ve blok komple
+    // atilir: boylece retry kullanmayan config'lerin YAML'i degismez.
+    function cloneRetry(state) {
+      if (!state || typeof state !== "object") return null;
+      const retries = parseInt(state.retries, 10);
+      if (!Number.isFinite(retries) || retries < 1) return null;
+      const delay = parseInt(state.delay_seconds, 10);
+      return {
+        retries,
+        delay_seconds: Number.isFinite(delay) && delay > 0 ? delay : 60,
+      };
+    }
+
+    function renderAdvancedRetry() {
+      const state = retryDraftState || {};
+      const retries = parseInt(state.retries, 10);
+      const delay = parseInt(state.delay_seconds, 10);
+      const retriesInput = el("retry_retries");
+      const delayInput = el("retry_delay_seconds");
+      if (retriesInput) retriesInput.value = Number.isFinite(retries) && retries > 0 ? String(retries) : "";
+      if (delayInput) delayInput.value = Number.isFinite(delay) && delay > 0 ? String(delay) : "";
+    }
+
+    function collectAdvancedModalRetry() {
+      const rawRetries = String(el("retry_retries")?.value || "").trim();
+      if (!rawRetries) return null;
+      const retries = parseInt(rawRetries, 10);
+      if (!Number.isFinite(retries) || retries < 0) {
+        throw new Error("Retries must be an integer between 0 and 10.");
+      }
+      if (retries === 0) return null;
+      if (retries > 10) {
+        throw new Error("Retries must be between 0 and 10.");
+      }
+      const rawDelay = String(el("retry_delay_seconds")?.value || "").trim();
+      if (!rawDelay) return { retries, delay_seconds: 60 };
+      const delay = parseInt(rawDelay, 10);
+      if (!Number.isFinite(delay) || delay < 1 || delay > 86400) {
+        throw new Error("Retry delay must be between 1 and 86400 seconds.");
+      }
+      return { retries, delay_seconds: delay };
+    }
+
     function setAdvancedTab(name) {
-      const target = name === "notifications" ? "notifications" : "params";
+      const target = ["notifications", "retry"].includes(name) ? name : "params";
       for (const btn of document.querySelectorAll(".advanced-tab-btn")) {
         btn.classList.toggle("active", btn.getAttribute("data-advanced-tab") === target);
       }
@@ -755,9 +800,11 @@ async function studioFetch(path, options) {
       if (isBusy) return;
       dagParamsDraftState = normalizeDagParams(dagParamsAppliedState || defaultDagParams());
       notificationsDraftState = cloneNotifications(notificationsAppliedState);
+      retryDraftState = cloneRetry(retryAppliedState);
       loadMailTemplateNames();
       renderAdvancedModal();
       renderAdvancedNotifications();
+      renderAdvancedRetry();
       setAdvancedTab("params");
       el("advanced_modal").classList.add("open");
       el("advanced_modal").setAttribute("aria-hidden", "false");
@@ -768,14 +815,17 @@ async function studioFetch(path, options) {
       el("advanced_modal").setAttribute("aria-hidden", "true");
       dagParamsDraftState = null;
       notificationsDraftState = null;
+      retryDraftState = null;
     }
 
     function applyAdvancedModal() {
       try {
         const params = collectAdvancedModalParams();
         const notifications = collectAdvancedModalNotifications();
+        const retry = collectAdvancedModalRetry();
         dagParamsAppliedState = params;
         notificationsAppliedState = notifications;
+        retryAppliedState = retry;
         refreshDagParameterBindingControls();
         renderAdvancedSummary();
         closeAdvancedModal();
@@ -1868,6 +1918,13 @@ async function studioFetch(path, options) {
       dagParamsDraftState = null;
       notificationsAppliedState = null;
       notificationsDraftState = null;
+      retryAppliedState = null;
+      retryDraftState = null;
+      // Yeni DAG'e donuluyor: derinlik varsayilana doner, yuklu klasor izi silinir
+      // (aksi halde silinen DAG'in derinligi/Move dugmesi takili kalirdi).
+      loadedDagFolderPath = [];
+      pickerDepth = DEFAULT_FOLDER_DEPTH;
+      pickerDepthPinned = false;
       dagDepsReferencedByState = [];
       renderAdvancedSummary();
       setSchedulerAppliedState({
@@ -1961,6 +2018,88 @@ async function studioFetch(path, options) {
       const matches = !!expected && String(input.value || "").trim() === expected;
       confirmBtn.disabled = !matches || isBusy;
       confirmBtn.setAttribute("aria-disabled", matches && !isBusy ? "false" : "true");
+    }
+
+    // --- DAG tasima: hedef konumda YENIDEN URETIM ---------------------------
+    // Kimlik klasor yoluna bagli oldugu icin tasima yeni bir DAG uretir.
+    // Kullanici bunu onaylamadan once ETKILENECEK DAG'lari gorur.
+    let pendingMoveTarget = null;
+
+    function setMoveModalOpen(isOpen) {
+      const modal = el("move_dag_modal");
+      if (!modal) return;
+      modal.classList.toggle("open", isOpen);
+      modal.setAttribute("aria-hidden", isOpen ? "false" : "true");
+    }
+
+    async function openMoveDagModal() {
+      const dagId = String(currentUpdateDagId || "").trim();
+      if (!dagId) {
+        pushToast("Update mode must be active before move.", "error", true);
+        return;
+      }
+      const target = currentFolderPath();
+      let preview;
+      try {
+        const r = await studioFetch("/api/move-dag/preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dag_id: dagId, target_folder_path: target }),
+        });
+        preview = await r.json();
+        if (!r.ok || !preview.ok) {
+          throw new Error(preview.detail || "Move preview failed.");
+        }
+      } catch (err) {
+        pushToast(err.message || String(err), "error", true);
+        return;
+      }
+
+      pendingMoveTarget = target;
+      const affected = Array.isArray(preview.affected_dags) ? preview.affected_dags : [];
+      const blockers = Array.isArray(preview.blockers) ? preview.blockers : [];
+
+      const parts = [];
+      parts.push(`<p><strong>${preview.source_folder_path.join("/")}</strong> &rarr; <strong>${preview.target_folder_path.join("/")}</strong></p>`);
+      parts.push(`<p>A new DAG will be generated: <code>${preview.new_dag_id}</code></p>`);
+      parts.push('<p class="status-note warn">Airflow run history and revisions are <strong>not</strong> moved. The old DAG stays in place; you can delete it afterwards.</p>');
+      if (affected.length) {
+        const rows = affected.map((item) => `<li><code>${item.dag_id}</code></li>`).join("");
+        parts.push(`<p><strong>${affected.length} dependent DAG(s)</strong> will be rewired to the new id:</p><ul>${rows}</ul>`);
+      } else {
+        parts.push("<p>No dependent DAGs found in this project.</p>");
+      }
+      // Kapsam siniri ACIKCA soylenir: tarama proje bazinda.
+      parts.push('<p class="muted-note">Dependency scan covers this project only; links from other projects are not detected.</p>');
+      if (blockers.length) {
+        parts.push(`<p class="status-note error">${blockers.map((b) => String(b)).join("<br>")}</p>`);
+      }
+      el("move_dag_body").innerHTML = parts.join("");
+      const confirmBtn = el("btn_confirm_move_dag");
+      confirmBtn.disabled = blockers.length > 0;
+      confirmBtn.setAttribute("aria-disabled", blockers.length ? "true" : "false");
+      setMoveModalOpen(true);
+    }
+
+    async function confirmMoveDag() {
+      const dagId = String(currentUpdateDagId || "").trim();
+      if (!dagId || !pendingMoveTarget) return;
+      try {
+        const r = await studioFetch("/api/move-dag", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ dag_id: dagId, target_folder_path: pendingMoveTarget }),
+        });
+        const data = await r.json();
+        if (!r.ok || !data.ok) throw new Error(data.detail || "Move failed.");
+        setMoveModalOpen(false);
+        const updated = Array.isArray(data.updated_dags) ? data.updated_dags : [];
+        const extra = updated.length ? ` ${updated.length} dependent DAG(s) rewired.` : "";
+        pushToast(`Moved: ${data.new_dag_id} generated.${extra} The old DAG (${data.old_dag_id}) still exists.`, "success");
+        await preloadByDagId(data.new_dag_id);
+      } catch (err) {
+        pushToast(err.message || String(err), "error", true);
+      }
     }
 
     async function openDeleteDagModal() {
@@ -2516,6 +2655,59 @@ async function studioFetch(path, options) {
     };
 
     const pickerDraft = { project: "", domain: "", level: "", flow: "" };
+    // Degisken klasor derinligi: 2..4. Varsayilan 4 (mevcut aliskanlik korunur);
+    // LEVEL ve FLOW sondan kaldirilabilir.
+    const FOLDER_LEVEL_NAMES = ["project", "domain", "level", "flow"];
+    const MIN_FOLDER_DEPTH = 2;
+    const MAX_FOLDER_DEPTH = 4;
+    // Yeni DAG'de varsayilan 3 seviye acilir (project/domain/level).
+    // 4. seviye "Add Sub Level" ile, 2. seviyeye dusus "x" ile yapilir.
+    const DEFAULT_FOLDER_DEPTH = 3;
+    let pickerDepth = DEFAULT_FOLDER_DEPTH;
+    // Kullanici derinligi ELLE degistirdiyse (kaldir / + seviye ekle) otomatik
+    // acilma devreye girmez; aksi halde secim yaptigi anda kararini ezerdik.
+    let pickerDepthPinned = false;
+    // Update modunda yuklenen DAG'in GERCEK klasoru. Kullanici klasoru
+    // degistirdiginde "Move" akisi bu farktan anlasilir.
+    let loadedDagFolderPath = [];
+
+    function activeFolderLevels() {
+      return FOLDER_LEVEL_NAMES.slice(0, pickerDepth);
+    }
+
+    function syncPickerDepthUi() {
+      const grid = document.querySelector(".picker-grid");
+      if (grid) grid.style.setProperty("--picker-cols", String(pickerDepth + (pickerDepth < MAX_FOLDER_DEPTH ? 1 : 0)));
+      for (const name of ["level", "flow"]) {
+        const col = document.querySelector(`[data-picker-col="${name}"]`);
+        if (!col) continue;
+        const idx = FOLDER_LEVEL_NAMES.indexOf(name);
+        col.classList.toggle("hidden", idx >= pickerDepth);
+      }
+      // Yalniz SON seviye kaldirilabilir (delik olusmasin).
+      for (const name of ["level", "flow"]) {
+        const btn = el(`btn_drop_${name}`);
+        if (!btn) continue;
+        const idx = FOLDER_LEVEL_NAMES.indexOf(name);
+        btn.style.display =
+          idx === pickerDepth - 1 && pickerDepth > MIN_FOLDER_DEPTH ? "" : "none";
+      }
+      const addCol = el("picker_add_level_col");
+      if (addCol) addCol.classList.toggle("hidden", pickerDepth >= MAX_FOLDER_DEPTH);
+    }
+
+    function setPickerDepth(depth) {
+      const next = Math.min(MAX_FOLDER_DEPTH, Math.max(MIN_FOLDER_DEPTH, depth));
+      pickerDepth = next;
+      pickerDepthPinned = true;
+      // Kapatilan seviyelerin degeri DUSER: acikta kalan eski deger payload'a
+      // sizip yanlis derinlik uretirdi.
+      for (const name of FOLDER_LEVEL_NAMES.slice(next)) {
+        pickerDraft[name] = "";
+      }
+      syncPickerDepthUi();
+      syncFolderApplyState();
+    }
 
     function setMapItem(map, key, value) {
       if (!map.has(key)) map.set(key, new Set());
@@ -2533,6 +2725,9 @@ async function studioFetch(path, options) {
       } else if (levelName === "level") {
         pickerDraft.flow = "";
       }
+      // Yeni bir secim yapildi: derinlik yeniden ICERIGE gore belirlensin.
+      // Aksi halde onceki secimde elle ayarlanan derinlik takili kalirdi.
+      pickerDepthPinned = false;
       syncFolderApplyState();
     }
 
@@ -2547,15 +2742,17 @@ async function studioFetch(path, options) {
     }
 
     function requireFolderSelection() {
-      const values = {
-        project: el("project").value.trim(),
-        domain: el("domain").value.trim(),
-        level: el("level").value.trim(),
-        flow: el("flow").value.trim(),
-      };
-      if (!Object.values(values).every(Boolean)) {
+      // Degisken derinlik: sondan bos seviyeler kirpilir, project/domain
+      // zorunlu kalir. Delik (level bos, flow dolu) backend'de reddedilir.
+      const raw = FOLDER_LEVEL_NAMES.map((name) => el(name).value.trim());
+      while (raw.length > MIN_FOLDER_DEPTH && !raw[raw.length - 1]) raw.pop();
+      if (raw.length < MIN_FOLDER_DEPTH || !raw.every(Boolean)) {
         throw new Error(`${FOLDER_PATH_PROMPT}.`);
       }
+      const values = {};
+      FOLDER_LEVEL_NAMES.forEach((name, idx) => {
+        if (idx < raw.length) values[name] = raw[idx];
+      });
       return values;
     }
 
@@ -2571,6 +2768,25 @@ async function studioFetch(path, options) {
       }
     }
 
+    function currentFolderPath() {
+      const raw = FOLDER_LEVEL_NAMES.map((name) => el(name).value.trim());
+      while (raw.length > MIN_FOLDER_DEPTH && !raw[raw.length - 1]) raw.pop();
+      return raw.filter(Boolean);
+    }
+
+    // Move dugmesi YALNIZ update modunda ve klasor DEGISMISSE gorunur.
+    // Ayni klasorde "Move" anlamsiz olurdu.
+    function syncMoveButtonState() {
+      const btn = el("btn_move_dag");
+      if (!btn) return;
+      const inUpdateMode = Boolean(String(currentUpdateDagId || "").trim());
+      const changed =
+        inUpdateMode
+        && loadedDagFolderPath.length
+        && currentFolderPath().join("/") !== loadedDagFolderPath.join("/");
+      btn.classList.toggle("hidden", !changed);
+    }
+
     function syncFolderPathDisplay() {
       const folderPathValue = getFolderPathText({
         project: el("project").value,
@@ -2580,6 +2796,7 @@ async function studioFetch(path, options) {
       });
       const folderPathInput = el("folder_path_display");
       folderPathInput.value = folderPathValue;
+      syncMoveButtonState();
       folderPathInput.title = folderPathValue || FOLDER_PATH_PROMPT;
       for (const card of getTaskCards()) {
         syncMappingState(card);
@@ -2617,11 +2834,8 @@ async function studioFetch(path, options) {
     }
 
     function isFolderSelectionComplete() {
-      return Boolean(
-        (pickerDraft.project || "").trim()
-        && (pickerDraft.domain || "").trim()
-        && (pickerDraft.level || "").trim()
-        && (pickerDraft.flow || "").trim()
+      return activeFolderLevels().every(
+        (name) => (pickerDraft[name] || "").trim()
       );
     }
 
@@ -2658,6 +2872,8 @@ async function studioFetch(path, options) {
       if (pickerDraft.project) {
         domainData = await fetchFolderOptions(pickerDraft.project, "", "");
       }
+      // Veri HER ZAMAN cekilir (sutun kapali olsa bile): "alt klasor var mi?"
+      // sorusunun cevabi olmadan derinlik otomatik acilamaz.
       if (pickerDraft.project && pickerDraft.domain) {
         levelData = await fetchFolderOptions(pickerDraft.project, pickerDraft.domain, "");
       }
@@ -2677,6 +2893,24 @@ async function studioFetch(path, options) {
       const levelItems = appendUniqueSorted(levelData.levels || [], levelsExtra);
       const flowItems = appendUniqueSorted(flowData.flows || [], flowsExtra);
 
+      // Derinligi ICERIGE gore ac: bir seviyenin altinda gercekten klasor
+      // varsa bir sonraki sutun kendiliginden acilir, yoksa acilmaz.
+      // Kullanici elle bir derinlik sectiyse (kaldir / + seviye ekle) buna
+      // dokunulmaz -- otomatik davranis kullanicinin kararini ezmemeli.
+      if (!pickerDepthPinned) {
+        // Otomatik acilma YALNIZ derinligi ARTIRIR: alt klasor varsa bir
+        // sonraki sutun kendiliginden acilir. Azaltma kullanicinin karari
+        // oldugundan (x dugmesi) burada asla derinlik dusurulmez.
+        let autoDepth = DEFAULT_FOLDER_DEPTH;
+        if (pickerDraft.project && pickerDraft.domain && levelItems.length) {
+          if (pickerDraft.level && flowItems.length) autoDepth = 4;
+        }
+        if (autoDepth > pickerDepth) {
+          pickerDepth = autoDepth;
+          syncPickerDepthUi();
+        }
+      }
+
       renderPickerList("picker_project_list", projectItems, pickerDraft.project, (val) => {
         pickerDraft.project = val;
         clearDraftBelow("project");
@@ -2694,6 +2928,9 @@ async function studioFetch(path, options) {
       });
       renderPickerList("picker_flow_list", flowItems, pickerDraft.flow, (val) => {
         pickerDraft.flow = val;
+        // Son seviye: alt klasoru yok, ama secim yine de derinligi icerige
+        // birakmali (kullanici baska bir dala gecerse dogru acilsin).
+        pickerDepthPinned = false;
         refreshPickerColumns();
       });
 
@@ -2714,6 +2951,22 @@ async function studioFetch(path, options) {
       pickerDraft.domain = el("domain").value.trim();
       pickerDraft.level = el("level").value.trim();
       pickerDraft.flow = el("flow").value.trim();
+      // Kayitli bir DAG aciliyorsa derinlik ONUN secimidir (3 seviyeli DAG
+      // 3 sutunla acilir -- sessiz guncelleme yok). Bos formda ise yeni DAG
+      // varsayilani gecerlidir.
+      if (pickerDraft.project) {
+        let depth = MAX_FOLDER_DEPTH;
+        while (depth > MIN_FOLDER_DEPTH && !pickerDraft[FOLDER_LEVEL_NAMES[depth - 1]]) {
+          depth -= 1;
+        }
+        pickerDepth = depth;
+      } else {
+        pickerDepth = DEFAULT_FOLDER_DEPTH;
+      }
+      // Kayitli bir DAG aciliyorsa derinligi SABIT tut (update ekraninda
+      // otomatik acilma DAG'in gercek derinligini degistirmemeli).
+      pickerDepthPinned = Boolean(el("project").value.trim());
+      syncPickerDepthUi();
       setFolderPickerOpen(true);
       refreshPickerColumns();
     }
@@ -2769,10 +3022,11 @@ async function studioFetch(path, options) {
 
     function applyFolderPickerSelection() {
       if (!isFolderSelectionComplete()) return;
-      el("project").value = pickerDraft.project || "";
-      el("domain").value = pickerDraft.domain || "";
-      el("level").value = pickerDraft.level || "";
-      el("flow").value = pickerDraft.flow || "";
+      // Aktif olmayan seviyeler BOSALTILIR: aksi halde 4->3 dususunde eski
+      // `flow` degeri hidden input'ta kalir ve payload'a sizardi.
+      FOLDER_LEVEL_NAMES.forEach((name, idx) => {
+        el(name).value = idx < pickerDepth ? (pickerDraft[name] || "") : "";
+      });
       syncFolderPathDisplay();
       for (const card of getTaskCards()) syncMappingState(card);
       loadDagDependencyOptions(currentUpdateDagId).catch((_err) => {});
@@ -3157,14 +3411,22 @@ async function studioFetch(path, options) {
         const vars = task.dbt_vars || {};
         return Object.keys(vars).sort().map((key) => String(vars[key])).join("\n");
       }
-      return task.where;
+      // F1.5 — dosya yollari da `{{ p }}` tasir (operator bunlari render eder);
+      // taranmazsa binding kaynaklari sessizce bos kalir.
+      return [task.where, task.file_path, task.target_file_path]
+        .map((part) => String(part || ""))
+        .join("\n");
     }
 
     function cardParamExpression(card) {
       const taskType = card.querySelector(".task-type")?.value;
       if (taskType === TASK_TYPES.SCRIPT_RUN) return card.querySelector(".script-sql")?.value;
       if (taskType === TASK_TYPES.DBT) return card.querySelector(".dbt-vars")?.value;
-      return card.querySelector(".where")?.value;
+      return [
+        card.querySelector(".where")?.value,
+        card.querySelector(".source-file-path")?.value,
+        card.querySelector(".target-file-path")?.value,
+      ].map((part) => String(part || "")).join("\n");
     }
 
     async function validateAirflowNamespaceKeys() {
@@ -3912,6 +4174,7 @@ async function studioFetch(path, options) {
       setBindingsFromValues(card, values.bindings || []);
       ensureBindingRowForBindingTask(card);
       syncTaskTypeState(card);
+      applyFileTypeGate(card);
       toggleSourceMode(card);
       toggleTargetMode(card);
       if (loadedTaskGroupId) {
@@ -3935,13 +4198,12 @@ async function studioFetch(path, options) {
       const sourceSchemaInput = card.querySelector(".source-schema");
       const sourceTableInput = card.querySelector(".source-table");
       const isSqlMode = sourceType === "sql";
-      const isFileMode = sourceType === "csv" || sourceType === "json";
+      const isFileMode = sourceType === "file";
       sqlWrap.classList.toggle("hidden", !isSqlMode);
       sourceTableWrap.classList.toggle("hidden", isSqlMode || isFileMode);
       if (fileWrap) {
         fileWrap.classList.toggle("hidden", !isFileMode);
-        const jsonOpts = fileWrap.querySelector(".source-json-opts");
-        if (jsonOpts) jsonOpts.classList.toggle("hidden", sourceType !== "json");
+        syncSourceFileFormat(card);
       }
       // File sources are always explicit-mapping (no type inference).
       const mappingModeSelect = card.querySelector(".column-mapping-mode");
@@ -3964,6 +4226,7 @@ async function studioFetch(path, options) {
       const setVal = (sel, v) => { const n = card.querySelector(sel); if (n) n.value = v; };
       const setChk = (sel, v) => { const n = card.querySelector(sel); if (n) n.checked = v; };
       setVal(".source-file-path", values.file_path || "");
+      setVal(".source-file-format", values.source_file_format || "csv");
       setVal(".source-file-delimiter", values.delimiter || "");
       setVal(".source-file-encoding", values.encoding || "");
       setVal(".source-file-quotechar", values.quotechar || "");
@@ -3976,6 +4239,8 @@ async function studioFetch(path, options) {
       card.dataset.icebergTarget = targetType === "iceberg" ? "1" : "0";
       syncIcebergAppendHint(card);
       setVal(".target-file-path", values.target_file_path || "");
+      // Format alani persist edilir; verilmemisse csv (geriye uyum).
+      setVal(".target-file-format", values.target_file_format || "csv");
       setVal(".target-file-delimiter", values.target_delimiter || "");
       setVal(".target-file-encoding", values.target_encoding || "");
       setChk(".target-file-header", values.target_header !== false);
@@ -4000,6 +4265,62 @@ async function studioFetch(path, options) {
       if (dbWrap) dbWrap.classList.toggle("hidden", isFile);
       if (tableWrap) tableWrap.classList.toggle("hidden", isFile);
       if (fileWrap) fileWrap.classList.toggle("hidden", !isFile);
+      syncTargetFileFormat(card);
+    }
+
+    // Kaynak tarafinda formata ozgu alanlar. Delimiter/Quote Char/header
+    // yalniz CSV ayristiricisina gider; JSONL'de her satir kendi anahtarlarini
+    // tasir, ayrac ve baslik satiri kavrami yoktur. `json_mode` ise yalniz
+    // JSON'da anlamlidir. Encoding (bayt->metin) her iki formatta da gorunur.
+    function syncSourceFileFormat(card) {
+      const fmt = String(card.querySelector(".source-file-format")?.value || "csv").trim() || "csv";
+      const isCsv = fmt === "csv";
+      for (const el of card.querySelectorAll(".source-csv-opts")) {
+        el.classList.toggle("hidden", !isCsv);
+      }
+      for (const el of card.querySelectorAll(".source-json-opts")) {
+        el.classList.toggle("hidden", isCsv);
+      }
+    }
+
+    // CSV'ye ozgu alanlar (delimiter + header) JSON formatinda gizlenir:
+    // JSONL satir basina obje yazar, baslik satiri ve ayrac kavrami yoktur.
+    function syncTargetFileFormat(card) {
+      const fmt = String(card.querySelector(".target-file-format")?.value || "csv").trim() || "csv";
+      const csvOpts = card.querySelector(".target-file-csv-opts");
+      const headerWrap = card.querySelector(".target-file-header")?.closest("label");
+      const isCsv = fmt === "csv";
+      if (csvOpts) csvOpts.classList.toggle("hidden", !isCsv);
+      if (headerWrap) headerWrap.classList.toggle("hidden", !isCsv);
+    }
+
+    // Deployment kapisi (FFENGINE_FILE_TYPES): kapali dosya tipleri DOM'dan
+    // KALDIRILIR. CSS ile gizlemek yetmez -- <option>'da display:none
+    // tarayicilar arasi guvenilmezdir ve gizli option hala secilebilir kalir.
+    function enabledFileTypes() {
+      const raw = document.body?.dataset?.ffengineFileTypes;
+      if (raw === undefined) return null; // kapi bilgisi yok: dokunma
+      return new Set(String(raw).split(",").map((s) => s.trim()).filter(Boolean));
+    }
+
+    function applyFileTypeGate(card) {
+      const allowed = enabledFileTypes();
+      if (!allowed) return;
+      // Kapi artik TASIMAYA degil FORMATA uygulanir: `file` her zaman
+      // gecerli bir uc noktadir, kapatilan sey okunacak/yazilacak formattir.
+      for (const sel of card.querySelectorAll(".source-file-format, .target-file-format")) {
+        for (const opt of Array.from(sel.options)) {
+          if (!allowed.has(opt.value)) opt.remove();
+        }
+      }
+      // Hicbir dosya tipi acik degilse dosya UCLARI da secilemez.
+      if (allowed.size === 0) {
+        for (const sel of card.querySelectorAll(".source-type, .target-type")) {
+          for (const opt of Array.from(sel.options)) {
+            if (opt.value === "file") opt.remove();
+          }
+        }
+      }
     }
 
     function buildTaskGroupFormula(card, fallbackIndex) {
@@ -4009,9 +4330,16 @@ async function studioFetch(path, options) {
       const targetDbVal = (el("target_conn_id").value || "").trim();
       const sourceSchemaVal = card.querySelector(".source-schema").value.trim();
       const sourceTableVal = card.querySelector(".source-table").value.trim();
-      const loadMethodVal = card.querySelector(".load-method").value.trim();
-      const targetSchemaVal = card.querySelector(".target-schema").value.trim();
-      const targetTableVal = card.querySelector(".target-table").value.trim();
+      const targetTypeVal = String(card.querySelector(".target-type")?.value || "db").trim();
+      // Dosya uclari task adinda yalnizca "file" olarak anilir; dosya ADI
+      // kullanilmaz ki yol degisince task adi (ve DAG kimligi) degismesin.
+      const isFileTarget = targetTypeVal === "file";
+      const targetSchemaVal = isFileTarget
+        ? "file"
+        : card.querySelector(".target-schema").value.trim();
+      const targetTableVal = isFileTarget
+        ? "file"
+        : card.querySelector(".target-table").value.trim();
       const scriptEnvVal = (card.querySelector(".script-run-environment")?.value || "source").trim();
       const dagTaskDagId = (card.querySelector(".dag-task-dag-id")?.value || "").trim();
       const dbtCommandVal = (card.querySelector(".dbt-command")?.value || "run").trim();
@@ -4021,32 +4349,45 @@ async function studioFetch(path, options) {
           ? "dag"
           : (taskType === TASK_TYPES.BINDING
             ? "binding"
-            : (taskType === TASK_TYPES.DBT ? "dbt" : (sourceType === "sql" ? "sql" : sourceSchemaVal))));
+            : (taskType === TASK_TYPES.DBT
+              ? "dbt"
+              : (sourceType === "sql"
+                ? "sql"
+                : (sourceType === "file" ? "file" : sourceSchemaVal)))));
       const taskGroupSourceTable = taskType === TASK_TYPES.SCRIPT_RUN
         ? (scriptEnvVal || "source")
         : (taskType === TASK_TYPES.DAG
           ? (dagTaskDagId || "dag")
           : (taskType === TASK_TYPES.BINDING
             ? `parameters_${fallbackIndex}`
-            : (taskType === TASK_TYPES.DBT ? dbtCommandVal : (sourceType === "sql" ? "query" : sourceTableVal))));
+            : (taskType === TASK_TYPES.DBT
+              ? dbtCommandVal
+              : (sourceType === "sql"
+                ? "query"
+                : (sourceType === "file" ? "file" : sourceTableVal)))));
       const taskGroupLoadMethod = taskType === TASK_TYPES.SCRIPT_RUN
         ? "script"
         : (taskType === TASK_TYPES.DAG
           ? "dag"
           : (taskType === TASK_TYPES.BINDING
             ? "binding"
-            : (taskType === TASK_TYPES.DBT ? "dbt" : loadMethodVal)));
-      return [
+            : (taskType === TASK_TYPES.DBT ? "dbt" : "")));
+      // Yukleme yontemi source_target'ta ada GIRMEZ (adi uzatiyordu ve
+      // dosya hedefinde anlamsizdi); diger turlerde TUR ISARETI olarak kalir.
+      const parts = [
         String(fallbackIndex),
         slugify(sourceDbVal, "source"),
         slugify(taskGroupSourceSchema, "src"),
         slugify(taskGroupSourceTable, "table"),
         "to",
         slugify(targetDbVal, "target"),
-        slugify(taskGroupLoadMethod, "method"),
-        slugify(targetSchemaVal, "tgt"),
-        slugify(targetTableVal, "table"),
-      ].join("_");
+      ];
+      if (String(taskGroupLoadMethod || "").trim()) {
+        parts.push(slugify(taskGroupLoadMethod, "method"));
+      }
+      parts.push(slugify(targetSchemaVal, "tgt"));
+      parts.push(slugify(targetTableVal, "table"));
+      return parts.join("_");
     }
 
     function resolveTaskIdentity(card, fallbackIndex) {
@@ -4405,21 +4746,27 @@ async function studioFetch(path, options) {
         source_conn_id: (el("source_conn_id").value || "").trim(),
         target_conn_id: (el("target_conn_id").value || "").trim(),
         source_type: sourceType,
+        // Dosya hedefinde DB dialect cozumu atlanir; gonderilmezse
+        // "Desteklenmeyen Airflow connection tipi: 'sftp'" ile 400 doner.
+        target_type: String(card.querySelector(".target-type")?.value || "db").trim() || "db",
         task_group_id: taskIdentity.task_group_id,
         task_no: taskNo,
       };
       if (sourceType === "sql") {
         payload.inline_sql = (card.querySelector(".source-inline-sql").value || "").trim();
-      } else if (sourceType === "csv" || sourceType === "json") {
+      } else if (sourceType === "file") {
         payload.file_path = (card.querySelector(".source-file-path")?.value || "").trim();
-        const delimiter = (card.querySelector(".source-file-delimiter")?.value || "").trim();
-        if (delimiter) payload.delimiter = delimiter;
+        const sfmt = String(card.querySelector(".source-file-format")?.value || "csv").trim() || "csv";
+        payload.source_file_format = sfmt;
         const encoding = (card.querySelector(".source-file-encoding")?.value || "").trim();
         if (encoding) payload.encoding = encoding;
-        const quotechar = (card.querySelector(".source-file-quotechar")?.value || "").trim();
-        if (quotechar) payload.quotechar = quotechar;
-        payload.header = !!card.querySelector(".source-file-header")?.checked;
-        if (sourceType === "json") {
+        if (sfmt === "csv") {
+          const delimiter = (card.querySelector(".source-file-delimiter")?.value || "").trim();
+          if (delimiter) payload.delimiter = delimiter;
+          const quotechar = (card.querySelector(".source-file-quotechar")?.value || "").trim();
+          if (quotechar) payload.quotechar = quotechar;
+          payload.header = !!card.querySelector(".source-file-header")?.checked;
+        } else {
           payload.json_mode = String(card.querySelector(".source-file-json-mode")?.value || "flat").trim() || "flat";
         }
       } else {
@@ -4439,9 +4786,13 @@ async function studioFetch(path, options) {
         setMappingRowsFromColumns(card, data.columns || [], { serialize: true });
         const warnings = Array.isArray(data.warnings) ? data.warnings : [];
         if (warnings.length) {
-          setMappingStatus(card, `Mapping generated (warning: ${warnings.length}).`, false);
+          // Uyari SAYISI degil ICERIGI gosterilir: "warning: 1" kullaniciya
+          // neyin eksik oldugunu soylemiyordu (geri bildirim 2026-08-19).
+          const detail = warnings.map((w) => String(w)).join(" | ");
+          setMappingStatus(card, `Mapping generated - ${detail}`, false);
+          pushToast(detail, "error", true);
         } else {
-          setMappingStatus(card, "Mapping uretildi.", false);
+          setMappingStatus(card, "Mapping generated.", false);
         }
         syncMappingState(card);
         // Newly-generated SQL columns are now the partition-column candidates.
@@ -4702,7 +5053,11 @@ async function studioFetch(path, options) {
 
     async function fetchMappingSourceColumns(card) {
       const sourceType = String((card.querySelector(".source-type") || {}).value || "table");
-      if (sourceType === "sql") {
+      // SQL ve DOSYA (csv/json) kaynaklarinin tablosu yoktur: kaynak kolonlari
+      // editordeki Direct satirlarindan turetilir. Dosya kaynagi bu daldan
+      // disarida kalinca Source paneli bos goruntuleniyordu (geri bildirim
+      // 2026-08-19) -- `/api/columns` tablo ister, dosya icin cagrilamaz.
+      if (sourceType === "sql" || sourceType === "file") {
         // A SQL query has no table: its source columns are the SELECT columns,
         // which are the Direct rows' source_name (+ source_type) already in the
         // editor after Generate or on reopen. Derive the Input panel from them.
@@ -4977,12 +5332,17 @@ async function studioFetch(path, options) {
         if (!link.chip || !link.row) continue;
         const cRect = link.chip.getBoundingClientRect();
         const rRect = link.row.getBoundingClientRect();
-        const cy = cRect.top + cRect.height / 2;
-        const ry = rRect.top + rRect.height / 2;
-        // Clip: only draw when both endpoints are within their (independently
-        // scrolling) visible list areas.
-        if (cy < srcRect.top || cy > srcRect.bottom) continue;
-        if (ry < tgtTop || ry > tgtRect.bottom) continue;
+        const rawCy = cRect.top + cRect.height / 2;
+        const rawRy = rRect.top + rRect.height / 2;
+        // Iki liste bagimsiz kaydigi icin bir ucun kaymis olmasi baglantiyi
+        // YOK saymaz: gorunur alanin kenarina kadar cizilir (kelepceleme).
+        // Boylece her satirin hover vurgusu calisir; onceki davranis, esi
+        // ekran disinda kalan satirlarda hic cizgi uretmiyordu.
+        const cy = Math.min(Math.max(rawCy, srcRect.top), srcRect.bottom);
+        const ry = Math.min(Math.max(rawRy, tgtTop), tgtRect.bottom);
+        // Kayan nokta gurultusu yuzunden dogrudan esitlik karsilastirmasi
+        // neredeyse her zaman "kelepcelendi" diyordu; 1px tolerans kullan.
+        const clipped = Math.abs(cy - rawCy) > 1 || Math.abs(ry - rawRy) > 1;
         const sx = cRect.right - gridRect.left;
         const sy = cy - gridRect.top;
         const tx = rRect.left - gridRect.left;
@@ -4993,7 +5353,10 @@ async function studioFetch(path, options) {
           "d",
           `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`,
         );
-        path.setAttribute("class", "mapping-io-link");
+        path.setAttribute(
+          "class",
+          clipped ? "mapping-io-link is-clipped" : "mapping-io-link",
+        );
         st.svg.appendChild(path);
         st.links.push({ ...link, path });
       }
@@ -5015,15 +5378,25 @@ async function studioFetch(path, options) {
       st.hoverKey = key;
       st.svg.classList.add("has-hover");
       clearMappingLinkHoverClasses();
+      // Hedef tarafinda DOM referansi yerine satirin kaynak adiyla eslestir:
+      // redraw (scroll/input/mutation) sirasinda link kayitlari yeniden
+      // uretildigi icin referans karsilastirmasi kopuyordu ve cizgi
+      // parlamiyordu -- yalniz redraw tetiklemeyen son satirda calisiyordu.
+      const keyName = key.type === "target" ? mappingRowSourceName(key.row) : "";
       for (const link of st.links) {
         const match = key.type === "source"
           ? link.sourceName === key.name
-          : link.row === key.row;
+          : (link.row === key.row || (!!keyName && link.sourceName === keyName));
         if (!match) continue;
         link.path.classList.add("is-active");
         if (link.chip) link.chip.classList.add("is-linked");
         if (link.row) link.row.classList.add("is-linked");
       }
+    }
+
+    function mappingRowSourceName(row) {
+      if (!row || !row.querySelector) return "";
+      return String((row.querySelector(".mapping-col-source-name") || {}).value || "").trim();
     }
 
     function clearMappingLinkHover() {
@@ -5086,10 +5459,36 @@ async function studioFetch(path, options) {
       sourceList.addEventListener("mouseleave", st.onHoverLeave);
       targetList.addEventListener("mouseleave", st.onHoverLeave);
 
-      st.mo = new MutationObserver(() => scheduleMappingLinkRedraw());
-      st.mo.observe(sourceList, { childList: true, subtree: true });
+      // DIKKAT: hover, satira/chip'e `is-linked` sinifini ekler. Observer
+      // class mutasyonlarini da izlerse hover KENDI redraw'ini tetikler,
+      // redraw tum path'leri yeniden uretir ve `is-active` aninda kaybolur --
+      // cizgi parlamaz. Bu yuzden hover'in yazdigi siniflar filtrelenir.
+      const HOVER_CLASSES = ["is-linked", "is-active"];
+      st.mo = new MutationObserver((records) => {
+        const meaningful = records.some((r) => {
+          if (r.type !== "attributes") return true;
+          const before = String(r.oldValue || "");
+          const after = String((r.target && r.target.className) || "");
+          // Yalnizca hover sinifi degistiyse yoksay.
+          const strip = (s) =>
+            s.split(/\s+/).filter((c) => c && !HOVER_CLASSES.includes(c)).sort().join(" ");
+          return strip(before) !== strip(after);
+        });
+        if (meaningful) scheduleMappingLinkRedraw();
+      });
+      st.mo.observe(sourceList, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class"],
+        attributeOldValue: true,
+      });
       st.mo.observe(targetList, {
-        childList: true, subtree: true, attributes: true, attributeFilter: ["class"],
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["class"],
+        attributeOldValue: true,
       });
       if (typeof ResizeObserver !== "undefined") {
         st.ro = new ResizeObserver(() => scheduleMappingLinkRedraw());
@@ -5390,11 +5789,21 @@ async function studioFetch(path, options) {
           inlineSqlInput.setSelectionRange(caret, caret);
           inlineSqlInput.dispatchEvent(new Event("input", { bubbles: true }));
           pushToast(
-            "Yapistirilan SQL'de gorunmez bosluk karakterleri bulundu ve normal " +
-              "bosluga cevrildi (veritabani bunlari bosluk saymaz).",
+            "Invisible whitespace characters were found in the pasted SQL and " +
+              "replaced with normal spaces (the database does not treat them as whitespace).",
             "success"
           );
         });
+      }
+
+      const sourceFormatSelect = card.querySelector(".source-file-format");
+      if (sourceFormatSelect) {
+        sourceFormatSelect.addEventListener("change", () => syncSourceFileFormat(card));
+      }
+
+      const targetFormatSelect = card.querySelector(".target-file-format");
+      if (targetFormatSelect) {
+        targetFormatSelect.addEventListener("change", () => syncTargetFileFormat(card));
       }
 
       const targetTypeSelect = card.querySelector(".target-type");
@@ -5569,15 +5978,28 @@ async function studioFetch(path, options) {
     }
 
     function applyPreloadPayload(payload, dagId) {
-      el("project").value = payload.project || "";
-      el("domain").value = payload.domain || "";
-      el("level").value = payload.level || "";
-      el("flow").value = payload.flow || "";
+      // Derinlik config'ten gelir; eksik seviyeler BOS birakilir ki update
+      // sirasinda yanlis derinlikle kaydedilmesin.
+      const loadedFolderPath = Array.isArray(payload.folder_path) && payload.folder_path.length
+        ? payload.folder_path
+        : [payload.project, payload.domain, payload.level, payload.flow]
+            .map((part) => String(part || "").trim())
+            .filter(Boolean);
+      FOLDER_LEVEL_NAMES.forEach((name, idx) => {
+        el(name).value = loadedFolderPath[idx] || "";
+      });
+      pickerDepth = Math.min(
+        MAX_FOLDER_DEPTH,
+        Math.max(MIN_FOLDER_DEPTH, loadedFolderPath.length || MAX_FOLDER_DEPTH)
+      );
+      loadedDagFolderPath = loadedFolderPath.slice();
+      syncMoveButtonState();
       setCustomTags(payload.custom_tags || []);
       setSchedulerAppliedState(payload.scheduler || null);
       const loadedDagParams = Array.isArray(payload.dag_params) ? payload.dag_params : [];
       dagParamsAppliedState = normalizeDagParams(loadedDagParams || defaultDagParams());
       notificationsAppliedState = payload.notifications || null;
+      retryAppliedState = cloneRetry(payload.retry);
       renderAdvancedSummary();
       setSchedulerFormFromState(schedulerAppliedState);
       syncFolderPathDisplay();
@@ -5823,7 +6245,7 @@ async function studioFetch(path, options) {
       const partitioningDistinctLimitValue = partitioningEnabled && partitioningMode === "distinct"
         ? partitioningDistinctLimit
         : undefined;
-      const isFileSourceType = sourceType === "csv" || sourceType === "json";
+      const isFileSourceType = sourceType === "file";
       const targetTypeVal = String(card.querySelector(".target-type")?.value || "db").trim() || "db";
       const isFileTargetType = targetTypeVal === "file";
       const dbSourceRelation = taskType === TASK_TYPES.SOURCE_TARGET && sourceType !== "sql" && !isFileSourceType;
@@ -5986,27 +6408,38 @@ async function studioFetch(path, options) {
     function collectFileEndpointFields(card, taskType, sourceType, targetType) {
       const out = {};
       if (taskType !== TASK_TYPES.SOURCE_TARGET) return out;
-      if (sourceType === "csv" || sourceType === "json") {
+      if (sourceType === "file") {
         out.file_path = (card.querySelector(".source-file-path")?.value || "").trim() || undefined;
-        const delimiter = (card.querySelector(".source-file-delimiter")?.value || "").trim();
-        if (delimiter) out.delimiter = delimiter;
+        const sfmt = String(card.querySelector(".source-file-format")?.value || "csv").trim() || "csv";
+        out.source_file_format = sfmt;
         const encoding = (card.querySelector(".source-file-encoding")?.value || "").trim();
         if (encoding) out.encoding = encoding;
-        const quotechar = (card.querySelector(".source-file-quotechar")?.value || "").trim();
-        if (quotechar) out.quotechar = quotechar;
-        out.header = !!card.querySelector(".source-file-header")?.checked;
-        if (sourceType === "json") {
+        // delimiter/quotechar/header YALNIZ csv'de anlamlidir; JSONL'de her
+        // satir kendi anahtarlarini tasir (ayrac ve baslik satiri yoktur).
+        if (sfmt === "csv") {
+          const delimiter = (card.querySelector(".source-file-delimiter")?.value || "").trim();
+          if (delimiter) out.delimiter = delimiter;
+          const quotechar = (card.querySelector(".source-file-quotechar")?.value || "").trim();
+          if (quotechar) out.quotechar = quotechar;
+          out.header = !!card.querySelector(".source-file-header")?.checked;
+        } else {
           out.json_mode = String(card.querySelector(".source-file-json-mode")?.value || "flat").trim() || "flat";
         }
       }
       if (targetType === "file") {
         out.target_type = "file";
         out.target_file_path = (card.querySelector(".target-file-path")?.value || "").trim() || undefined;
-        const tdelim = (card.querySelector(".target-file-delimiter")?.value || "").trim();
-        if (tdelim) out.target_delimiter = tdelim;
+        const tfmt = String(card.querySelector(".target-file-format")?.value || "csv").trim() || "csv";
+        out.target_file_format = tfmt;
         const tenc = (card.querySelector(".target-file-encoding")?.value || "").trim();
         if (tenc) out.target_encoding = tenc;
-        out.target_header = !!card.querySelector(".target-file-header")?.checked;
+        // delimiter/header YALNIZ csv'de anlamlidir; JSON'da gonderilirse
+        // backend fail-loud reddeder (satir basina obje yazilir, baslik yok).
+        if (tfmt === "csv") {
+          const tdelim = (card.querySelector(".target-file-delimiter")?.value || "").trim();
+          if (tdelim) out.target_delimiter = tdelim;
+          out.target_header = !!card.querySelector(".target-file-header")?.checked;
+        }
       }
       return out;
     }
@@ -6023,6 +6456,7 @@ async function studioFetch(path, options) {
         scheduler: cloneSchedulerState(schedulerAppliedState || collectSchedulerFormPayload()),
         dag_params: normalizeDagParams(dagParamsAppliedState || defaultDagParams()),
         notifications: cloneNotifications(notificationsAppliedState),
+        retry: cloneRetry(retryAppliedState) || undefined,
         source_conn_id: el("source_conn_id").value,
         target_conn_id: el("target_conn_id").value,
         task_group_id: firstTask.task_group_id,
@@ -6072,6 +6506,16 @@ async function studioFetch(path, options) {
     el("btn_collapse_all_tasks").onclick = () => setAllTaskCardsCollapsed(true);
     el("btn_add_task").onclick = () => addTaskCard({});
     el("btn_update_top").onclick = () => submitUpdate();
+    if (el("btn_move_dag")) el("btn_move_dag").onclick = () => openMoveDagModal();
+    if (el("btn_cancel_move_dag")) {
+      el("btn_cancel_move_dag").onclick = () => setMoveModalOpen(false);
+    }
+    if (el("move_dag_backdrop")) {
+      el("move_dag_backdrop").onclick = () => setMoveModalOpen(false);
+    }
+    if (el("btn_confirm_move_dag")) {
+      el("btn_confirm_move_dag").onclick = () => confirmMoveDag();
+    }
     el("btn_refresh_revisions").onclick = () => loadRevisions(currentUpdateDagId);
     el("btn_promote_revision").onclick = () => promoteSelectedRevision();
     el("btn_delete_dag").onclick = () => openDeleteDagModal();
@@ -6124,6 +6568,22 @@ async function studioFetch(path, options) {
     el("btn_add_domain").onclick = () => addDraftFolder("domain");
     el("btn_add_level").onclick = () => addDraftFolder("level");
     el("btn_add_flow").onclick = () => addDraftFolder("flow");
+    // Degisken derinlik: son seviyeyi kaldir / yeni seviye ekle.
+    for (const name of ["level", "flow"]) {
+      const dropBtn = el(`btn_drop_${name}`);
+      if (dropBtn) {
+        dropBtn.onclick = () => {
+          setPickerDepth(FOLDER_LEVEL_NAMES.indexOf(name));
+          refreshPickerColumns();
+        };
+      }
+    }
+    if (el("btn_add_depth")) {
+      el("btn_add_depth").onclick = () => {
+        setPickerDepth(pickerDepth + 1);
+        refreshPickerColumns();
+      };
+    }
 
     el("mapping_editor_backdrop").onclick = () => cancelMappingEditor();
     el("btn_cancel_mapping_editor").onclick = () => cancelMappingEditor();

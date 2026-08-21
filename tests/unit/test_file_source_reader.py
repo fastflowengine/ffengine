@@ -14,12 +14,13 @@ from ffengine.pipeline.file_transport import FileSourceContext
 
 
 def _ctx(path, source_type="csv", **options):
+    # Format artik `options["format"]` icindedir (writer ile simetrik);
+    # yardimcinin imzasi testleri sade tutmak icin ayni kaldi.
     return FileSourceContext(
         conn_id="fs_default",
         conn_type="fs",
         file_path=str(path),
-        source_type=source_type,
-        options=options,
+        options={"format": source_type, **options},
     )
 
 

@@ -856,6 +856,36 @@ class TestFFEngineOperatorErrors:
 
 
 # ------------------------------------------------------------------
+# Log uç kimliği: "hangi sunucudan nereye" tek satırda okunur olmalı
+# (kullanıcı kararı 2026-08-19). HOST yayımlanır; PORT/KULLANICI/PAROLA
+# yayımlanmaz — AGENTS.md "no credentials".
+# ------------------------------------------------------------------
+
+
+def test_endpoint_host_publishes_host_only():
+    params = {
+        "conn_type": "postgres",
+        "host": "10.91.6.12",
+        "port": 5433,
+        "login": "dts",
+        "password": "s3cr3t",
+        "database": "mfs_dwh_test",
+    }
+    host = operator_module._endpoint_host(params)
+    assert host == "10.91.6.12"
+    # Yalnız host döner: port/kullanıcı/parola bu değere sızmaz.
+    for secret in ("5433", "dts", "s3cr3t"):
+        assert secret not in host
+
+
+def test_endpoint_host_is_null_when_unknown():
+    # Uydurma değer yazılmaz: host yoksa/boşsa dürüstçe None.
+    assert operator_module._endpoint_host({"conn_type": "fs"}) is None
+    assert operator_module._endpoint_host({"host": "   "}) is None
+    assert operator_module._endpoint_host(None) is None
+
+
+# ------------------------------------------------------------------
 # F3.3 K1 — muhasebe alanlarının XCom/summary ve mapped-partition
 # yolundaki taşınması (T-F3.3-5)
 # ------------------------------------------------------------------

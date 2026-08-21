@@ -88,7 +88,8 @@ def _run(config, conn_types):
 def test_file_source_to_db_target():
     cfg = {
         "task_group_id": "t1",
-        "source_type": "csv",
+        "source_type": "file",
+        "source_file_format": "csv",
         "file_path": "/incoming/orders.csv",
         "column_mapping_mode": "mapping_file",
         "mapping_file": "/m.yaml",

@@ -483,27 +483,35 @@
       display: block;
     }
 
+    /* Advanced ust menusu: hap-buton yerine sayfa geneliyle ayni SEKME
+       gorunumu (kullanici karari 2026-08-19). Stil .tab-btn emsalidir. */
     .advanced-tabs {
       display: flex;
       gap: 6px;
       padding: 10px 16px 0;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 10px;
     }
 
     .advanced-tab-btn {
-      border: 1px solid color-mix(in srgb, var(--line) 80%, var(--card) 20%);
-      background: color-mix(in srgb, var(--bg) 90%, var(--line) 10%);
+      border: none;
+      border-bottom: 2px solid transparent;
+      background: transparent;
       color: var(--text);
-      border-radius: 999px;
-      font-size: 12px;
-      line-height: 1;
-      min-height: var(--ui-control-height-compact);
-      padding: 0 12px;
       cursor: pointer;
+      padding: 7px 10px;
+      font-size: 13px;
+      line-height: 1.3;
+      min-height: 0;
+      border-radius: 0;
+      margin: 0 0 -1px;
+      font-weight: 500;
     }
 
     .advanced-tab-btn.active {
-      border-color: color-mix(in srgb, var(--focus) 45%, var(--line) 55%);
-      background: color-mix(in srgb, var(--focus) 22%, var(--card) 78%);
+      background: transparent;
+      border-bottom-color: var(--focus);
+      font-weight: 700;
     }
 
     .advanced-panel {
@@ -1159,6 +1167,20 @@
       stroke-width: 2.5;
     }
 
+    /* Esi gorunur alanin disinda kalan baglanti: cizgi listenin kenarina kadar
+       cizilir ve kesikli gosterilir -- "bu satirin esi var, yukari/asagi kaydir"
+       demektir. Hover vurgusu bunlarda da calisir. */
+    .mapping-io-link.is-clipped {
+      stroke-dasharray: 4 3;
+    }
+
+    /* Hover'da kelepcelenmis cizgi de tam belirginlesir: ayni opaklik/kalinlik,
+       yalniz kesikli deseni korunur ki ucun ekran disinda oldugu anlasilsin. */
+    .mapping-io-link.is-clipped.is-active {
+      stroke-opacity: 0.95;
+      stroke-width: 2.5;
+    }
+
     /* When hovering a column, fade every non-connected line to spotlight the
        active connection(s). */
     .mapping-io-links.has-hover .mapping-io-link:not(.is-active) {
@@ -1345,6 +1367,23 @@
       padding: 1px 8px;
       font-size: 12px;
       line-height: 1.2;
+    }
+
+    /* Global `input, select { min-height: 40px }` (ust taraf) checkbox'i ve
+       nullable sarmalayicisini de 40px'e zorluyordu; satir yuksekligini bu
+       belirliyordu. Editor listesinde hepsi 28px hizasina cekilir. */
+    .mapping-io-list .mapping-column-row > label.mapping-col-nullable-wrap {
+      height: 28px;
+      min-height: 0;
+      margin-top: 0;
+    }
+
+    .mapping-io-list .mapping-column-row input[type="checkbox"] {
+      width: auto;
+      height: auto;
+      min-height: 0;
+      margin: 0;
+      padding: 0;
     }
 
     .mapping-io-list .mapping-col-remove {
@@ -1947,7 +1986,8 @@
 
     .picker-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      /* Degisken derinlik: gorunur sutun sayisi JS tarafindan yazilir. */
+      grid-template-columns: repeat(var(--picker-cols, 4), 1fr);
       gap: 0;
       min-height: 380px;
     }
@@ -1969,10 +2009,41 @@
       color: var(--muted);
       margin-bottom: 8px;
       text-transform: uppercase;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      min-height: 18px;
+    }
+
+    .picker-col-drop {
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      padding: 0 2px;
+      border-radius: 4px;
+    }
+
+    .picker-col-drop:hover {
+      color: var(--danger, #e5534b);
+      background: color-mix(in srgb, var(--line) 60%, transparent);
+    }
+
+    .picker-col.hidden {
+      display: none;
+    }
+
+    .picker-col-add {
+      align-items: center;
+      justify-content: center;
     }
 
     .picker-list {
       order: 3;
+      margin-top: 10px;
       border: 1px solid var(--line);
       border-radius: 8px;
       max-height: 260px;
@@ -2014,7 +2085,11 @@
     .picker-add {
       order: 2;
       margin-top: 8px;
-      margin-bottom: 8px;
+      /* "Yeni klasor ekle" ile "mevcutlardan sec" iki AYRI eylem; aralarinda
+         gorsel sinir olmadan tek bir blok gibi okunuyorlardi. */
+      margin-bottom: 0;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--line);
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 6px;

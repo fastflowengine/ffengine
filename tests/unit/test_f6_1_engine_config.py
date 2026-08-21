@@ -164,7 +164,7 @@ def test_spark_requires_iceberg_target(target_type, monkeypatch):
         _validate_with_iceberg(monkeypatch, _task(target_type=target_type))
 
 
-@pytest.mark.parametrize("source_type", ["csv", "json", "script"])
+@pytest.mark.parametrize("source_type", ["file", "script"])
 def test_deferred_sources_are_rejected(source_type, monkeypatch):
     monkeypatch.setenv("FFENGINE_EDITION", "enterprise")
     with pytest.raises(ValidationError, match="source|kaynak"):

@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Flow Studio</title>
-  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=67">
+  <link rel="stylesheet" href="/flow-studio/static/flow_studio/css/style.css?v=72">
 </head>
-<body class="flow-studio-root" data-ui-variant="current" data-ffengine-edition="__FFENGINE_EDITION__">
+<body class="flow-studio-root" data-ui-variant="current" data-ffengine-edition="__FFENGINE_EDITION__" data-ffengine-file-types="__FFENGINE_FILE_TYPES__">
   <div id="operation_progress" class="operation-progress hidden" role="status" aria-live="polite" aria-busy="false">
     <div class="operation-progress-bar"></div>
     <span id="operation_progress_label" class="operation-progress-label"></span>
@@ -27,6 +27,7 @@
         <span>DAG Settings</span>
         <div class="panel-title-actions hidden" id="update_actions_top">
           <button class="btn btn-primary" id="btn_update_top" type="button" title="Update the current DAG">Update</button>
+          <button class="btn btn-secondary hidden" id="btn_move_dag" type="button" title="Generate this DAG at the selected folder">Move</button>
         </div>
       </div>
       <div class="panel-body grid-3">
@@ -49,7 +50,12 @@
             <option value="">Select Target Connection</option>
           </select>
         </label>
-        <label>
+        <!-- Community'de motor secimi anlamsizdir: kayitli tek motor
+             StandardEngine'dir (auto == standard), pipeline/spark ise Enterprise
+             provider'i gerektirir. Alan Enterprise'da gorunur; Community'de
+             gizlenir ama DOM'da kalir -- app.js degeri okumaya devam eder ve
+             config'teki `engine.preference` sozlesmesi degismez. -->
+        <label class="enterprise-only">
           <span class="global-control-label">Execution Engine</span>
           <select id="engine_preference" title="Choose the execution engine">
             <option value="auto">Auto</option>
@@ -148,21 +154,30 @@
               <button class="btn btn-success" id="btn_add_domain" type="button">+ Add</button>
             </div>
           </div>
-          <div class="picker-col">
-            <div class="picker-col-title">Level</div>
+          <div class="picker-col" data-picker-col="level">
+            <div class="picker-col-title">
+              <span>Level</span>
+              <button class="picker-col-drop" id="btn_drop_level" type="button" title="Remove this level">&times;</button>
+            </div>
             <div class="picker-list" id="picker_level_list"></div>
             <div class="picker-add">
               <input id="new_level_name" placeholder="New level">
               <button class="btn btn-success" id="btn_add_level" type="button">+ Add</button>
             </div>
           </div>
-          <div class="picker-col">
-            <div class="picker-col-title">Flow</div>
+          <div class="picker-col" data-picker-col="flow">
+            <div class="picker-col-title">
+              <span>Flow</span>
+              <button class="picker-col-drop" id="btn_drop_flow" type="button" title="Remove this level">&times;</button>
+            </div>
             <div class="picker-list" id="picker_flow_list"></div>
             <div class="picker-add">
               <input id="new_flow_name" placeholder="New flow">
               <button class="btn btn-success" id="btn_add_flow" type="button">+ Add</button>
             </div>
+          </div>
+          <div class="picker-col picker-col-add" id="picker_add_level_col">
+            <button class="btn btn-secondary" id="btn_add_depth" type="button">+ Add Sub Level</button>
           </div>
         </div>
         <div class="picker-foot">
@@ -234,8 +249,7 @@
               <select class="source-type" title="Choose table data, a custom SQL query, or a file.">
                 <option value="table">Table</option>
                 <option value="sql">SQL Query</option>
-                <option value="csv">CSV File</option>
-                <option value="json">JSON File (flat)</option>
+                <option value="file">File</option>
               </select>
             </label>
             <label class="source-sql-wrap hidden">
@@ -257,6 +271,19 @@
               </label>
             </div>
             <div class="source-file-wrap hidden">
+              <div class="row-2">
+                <label class="source-file-format-wrap">
+                  <span class="global-control-label">File Format</span>
+                  <select class="source-file-format" title="CSV = delimited; JSON = one object per line (JSONL).">
+                    <option value="csv">CSV (delimited)</option>
+                    <option value="json">JSON (JSONL)</option>
+                  </select>
+                </label>
+                <label>
+                  <span class="global-control-label">Encoding</span>
+                  <input class="source-file-encoding" placeholder="utf-8">
+                </label>
+              </div>
               <label>
                 <span class="global-control-label">File Path / Glob</span>
                 <input class="source-file-path" placeholder="/incoming/orders_{{ run_date }}.csv or orders_*.csv">
@@ -267,23 +294,17 @@
                   <input class="source-file-delimiter" maxlength="4" placeholder=",">
                 </label>
                 <label>
-                  <span class="global-control-label">Encoding</span>
-                  <input class="source-file-encoding" placeholder="utf-8">
-                </label>
-              </div>
-              <div class="row-2">
-                <label class="source-csv-opts">
                   <span class="global-control-label">Quote Char</span>
                   <input class="source-file-quotechar" maxlength="2" placeholder="&quot;">
                 </label>
-                <label class="source-json-opts hidden">
-                  <span class="global-control-label">JSON Mode</span>
-                  <select class="source-file-json-mode">
-                    <option value="flat">flat (JSONL)</option>
-                    <option value="raw" disabled>raw (coming soon — F1.4b)</option>
-                  </select>
-                </label>
               </div>
+              <label class="source-json-opts hidden">
+                <span class="global-control-label">JSON Mode</span>
+                <select class="source-file-json-mode">
+                  <option value="flat">flat (JSONL)</option>
+                  <option value="raw" disabled>raw (coming soon — F1.4b)</option>
+                </select>
+              </label>
               <label class="notify-check source-csv-opts">
                 <input type="checkbox" class="source-file-header" checked> First row is header
               </label>
@@ -386,9 +407,9 @@
             <h4>Target</h4>
             <label>
               <span class="global-control-label">Target Type</span>
-              <select class="target-type" title="Write to a database table or a delimited file (SFTP/local).">
+              <select class="target-type" title="Write to a database table or a file (CSV/JSON, SFTP/local).">
                 <option value="db">Database Table</option>
-                <option value="file">File (CSV → SFTP/local)</option>
+                <option value="file">File</option>
               </select>
             </label>
             <label class="target-db-wrap">
@@ -417,11 +438,18 @@
               </label>
             </div>
             <div class="target-file-wrap hidden">
+              <label class="target-file-format-wrap">
+                <span class="global-control-label">File Format</span>
+                <select class="target-file-format" title="CSV = delimited; JSON = one object per line (JSONL).">
+                  <option value="csv">CSV (delimited)</option>
+                  <option value="json">JSON (JSONL)</option>
+                </select>
+              </label>
               <label>
                 <span class="global-control-label">Target File Path</span>
                 <input class="target-file-path" placeholder="/outgoing/orders_{{ run_date }}.csv">
               </label>
-              <div class="row-2">
+              <div class="row-2 target-file-csv-opts">
                 <label>
                   <span class="global-control-label">Delimiter</span>
                   <input class="target-file-delimiter" maxlength="4" placeholder=",">
@@ -455,7 +483,6 @@
             <div class="tabs" role="tablist">
               <button class="tab-btn filter-tab-button active" data-tab="filter" type="button">Filter & Bindings</button>
               <button class="tab-btn" data-tab="mapping" type="button">Mapping</button>
-              <button class="tab-btn" data-tab="partitioning" type="button">Partitioning</button>
               <button class="tab-btn" data-tab="performance" type="button">Performance</button>
               <button class="tab-btn" data-tab="dependencies" type="button">Dependencies</button>
             </div>
@@ -472,7 +499,16 @@
                 <div class="bindings-list hidden"></div>
               </div>
             </div>
-            <div class="tab-panel" data-tab-panel="partitioning">
+            <div class="tab-panel" data-tab-panel="performance">
+              <label>
+                Batch Size
+                <input class="batch-size" type="number" min="1" value="10000">
+              </label>
+              <!-- Partitioning, ayri sekme yerine Performance altinda:
+                   ikisi de ayni sey icin ayarlanir (aktarim hizi/paralellik).
+                   Kullanici karari 2026-08-19. Alan adlari/sozlesme degismedi. -->
+              <div class="partitioning-section">
+                <div class="global-control-label" style="margin-top:12px">Partitioning</div>
               <label>
                 <input class="partitioning-enabled" type="checkbox" style="width:auto; margin-right:8px;">
                 Partitioning Enabled
@@ -511,14 +547,6 @@
                 Explicit WHERE List (one clause per line)
                 <textarea class="partitioning-ranges partitioning-explicit-ranges" rows="4" placeholder="id < 100&#10;id >= 100 AND id < 200&#10;id >= 200"></textarea>
               </label>
-            </div>
-            <div class="tab-panel" data-tab-panel="performance">
-              <label>
-                Batch Size
-                <input class="batch-size" type="number" min="1" value="10000">
-              </label>
-              <div class="muted-note">
-                Community engine runs single-threaded; worker/extraction settings were removed from the v2 form.
               </div>
               <div class="bulk-api-wrap enterprise-only">
                 <label>
@@ -789,6 +817,7 @@
       <div class="advanced-tabs" role="tablist">
         <button class="advanced-tab-btn active" type="button" data-advanced-tab="params">DAG Parameters</button>
         <button class="advanced-tab-btn" type="button" data-advanced-tab="notifications">Notifications</button>
+        <button class="advanced-tab-btn" type="button" data-advanced-tab="retry">Retry</button>
       </div>
       <div class="scheduler-dialog-body">
         <div class="advanced-panel active" data-advanced-panel="params">
@@ -848,10 +877,39 @@
             </label>
           </div>
         </div>
+        <div class="advanced-panel" data-advanced-panel="retry">
+          <div class="scheduler-control">
+            <div class="bindings-head">
+              <span class="bindings-title">Automatic Retry</span>
+            </div>
+            <label>
+              Retries
+              <input type="number" id="retry_retries" class="scheduler-control-input" min="0" max="10" step="1" placeholder="0 = disabled">
+            </label>
+            <label>
+              Retry Delay (seconds)
+              <input type="number" id="retry_delay_seconds" class="scheduler-control-input" min="1" max="86400" step="1" placeholder="60">
+            </label>
+          </div>
+        </div>
       </div>
       <div class="scheduler-dialog-actions">
         <button class="btn btn-secondary" id="btn_cancel_advanced_modal" type="button">Cancel</button>
         <button class="btn btn-primary" id="btn_apply_advanced_modal" type="button">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="move_dag_modal" class="confirm-modal" aria-hidden="true">
+    <div class="confirm-backdrop" id="move_dag_backdrop"></div>
+    <div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="move_dag_title">
+      <div class="confirm-head">
+        <h3 id="move_dag_title">Move DAG</h3>
+      </div>
+      <div class="confirm-body" id="move_dag_body"></div>
+      <div class="confirm-actions">
+        <button class="btn btn-secondary" id="btn_cancel_move_dag" type="button">Cancel</button>
+        <button class="btn btn-primary" id="btn_confirm_move_dag" type="button">Move</button>
       </div>
     </div>
   </div>
@@ -920,7 +978,7 @@
   <!-- F6.3 (EX-D036) — CDC Operations: lag / checkpoint / blocked / audited skip.
        Durum kaynagi target-side kontrol tablolari; webserver Kafka'ya dogrudan
        baglanmaz (Enterprise service capability + kisa cache). -->
-  <details class="card" id="cdc_ops_panel" style="margin:12px">
+  <details class="card enterprise-only" id="cdc_ops_panel" style="margin:12px">
     <summary style="cursor:pointer;font-weight:600">CDC Operations (kafka/cdc_apply)</summary>
     <div class="cdc-ops-form" style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0">
       <input id="cdc_ops_kafka_conn" placeholder="Kafka conn id" />
@@ -943,6 +1001,6 @@
     </div>
   </details>
 
-  <script src="/flow-studio/static/flow_studio/js/app.js?v=100"></script>
+  <script src="/flow-studio/static/flow_studio/js/app.js?v=121"></script>
 </body>
 </html>

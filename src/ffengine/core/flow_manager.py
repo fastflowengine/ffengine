@@ -11,9 +11,8 @@ ve partitionlı senaryolarda çağrılabilir.
 
 import logging
 import time
-from datetime import UTC, datetime
 
-from ffengine.config.schema import FILE_SOURCE_TYPES
+from ffengine.config.schema import is_file_source
 from ffengine.core.base_engine import BaseEngine, FlowResult
 from ffengine.errors import (
     FFEngineError,
@@ -38,8 +37,7 @@ def _dialect_name(dialect) -> str:
 
 def build_source_reader(src_handle, config: dict, src_dialect):
     """Pick the reader for this source: file (csv/json) vs DB cursor."""
-    source_type = str(config.get("source_type") or "table").strip().lower()
-    if source_type in FILE_SOURCE_TYPES:
+    if is_file_source(config):
         from ffengine.pipeline.file_source_reader import FileSourceReader
 
         return FileSourceReader(src_handle, config)
@@ -81,25 +79,29 @@ def _log_structured(
     level: int,
     stage: str,
     message: str,
-    task_group_id: str,
+    # Airflow log kaydinda zaten var (asagidaki nota bakiniz); cagri yerleri
+    # korunsun diye imzada durur, log govdesine YAZILMAZ.
+    task_group_id: str,  # noqa: ARG001
     source_db: str,
     target_db: str,
     rows: int = 0,
     duration_seconds: float = 0.0,
     **optional,
 ) -> None:
+    # Airflow log kaydi zaten timestamp/level/logger/dag_id/run_id/task_id ve
+    # task_group_id'yi kendi basina yaziyor; ayni degerleri tekrar etmek asil
+    # parametreleri gorunmez kiliyordu (kullanici geri bildirimi 2026-08-19).
+    # Bicim `airflow/operator.py::_log_structured` ile hizalidir.
     payload = {
-        "timestamp": datetime.now(UTC).isoformat(),
-        "level": logging.getLevelName(level),
-        "logger": __name__,
+        "message": message,
         "stage": stage,
-        "task_group_id": task_group_id,
         "source_db": source_db,
         "target_db": target_db,
-        "rows": rows,
-        "duration_seconds": round(float(duration_seconds), 3),
-        "message": message,
     }
+    if rows:
+        payload["rows"] = rows
+    if duration_seconds:
+        payload["duration_seconds"] = round(float(duration_seconds), 3)
     for k, v in optional.items():
         if v is not None:
             payload[k] = v

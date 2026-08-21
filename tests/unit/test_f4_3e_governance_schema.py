@@ -157,7 +157,8 @@ class TestDatasetIdentity:
     def test_templated_file_source(self):  # T-F4.3E-5
         identity = gov.dataset_identity(
             {
-                "source_type": "csv",
+                "source_type": "file",
+                "source_file_format": "csv",
                 "file_path": "/data/in/2026-08-17.csv",
                 "target_type": "file",
                 "target_file_path": "/data/out/2026-08-17.csv",

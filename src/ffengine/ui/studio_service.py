@@ -35,7 +35,10 @@ from ffengine.config.schema import (
     ENGINE_SPARK_FIELD,
     ENGINE_SPARK_KEY,
     VALID_NOTIFY_TRIGGERS,
-    FILE_SOURCE_TYPES,
+    normalize_retry,
+    FILE_SOURCE_TYPE,
+    VALID_SOURCE_FILE_FORMATS,
+    source_file_format,
     VALID_JSON_MODES,
 )
 from ffengine.config.validator import ConfigValidator
@@ -61,6 +64,18 @@ STUDIO_DAG_DEPENDENCY_MAX_COUNT = 200
 STUDIO_DEFAULT_START_DATE = "2023-01-01T00:00:00"
 STUDIO_DEFAULT_ACTIVE = True
 STUDIO_FOLDER_PATH_REQUIRED_MESSAGE = "Select a project and DAG path."
+# Degisken klasor derinligi: project/domain zorunlu, level/flow opsiyonel.
+# Derinlik config'e `folder_path` olarak YAZILIR (yoldan tahmin edilmez) --
+# ama yalnizca 4'ten farkli oldugunda: boylece mevcut 4 seviyeli config'lerin
+# YAML'i bayt-ayni kalir ve okuma kurali tek yol olur ("alan yoksa 4 seviye").
+FOLDER_PATH_KEY = "folder_path"
+#: Config'e yazilan DAG kimligi. Bugun OTORITE DEGIL (kod `dag_path.stem`
+#: kullanir); kimligi klasor yolundan ayirmanin on hazirligidir.
+DAG_ID_KEY = "dag_id"
+FOLDER_PATH_FIELDS: tuple[str, ...] = ("project", "domain", "level", "flow")
+MIN_FOLDER_DEPTH = 2
+MAX_FOLDER_DEPTH = 4
+LEGACY_FOLDER_DEPTH = 4
 REVISION_SOURCE_CREATE_INITIAL = "create_initial"
 REVISION_SOURCE_UPDATE = "update"
 STUDIO_TASK_TYPE_SOURCE_TARGET = "source_target"
@@ -107,14 +122,52 @@ def _slugify(value: str, default: str) -> str:
     return cleaned or default
 
 
-def _require_folder_scope(payload: dict[str, Any]) -> dict[str, str]:
-    scope = {
-        name: str(payload.get(name) or "").strip()
-        for name in ("project", "domain", "level", "flow")
-    }
-    if not all(scope.values()):
-        raise ValueError(STUDIO_FOLDER_PATH_REQUIRED_MESSAGE)
-    return scope
+def _validate_folder_segments(segments: list[str]) -> list[str]:
+    """Klasor segmentlerini dogrular (2..4, bos/gecersiz segment yok).
+
+    Yol gezinme (`..`, `/`) burada reddedilir: derinlik degiskenlestigi icin
+    segment sayisi kullanici kontrolunde ve her segment bir dizin adina
+    donusuyor.
+    """
+    if len(segments) < MIN_FOLDER_DEPTH or len(segments) > MAX_FOLDER_DEPTH:
+        raise ValueError(
+            f"Folder path must have between {MIN_FOLDER_DEPTH} and "
+            f"{MAX_FOLDER_DEPTH} levels (got {len(segments)})."
+        )
+    for seg in segments:
+        text = str(seg or "").strip()
+        if not text:
+            raise ValueError(STUDIO_FOLDER_PATH_REQUIRED_MESSAGE)
+        if text in {".", ".."} or "/" in text or "\\" in text:
+            raise ValueError(f"Invalid folder segment: {seg!r}")
+    return [str(seg).strip() for seg in segments]
+
+
+def _require_folder_path(payload: dict[str, Any]) -> list[str]:
+    """Payload'in 4 alanindan degisken derinlikli klasor yolunu cozer.
+
+    `project`/`domain` zorunlu, `level`/`flow` opsiyoneldir. YALNIZ SONDAN
+    kirpma gecerlidir: `level` bos ama `flow` dolu ise bu bir "delik"tir ve
+    sessizce sikistirilmaz -- fail-loud reddedilir, aksi halde kullanicinin
+    yazdigi `flow` degeri sessizce `level` konumuna kayardi.
+    """
+    values = [
+        str(payload.get(name) or "").strip() for name in FOLDER_PATH_FIELDS
+    ]
+    # Sondaki bos alanlari kirp.
+    while values and not values[-1]:
+        values.pop()
+    if any(not v for v in values):
+        filled = [
+            name
+            for name, val in zip(FOLDER_PATH_FIELDS, values)
+            if str(val or "").strip()
+        ]
+        raise ValueError(
+            "Folder path levels must be filled in order without gaps "
+            f"(got: {filled}). Remove trailing levels instead."
+        )
+    return _validate_folder_segments(values)
 
 
 def _auto_task_group_id(
@@ -128,10 +181,21 @@ def _auto_task_group_id(
     task_index: int = 1,
 ) -> str:
     idx = max(1, int(task_index or 1))
-    return (
-        f"{idx}_{_slugify(source_db, 'source')}_{_slugify(src_schema, 'src')}_{_slugify(src_table, 'table')}"
-        f"_to_{_slugify(target_db, 'target')}_{_slugify(load_method, 'method')}_{_slugify(tgt_schema, 'tgt')}_{_slugify(tgt_table, 'table')}"
-    )
+    # `load_method` BOS gelebilir (source_target): o zaman ada hic girmez.
+    # Script/dbt/dag/binding turlerinde tur isareti olarak dolu gelir.
+    parts = [
+        str(idx),
+        _slugify(source_db, "source"),
+        _slugify(src_schema, "src"),
+        _slugify(src_table, "table"),
+        "to",
+        _slugify(target_db, "target"),
+    ]
+    if str(load_method or "").strip():
+        parts.append(_slugify(load_method, "method"))
+    parts.append(_slugify(tgt_schema, "tgt"))
+    parts.append(_slugify(tgt_table, "table"))
+    return "_".join(parts)
 
 
 def _normalize_bindings(raw_bindings: Any) -> list[dict[str, Any]]:
@@ -267,13 +331,14 @@ def _validate_binding_contract(
         )
 
 
-def _derive_tags(project: str, domain: str, level: str, flow: str) -> list[str]:
-    return [
-        _slugify(project, "default_project"),
-        _slugify(domain, "default_domain"),
-        _slugify(level, "level1"),
-        _slugify(flow, "src_to_stg"),
-    ]
+def _derive_tags(*folder_path: str) -> list[str]:
+    """Klasor segmentlerinden Airflow tag'leri (2..4 adet, degisken derinlik).
+
+    Tek segment listesi alir; 4 seviyede eski davranisla birebir aynidir
+    (mevcut DAG'larin tag'leri degismez).
+    """
+    segments = _validate_folder_segments([str(part) for part in folder_path])
+    return [_slugify(seg, f"segment{i + 1}") for i, seg in enumerate(segments)]
 
 
 def _normalize_custom_tag(value: Any) -> str:
@@ -886,24 +951,39 @@ def normalize_notifications(raw: Any) -> dict[str, Any] | None:
 
 
 def normalize_file_source(item: dict[str, Any], source_type: str) -> dict[str, Any] | None:
-    """F1.4/F1.5 — extract + validate csv/json file-source fields.
+    """F1.4/F1.5 — extract + validate file-source fields.
 
     Returns None for non-file sources (byte-identical DB configs). File sources
     require an explicit ``file_path``; ``json`` accepts only ``flat`` this slice.
+
+    Format'a ozgu alanlar YALNIZ ilgili formatta yazilir: `delimiter`,
+    `quotechar` ve `header` CSV ayristiricisina gider (JSONL'de her satir kendi
+    anahtarlarini tasir), `json_mode` ise yalniz JSON'da anlamlidir. `encoding`
+    bayt->metin cozumudur, her iki formatta da gecerlidir.
     """
-    if source_type not in FILE_SOURCE_TYPES:
+    if source_type != FILE_SOURCE_TYPE:
         return None
     file_path = str(item.get("file_path") or "").strip()
     if not file_path:
-        raise ValueError("file_path is required for a csv/json file source.")
-    result: dict[str, Any] = {"file_path": file_path}
-    for key in ("delimiter", "encoding", "quotechar"):
-        value = str(item.get(key) or "").strip()
-        if value:
-            result[key] = value
-    if "header" in item:
-        result["header"] = bool(item.get("header"))
-    if source_type == "json":
+        raise ValueError("file_path is required for a file source.")
+    fmt = source_file_format(item)
+    if fmt not in VALID_SOURCE_FILE_FORMATS:
+        raise ValueError(
+            "source_file_format must be one of "
+            f"{sorted(VALID_SOURCE_FILE_FORMATS)}."
+        )
+    result: dict[str, Any] = {"file_path": file_path, "source_file_format": fmt}
+    encoding = str(item.get("encoding") or "").strip()
+    if encoding:
+        result["encoding"] = encoding
+    if fmt == "csv":
+        for key in ("delimiter", "quotechar"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                result[key] = value
+        if "header" in item:
+            result["header"] = bool(item.get("header"))
+    else:
         json_mode = str(item.get("json_mode") or "flat").strip().lower()
         if json_mode not in VALID_JSON_MODES:
             raise ValueError(
@@ -990,6 +1070,9 @@ def normalize_file_target(item: dict[str, Any]) -> dict[str, Any] | None:
     for src_key, dst_key in (
         ("target_delimiter", "target_delimiter"),
         ("target_encoding", "target_encoding"),
+        # ROUND-TRIP: burada olmayan her persist edilmis key bir sonraki
+        # resave'de sessizce duser -- format duserse cikti CSV'ye doner.
+        ("target_file_format", "target_file_format"),
     ):
         value = str(item.get(src_key) or "").strip()
         if value:
@@ -1009,30 +1092,19 @@ def _extract_flow_target(flow: str) -> str:
     return raw
 
 
-def _build_dag_filename(
-    project: str,
-    domain: str,
-    level: str,
-    flow: str,
-    group_no: int,
-) -> str:
-    project_slug = _slugify(project, "default_project")
-    domain_slug = _slugify(domain, "domain")
-    level_slug = _slugify(level, "level1")
-    flow_slug = _slugify(flow, "src_to_stg")
-    return (
-        f"{project_slug}_{domain_slug}_{level_slug}_{flow_slug}_{int(group_no)}_dag.py"
-    )
+def _build_dag_filename(folder_path: list[str], group_no: int) -> str:
+    """dag_id = dosya adi. 4 seviyede eski cikti ile BIREBIR ayni kalir."""
+    slugs = [
+        _slugify(seg, f"segment{i + 1}")
+        for i, seg in enumerate(_validate_folder_segments(list(folder_path)))
+    ]
+    return "_".join(slugs) + f"_{int(group_no)}_dag.py"
 
 
-def _build_yaml_filename(
-    project: str,
-    domain: str,
-    level: str,
-    flow: str,
-    group_no: int,
-) -> str:
-    return f"{project}_{domain}_{level}_{flow}_{int(group_no)}.yaml"
+def _build_yaml_filename(folder_path: list[str], group_no: int) -> str:
+    """4 seviyede eski cikti ile BIREBIR ayni (segmentler zaten slug'li gelir)."""
+    segments = _validate_folder_segments(list(folder_path))
+    return "_".join(segments) + f"_{int(group_no)}.yaml"
 
 
 def _extract_group_no_from_name(name: str) -> int | None:
@@ -1071,41 +1143,6 @@ def _projects_root() -> Path:
 
 def _generated_dag_root() -> Path:
     return Path(os.getenv("FFENGINE_STUDIO_DAG_ROOT", "/opt/airflow/dags"))
-
-
-def _bulk_backfill_legacy_task_types_once() -> None:
-    marker = "_ffengine_task_type_backfilled_once"
-    if getattr(_bulk_backfill_legacy_task_types_once, marker, False):
-        return
-    root = _projects_root()
-    if not root.is_dir():
-        setattr(_bulk_backfill_legacy_task_types_once, marker, True)
-        return
-    for config_path in root.rglob("*.yaml"):
-        try:
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        except Exception:
-            continue
-        if not isinstance(raw, dict):
-            continue
-        tasks = raw.get("flow_tasks")
-        if not isinstance(tasks, list) or not tasks:
-            continue
-        changed = False
-        for task in tasks:
-            if not isinstance(task, dict):
-                continue
-            if str(task.get("task_type") or "").strip():
-                continue
-            task["task_type"] = STUDIO_TASK_TYPE_SOURCE_TARGET
-            changed = True
-        if not changed:
-            continue
-        config_path.write_text(
-            yaml.safe_dump(raw, sort_keys=False, allow_unicode=False),
-            encoding="utf-8",
-        )
-    setattr(_bulk_backfill_legacy_task_types_once, marker, True)
 
 
 def resolve_task_dependencies(task_defs: list[dict[str, Any]]) -> list[tuple[str, str]]:
@@ -1212,22 +1249,57 @@ def _normalize_dag_dependencies(raw_dependencies: Any) -> dict[str, Any]:
     return {"upstream_dag_ids": upstream_dag_ids}
 
 
-def _extract_scope_from_config_path(config_path: Path) -> tuple[str, str, str, str]:
+def _folder_path_from_config_path(config_path: Path) -> list[str]:
+    """Config dosyasinin YOLUNDAN klasor segmentlerini cikarir (slug'lanmis).
+
+    Dosya adi haric tum segmentler alinir; derinlik yolun kendisidir.
+    `folder_path` alani tasimayan legacy config'ler icin de tek kaynak budur.
+    """
     projects_root = _projects_root().resolve()
     config_resolved = config_path.resolve()
     try:
         rel = config_resolved.relative_to(projects_root)
     except ValueError as exc:
         raise ValueError("YAML path is outside Flow Studio projects root.") from exc
-    if len(rel.parts) < 5:
+    segments = [str(part) for part in rel.parts[:-1]]
+    if len(segments) < MIN_FOLDER_DEPTH or len(segments) > MAX_FOLDER_DEPTH:
         raise ValueError("YAML path hierarchy is invalid.")
-    project, domain, level, flow = rel.parts[:4]
-    return (
-        _slugify(project, "default_project"),
-        _slugify(domain, "default_domain"),
-        _slugify(level, "level1"),
-        _slugify(flow, "src_to_stg"),
-    )
+    return [_slugify(seg, f"segment{idx + 1}") for idx, seg in enumerate(segments)]
+
+
+def _folder_path_from_config(raw_cfg: Any, config_path: Path) -> list[str]:
+    """Bir DAG'in klasor derinligini cozer -- TEK dogruluk kaynagi.
+
+    Oncelik: config'teki `folder_path` alani. Alan yoksa (legacy) yoldan
+    cikarilir. Alan VARSA gercek yol ile karsilastirilir; uyusmuyorsa
+    fail-loud -- dosya elle tasinmis ya da config elle duzenlenmis demektir
+    ve bu, "yanlis dizine sessizce yazma"nin en sinsi kaynagi olurdu.
+    """
+    from_path = _folder_path_from_config_path(config_path)
+    declared = raw_cfg.get(FOLDER_PATH_KEY) if isinstance(raw_cfg, dict) else None
+    if declared is None:
+        return from_path
+    if not isinstance(declared, list):
+        raise ValueError(f"{FOLDER_PATH_KEY} must be a list of folder names.")
+    segments = _validate_folder_segments([str(item) for item in declared])
+    slugged = [_slugify(seg, f"segment{i + 1}") for i, seg in enumerate(segments)]
+    if slugged != from_path:
+        raise ValueError(
+            f"{FOLDER_PATH_KEY} does not match the config location: "
+            f"declared={slugged} actual={from_path}."
+        )
+    return slugged
+
+
+def _extract_scope_from_config_path(config_path: Path) -> tuple[str, str, str, str]:
+    """Geriye uyum sarmalayicisi: ilk 4 seviye (eksikler bos string).
+
+    Yeni kod `_folder_path_from_config*` kullanmali; bu sarmalayici yalnizca
+    project/domain isteyen eski cagrilari ayakta tutar.
+    """
+    segments = _folder_path_from_config_path(config_path)
+    padded = (segments + ["", "", "", ""])[:4]
+    return (padded[0], padded[1], padded[2], padded[3])
 
 
 def _load_yaml_root(config_path: Path) -> dict[str, Any]:
@@ -1382,14 +1454,17 @@ def discover_dag_dependency_options(
     *,
     project: str,
     domain: str,
-    level: str,
-    flow: str,
+    level: str | None = None,
+    flow: str | None = None,
     dag_id: str | None = None,
 ) -> dict[str, Any]:
-    scope_project = _slugify(project, "default_project")
-    scope_domain = _slugify(domain, "default_domain")
-    scope_level = _slugify(level, "level1")
-    scope_flow = _slugify(flow, "src_to_stg")
+    scope_path = _require_folder_path(
+        {"project": project, "domain": domain, "level": level, "flow": flow}
+    )
+    scope_path = [
+        _slugify(seg, f"segment{i + 1}") for i, seg in enumerate(scope_path)
+    ]
+    scope_project, scope_domain = scope_path[0], scope_path[1]
     current_dag_id = str(dag_id or "").strip()
 
     scope_entries = _collect_scope_studio_dag_entries(scope_project, scope_domain)
@@ -1399,16 +1474,8 @@ def discover_dag_dependency_options(
         current_group_no = int(current_entry.get("group_no") or 1)
         current_upstream_dag_ids = list(current_entry.get("upstream_dag_ids") or [])
     else:
-        flow_dir = (
-            _projects_root() / scope_project / scope_domain / scope_level / scope_flow
-        )
-        flow_dag_dir = (
-            _generated_dag_root()
-            / scope_project
-            / scope_domain
-            / scope_level
-            / scope_flow
-        )
+        flow_dir = _projects_root().joinpath(*scope_path)
+        flow_dag_dir = _generated_dag_root().joinpath(*scope_path)
         current_group_no = _next_group_no(flow_dir, flow_dag_dir)
         current_upstream_dag_ids = []
 
@@ -1443,11 +1510,13 @@ def discover_dag_dependency_options(
         ]
     )
 
+    padded = (scope_path + ["", "", "", ""])[:4]
     return {
-        "project": scope_project,
-        "domain": scope_domain,
-        "level": scope_level,
-        "flow": scope_flow,
+        "project": padded[0],
+        "domain": padded[1],
+        "level": padded[2],
+        "flow": padded[3],
+        "folder_path": list(scope_path),
         "dag_id": current_dag_id,
         "group_no": int(current_group_no),
         "current_upstream_dag_ids": current_upstream_dag_ids,
@@ -1469,13 +1538,10 @@ def _render_single_studio_dag_entry(entry: dict[str, Any]) -> None:
         raise ValueError("Invalid studio DAG entry.")
     cfg = _load_yaml_root(config_path)
     user_tags = _normalize_custom_tags(cfg.get("custom_tags"))
+    # Tag'ler config'in GERCEK yolundan turetilir: entry'nin sabit 4 anahtari
+    # degisken derinlikte eksik kalir ve tag'ler sessizce bozulurdu.
     tags = _merge_tags(
-        _derive_tags(
-            str(entry.get("project") or ""),
-            str(entry.get("domain") or ""),
-            str(entry.get("level") or ""),
-            str(entry.get("flow") or ""),
-        ),
+        _derive_tags(*_folder_path_from_config(cfg, config_path)),
         user_tags,
     )
     dag_source = _render_group_dag_source(
@@ -2260,8 +2326,9 @@ def _generate_mapping_content_for_task(
         preview_payload["source_table"] = str(task.get("source_table") or "").strip()
     elif source_type == "sql":
         preview_payload["inline_sql"] = str(task.get("inline_sql") or "").strip()
-    elif source_type in FILE_SOURCE_TYPES:
+    elif source_type == FILE_SOURCE_TYPE:
         preview_payload["file_path"] = str(task.get("file_path") or "").strip()
+        preview_payload["source_file_format"] = source_file_format(task)
         for key in ("delimiter", "encoding", "quotechar", "header", "json_mode"):
             if task.get(key) is not None:
                 preview_payload[key] = task.get(key)
@@ -2645,12 +2712,45 @@ def _extract_config_path_from_dag_source(dag_path: Path) -> Path:
 
 
 def _find_studio_dag_file_by_id(dag_id: str) -> Path | None:
+    """dag_id'den DAG dosyasini bulur; BELIRSIZLIKTE fail-loud.
+
+    C2 -- dag_id hiyerarsiyi kodladigi ve `_slugify` alt cizgiyi korudugu icin
+    farkli derinlikteki iki yol ayni id'yi uretebilir. Eskiden ILK eslesme
+    donuyordu; bu, update'te yanlis DAG'in sessizce guncellenmesi demekti.
+    Artik coklu eslesme reddedilir (kullanici karari: sessiz guncelleme yok).
+    """
     gen_root = _generated_dag_root()
-    candidate_name = f"{dag_id}.py"
-    for path in gen_root.rglob(candidate_name):
-        if path.is_file():
-            return path
-    return None
+    matches = [p for p in gen_root.rglob(f"{dag_id}.py") if p.is_file()]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        listed = ", ".join(sorted(p.as_posix() for p in matches))
+        raise ValueError(
+            f"dag_id '{dag_id}' matches multiple DAG files: {listed}. "
+            "Rename one of the conflicting folders; refusing to guess."
+        )
+    return matches[0]
+
+
+def _reject_conflicting_dag_id(
+    dag_filename: str, intended_path: Path, gen_root: Path
+) -> None:
+    """C1 -- ayni dag_id baska bir klasorde varsa YAZMAYI reddeder.
+
+    Cakismanin OLUSMASINI engeller: `a/b_c` ile `a/b/c` ayni id'yi uretir ve
+    boyle bir cift olustugunda hangisinin guncellenecegi belirsizlesir.
+    """
+    intended = intended_path.resolve()
+    for existing in gen_root.rglob(dag_filename):
+        if not existing.is_file():
+            continue
+        if existing.resolve() == intended:
+            continue
+        raise ValueError(
+            f"dag_id '{Path(dag_filename).stem}' already exists under "
+            f"{existing.parent.as_posix()}. This folder hierarchy collides "
+            "with an existing one; choose a different folder name."
+        )
 
 
 def _load_mapping_content_for_task(flow_dir: Path, task: dict[str, Any]) -> str | None:
@@ -2665,7 +2765,6 @@ def _load_mapping_content_for_task(flow_dir: Path, task: dict[str, Any]) -> str 
 
 
 def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
-    _bulk_backfill_legacy_task_types_once()
     did = (dag_id or "").strip()
     if not did:
         raise ValueError("dag_id is required.")
@@ -2678,19 +2777,15 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
     if not config_path.is_file():
         raise ValueError("DAG was found but linked YAML file was not found.")
 
-    projects_root = _projects_root().resolve()
     config_resolved = config_path.resolve()
-    try:
-        rel = config_resolved.relative_to(projects_root)
-    except ValueError as exc:
-        raise ValueError("YAML path Flow Studio projects root altinda degil.") from exc
-    if len(rel.parts) < 5:
-        raise ValueError("YAML path hierarchy is invalid.")
-    project, domain, level, flow = rel.parts[:4]
-
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise ValueError("YAML root must be a dict.")
+
+    # Derinlik config'ten (varsa) yoksa yoldan cozulur; UI bu listeye bakarak
+    # DAG kac seviyeliyse o kadar sutun acar -- tahmin yok.
+    folder_path = _folder_path_from_config(raw, config_path)
+    project, domain, level, flow = (folder_path + ["", "", "", ""])[:4]
     tasks = raw.get("flow_tasks") or []
     if not isinstance(tasks, list) or not tasks:
         raise ValueError("YAML flow_tasks list is empty or invalid.")
@@ -2761,6 +2856,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                 "bindings": _normalize_bindings(task.get("bindings")),
                 # F1.4/F1.5 — file source/target fields (preload for edit).
                 "file_path": str(task.get("file_path") or "").strip() or None,
+                "source_file_format": task.get("source_file_format"),
                 "delimiter": task.get("delimiter"),
                 "encoding": task.get("encoding"),
                 "quotechar": task.get("quotechar"),
@@ -2772,6 +2868,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
                 "target_delimiter": task.get("target_delimiter"),
                 "target_encoding": task.get("target_encoding"),
                 "target_header": task.get("target_header"),
+                "target_file_format": task.get("target_file_format"),
                 # F3.2 — dbt fields (preload for edit). This dict is an
                 # EXPLICIT key list: any persisted dbt key missing here is
                 # silently dropped on the next resave (round-trip trap).
@@ -2832,6 +2929,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
     dag_dependencies = _normalize_dag_dependencies(raw.get("dag_dependencies"))
     dag_params = _normalize_dag_params(raw.get("dag_params"))
     notifications = normalize_notifications(raw.get("notifications"))
+    retry = normalize_retry(raw.get("retry"))
 
     payload = {
         "project": project,
@@ -2843,6 +2941,8 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "dag_dependencies": dag_dependencies,
         "dag_params": dag_params,
         "notifications": notifications,
+        "retry": retry,
+        "folder_path": list(folder_path),
         "group_no": _extract_group_no(did, config_path),
         "task_group_id": first_task["task_group_id"],
         "task_type": first_task["task_type"],
@@ -2874,6 +2974,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "partitioning_ranges": first_task["partitioning_ranges"],
         "bindings": first_task["bindings"],
         "file_path": first_task["file_path"],
+        "source_file_format": first_task["source_file_format"],
         "delimiter": first_task["delimiter"],
         "encoding": first_task["encoding"],
         "quotechar": first_task["quotechar"],
@@ -2884,6 +2985,7 @@ def resolve_dag_config_for_update(dag_id: str) -> dict[str, Any]:
         "target_delimiter": first_task["target_delimiter"],
         "target_encoding": first_task["target_encoding"],
         "target_header": first_task["target_header"],
+        "target_file_format": first_task["target_file_format"],
         "kafka_topic": first_task["kafka_topic"],
         "cdc_start_policy": first_task["cdc_start_policy"],
         "cdc_start_offsets": first_task["cdc_start_offsets"],
@@ -3286,11 +3388,9 @@ def promote_dag_revision(
             revision_state = get_dag_revisions(did)
             auto_tags: list[str] = []
             try:
-                rel = config_path.resolve().relative_to(_projects_root().resolve())
-                if len(rel.parts) >= 4:
-                    auto_tags = _derive_tags(
-                        rel.parts[0], rel.parts[1], rel.parts[2], rel.parts[3]
-                    )
+                auto_tags = _derive_tags(
+                    *_folder_path_from_config_path(config_path)
+                )
             except ValueError:
                 auto_tags = []
             raw_cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -4339,28 +4439,32 @@ def discover_hierarchy_options(
     else:
         raise ValueError("source must be one of: 'dag', 'projects', or 'union'.")
 
-    projects: set[str] = set()
-    domains: set[str] = set()
-    levels: set[str] = set()
-    flows: set[str] = set()
+    # Degisken derinlik: sabit 4 adimli descent yerine secili segmentler
+    # boyunca yuruyup HER seviyenin cocuklarini toplariz. `children` yeni
+    # (generic) sozlesme; `projects/domains/levels/flows` geriye uyum icin
+    # ayni veriden turetilir.
+    selected = [seg for seg in (project_val, domain_val, level_val) if seg]
+    for seg in selected:
+        if seg in {".", ".."} or "/" in seg or "\\" in seg:
+            raise ValueError(f"Invalid folder segment: {seg!r}")
 
+    per_level: list[set[str]] = [set() for _ in range(len(selected) + 1)]
     for root in roots:
-        projects.update(_list_child_dirs(root))
-        if project_val:
-            project_dir = root / project_val
-            domains.update(_list_child_dirs(project_dir))
-            if domain_val:
-                domain_dir = project_dir / domain_val
-                levels.update(_list_child_dirs(domain_dir))
-                if level_val:
-                    level_dir = domain_dir / level_val
-                    flows.update(_list_child_dirs(level_dir))
+        cursor = root
+        per_level[0].update(_list_child_dirs(cursor))
+        for idx, seg in enumerate(selected):
+            cursor = cursor / seg
+            per_level[idx + 1].update(_list_child_dirs(cursor))
 
+    listed = [sorted(items) for items in per_level]
+    padded = (listed + [[], [], [], []])[:4]
     return {
-        "projects": sorted(projects),
-        "domains": sorted(domains),
-        "levels": sorted(levels),
-        "flows": sorted(flows),
+        "children": listed[-1],
+        "depth": len(selected),
+        "projects": padded[0],
+        "domains": padded[1],
+        "levels": padded[2],
+        "flows": padded[3],
     }
 
 
@@ -4516,7 +4620,7 @@ def _detect_file_columns(
     conn_id: str,
     conn_type: str,
     file_path: str,
-    source_type: str,
+    file_format: str,
     options: dict[str, Any],
     sample_limit: int = 5,
 ) -> tuple[list[str], list[list[Any]]]:
@@ -4533,7 +4637,7 @@ def _detect_file_columns(
     sample_rows: list[list[Any]] = []
     try:
         lines = (raw.decode(encoding) for raw in handle.stream)
-        if source_type == "csv":
+        if file_format == "csv":
             reader = _csv.reader(
                 lines,
                 delimiter=str(options.get("delimiter") or ","),
@@ -4570,7 +4674,7 @@ def _detect_file_columns(
 
 
 def _file_source_mapping_preview(
-    payload: dict[str, Any], source_type: str, source_conn_id: str
+    payload: dict[str, Any], file_format: str, source_conn_id: str
 ) -> dict[str, Any]:
     """F1.4 — draft mapping from a file's detected columns (untyped → editable)."""
     src_params = AirflowConnectionAdapter.get_connection_params(source_conn_id)
@@ -4586,7 +4690,7 @@ def _file_source_mapping_preview(
         "json_mode": payload.get("json_mode", "flat"),
     }
     names, sample_rows = _detect_file_columns(
-        source_conn_id, conn_type, file_path, source_type, options
+        source_conn_id, conn_type, file_path, file_format, options
     )
     version = str(payload.get("version") or "v1.1").strip() or "v1.1"
     task_no = max(1, int(payload.get("task_no") or 1))
@@ -4622,13 +4726,23 @@ def generate_mapping_preview(payload: dict[str, Any]) -> dict[str, Any]:
     if not source_conn_id or not target_conn_id:
         raise ValueError("source_conn_id and target_conn_id are required.")
 
-    if source_type in FILE_SOURCE_TYPES:
-        return _file_source_mapping_preview(payload, source_type, source_conn_id)
+    if source_type == FILE_SOURCE_TYPE:
+        return _file_source_mapping_preview(
+            payload, source_file_format(payload), source_conn_id
+        )
 
     src_params = AirflowConnectionAdapter.get_connection_params(source_conn_id)
-    tgt_params = AirflowConnectionAdapter.get_connection_params(target_conn_id)
     src_dialect = resolve_dialect(src_params["conn_type"])
-    tgt_dialect = resolve_dialect(tgt_params["conn_type"])
+    # Dosya HEDEFI'nin DB dialect'i yoktur (sftp/fs bir veritabani degildir).
+    # Hedef dialect yalniz taslak tip adlarini uretmek icin kullanilir, bu
+    # yuzden dosya hedefinde kaynak dialect'e duseriz. Aksi halde `resolve_dialect`
+    # "Desteklenmeyen Airflow connection tipi: 'sftp'" ile 400 dondurur ve
+    # DB -> dosya akislarinda custom mapping hic uretilemez.
+    if str(payload.get("target_type") or "").strip().lower() == "file":
+        tgt_dialect = src_dialect
+    else:
+        tgt_params = AirflowConnectionAdapter.get_connection_params(target_conn_id)
+        tgt_dialect = resolve_dialect(tgt_params["conn_type"])
 
     src_name = _dialect_name(src_dialect)
     tgt_name = _dialect_name(tgt_dialect)
@@ -4693,14 +4807,13 @@ def create_or_update_dag(
     update: bool = False,
     dag_id: str | None = None,
 ) -> dict[str, Any]:
-    folder_scope = _require_folder_scope(payload)
-    _bulk_backfill_legacy_task_types_once()
+    folder_path = _require_folder_path(payload)
     validate_pipeline_payload(payload)
 
-    project = _slugify(folder_scope["project"], "default_project")
-    domain = _slugify(folder_scope["domain"], "default_domain")
-    level = _slugify(folder_scope["level"], "level1")
-    flow = _slugify(folder_scope["flow"], "src_to_stg")
+    # Segmentler bir kez slug'lanir; asagidaki her sey bu listeyi kullanir.
+    folder_path = [
+        _slugify(seg, f"segment{i + 1}") for i, seg in enumerate(folder_path)
+    ]
 
     task_payloads = payload.get("flow_tasks")
     if isinstance(task_payloads, list) and task_payloads:
@@ -4713,13 +4826,13 @@ def create_or_update_dag(
     )
     with lock_ctx:
         root = _projects_root()
-        flow_dir = root / project / domain / level / flow
+        flow_dir = root.joinpath(*folder_path)
         flow_dir.mkdir(parents=True, exist_ok=True)
         _ensure_path_under_root(flow_dir, root)
         (flow_dir / "mapping").mkdir(parents=True, exist_ok=True)
 
         gen_root = _generated_dag_root()
-        flow_dag_dir = gen_root / project / domain / level / flow
+        flow_dag_dir = gen_root.joinpath(*folder_path)
         flow_dag_dir.mkdir(parents=True, exist_ok=True)
         _ensure_path_under_root(flow_dag_dir, gen_root)
 
@@ -4739,42 +4852,38 @@ def create_or_update_dag(
                 raise ValueError("YAML file to update was not found.")
             _ensure_path_under_root(config_path, root)
 
-            config_resolved = config_path.resolve()
-            rel = config_resolved.relative_to(root.resolve())
-            if len(rel.parts) < 5:
-                raise ValueError("Linked YAML path hierarchy in DAG is invalid.")
-            cfg_project, cfg_domain, cfg_level, cfg_flow = rel.parts[:4]
-            if (cfg_project, cfg_domain, cfg_level, cfg_flow) != (
-                project,
-                domain,
-                level,
-                flow,
-            ):
+            # Hiyerarsi TAM esitlikle karsilastirilir (uzunluk dahil): 3
+            # seviyeli bir DAG'a 4 seviyeli payload gonderilirse sessizce
+            # kabul edilmez.
+            cfg_folder_path = _folder_path_from_config_path(config_path)
+            if cfg_folder_path != folder_path:
                 raise ValueError(
-                    "dag_id and payload hierarchy do not match: "
-                    f"dag=({cfg_project}/{cfg_domain}/{cfg_level}/{cfg_flow}) "
-                    f"payload=({project}/{domain}/{level}/{flow})"
+                    "Folder cannot be changed on update: a DAG's identity is "
+                    "derived from its folder path. Use the Move flow instead "
+                    "(it generates a new DAG at the target location). "
+                    f"dag=({'/'.join(cfg_folder_path)}) "
+                    f"payload=({'/'.join(folder_path)})"
                 )
 
             group_no = _extract_group_no(dag_path.stem, config_path)
         else:
             group_no = _next_group_no(flow_dir, flow_dag_dir)
-            dag_path = flow_dag_dir / _build_dag_filename(
-                project,
-                domain,
-                level,
-                flow,
-                group_no,
+            dag_filename = _build_dag_filename(folder_path, group_no)
+            # C1 -- CAKISMA ONLEME: dag_id = dosya adi ve `_slugify` alt cizgiyi
+            # korudugu icin `a/b_c` (2 seviye) ile `a/b/c` (3 seviye) AYNI id'yi
+            # uretir. Ayni isim baska bir klasorde varsa yazma reddedilir;
+            # aksi halde update'te yanlis DAG guncellenebilirdi.
+            _reject_conflicting_dag_id(
+                dag_filename, flow_dag_dir / dag_filename, gen_root
             )
+            dag_path = flow_dag_dir / dag_filename
             _ensure_path_under_root(dag_path, gen_root)
-            config_path = flow_dir / _build_yaml_filename(
-                project, domain, level, flow, group_no
-            )
+            config_path = flow_dir / _build_yaml_filename(folder_path, group_no)
 
         existing_auto_mapping_paths = _collect_existing_auto_mapping_paths(
             config_path, flow_dir
         )
-        auto_tags = _derive_tags(project, domain, level, flow)
+        auto_tags = _derive_tags(*folder_path)
         user_tags = _normalize_custom_tags(payload.get("custom_tags"))
         tags = _merge_tags(auto_tags, user_tags)
         scheduler = normalize_scheduler(payload.get("scheduler"))
@@ -4795,10 +4904,20 @@ def create_or_update_dag(
             notifications = normalize_notifications(existing_cfg.get("notifications"))
         else:
             notifications = normalize_notifications(payload.get("notifications"))
-        scope_entries = _collect_scope_studio_dag_entries(project, domain)
+        # F7.1 — ayni koruma retry icin: kismi bir update payload'i retry
+        # tasimiyorsa mevcut politika DUSMEZ (round-trip tuzagi).
+        if update and "retry" not in payload:
+            retry = normalize_retry(existing_cfg.get("retry"))
+        else:
+            retry = normalize_retry(payload.get("retry"))
+        # Bagimlilik kapsami yalniz project+domain ile sinirli (derinlikten
+        # bagimsiz): ilk iki segment.
+        scope_entries = _collect_scope_studio_dag_entries(
+            folder_path[0], folder_path[1]
+        )
         dag_upstream_dag_ids = _validate_dag_dependencies_for_scope(
-            project=project,
-            domain=domain,
+            project=folder_path[0],
+            domain=folder_path[1],
             dag_id=dag_path.stem,
             upstream_dag_ids=list(dag_dependencies.get("upstream_dag_ids") or []),
             scope_entries=scope_entries,
@@ -4823,6 +4942,10 @@ def create_or_update_dag(
             source_table = str(item.get("source_table") or "").strip()
             target_schema = str(item.get("target_schema") or "").strip()
             target_table = str(item.get("target_table") or "").strip()
+            # DB hedefinde task adi sema/tablodan turer (eski davranis);
+            # dosya hedefinde asagida dosya adiyla degistirilir.
+            auto_target_schema = target_schema
+            auto_target_table = target_table
             source_type = str(item.get("source_type") or "table").strip() or "table"
             load_method = (
                 str(
@@ -4845,13 +4968,18 @@ def create_or_update_dag(
             if task_type == STUDIO_TASK_TYPE_SOURCE_TARGET:
                 file_source = normalize_file_source(item, source_type)
                 file_target = normalize_file_target(item)
+                # Dosya uclari task adinda yalnizca "file" olarak anilir.
+                # Dosya ADI bilincli olarak KULLANILMAZ: yol degistiginde
+                # (ornegin `{{ ds }}` sablonlu akislarda) task adi -- ve
+                # dolayisiyla DAG kimligi -- degismemelidir.
+                if file_target is not None:
+                    auto_target_schema = "file"
+                    auto_target_table = "file"
                 if file_source is not None:
                     normalized_source_schema = ""
                     normalized_source_table = ""
                     auto_source_schema = "file"
-                    auto_source_table = _slugify(
-                        os.path.basename(file_source["file_path"]) or "file", "file"
-                    )
+                    auto_source_table = "file"
                 elif str(source_type).strip().lower() == "kafka":
                     # F6.3 — bir topic schema.table cifti degildir (EX-D036).
                     normalized_source_schema = ""
@@ -4869,7 +4997,12 @@ def create_or_update_dag(
                     )
                     auto_source_schema = normalized_source_schema
                     auto_source_table = normalized_source_table
-                auto_load_method = load_method
+                # Yukleme yontemi (create_if_not_exists_or_truncate, append...)
+                # task adina GIRMEZ: adi gereksiz uzatiyordu ve dosya
+                # hedefinde zaten anlamsizdi (yontem tablo kavramina ait).
+                # Diger task turleri (script/dbt/dag/binding) bu alani TUR
+                # ISARETI olarak kullanmaya devam eder.
+                auto_load_method = ""
             elif task_type == STUDIO_TASK_TYPE_SCRIPT_RUN:
                 if script_run_environment not in STUDIO_VALID_SCRIPT_RUN_ENVIRONMENTS:
                     raise ValueError(
@@ -4926,8 +5059,8 @@ def create_or_update_dag(
                 src_table=auto_source_table,
                 target_db=str(payload.get("target_conn_id") or ""),
                 load_method=auto_load_method,
-                tgt_schema=target_schema,
-                tgt_table=target_table,
+                tgt_schema=auto_target_schema,
+                tgt_table=auto_target_table,
                 task_index=idx,
             )
             raw_depends_on = item.get("depends_on")
@@ -5183,6 +5316,19 @@ def create_or_update_dag(
                 config_obj["engine"] = dict(payload["engine"])
             if notifications:
                 config_obj["notifications"] = notifications
+            # Kosullu: retry yoksa anahtar HIC yazilmaz -> legacy YAML bayt-ayni.
+            if retry:
+                config_obj["retry"] = retry
+            # Kosullu (kullanici karari): derinlik 4 ise anahtar YAZILMAZ ->
+            # mevcut 4 seviyeli config'lerin YAML'i bayt-ayni kalir. Okuma
+            # kurali tek yol: "alan yoksa 4 seviye".
+            if len(folder_path) != LEGACY_FOLDER_DEPTH:
+                config_obj[FOLDER_PATH_KEY] = list(folder_path)
+            # dag_id KOSULSUZ yazilir: her DAG'in bir kimligi vardir, burada
+            # "varsayilan" kavrami yok. Bugun kod hala `dag_path.stem`
+            # kullaniyor -- bu alan ileride kimligi yoldan ayirmak (gercek
+            # move) istenirse verinin hazir olmasi icindir.
+            config_obj[DAG_ID_KEY] = dag_path.stem
             config_path.write_text(
                 yaml.safe_dump(config_obj, sort_keys=False, allow_unicode=False),
                 encoding="utf-8",
@@ -5276,3 +5422,181 @@ def create_or_update_dag(
         if operation_warnings:
             response["warnings"] = operation_warnings
         return response
+
+
+# ---------------------------------------------------------------------------
+# DAG tasima (move) -- "yeniden uretim" modeli
+# ---------------------------------------------------------------------------
+#
+# Bir DAG'in kimligi klasor yoluna baglidir (`_build_dag_filename`), bu yuzden
+# tasima kimligi DEGISTIRIR ve Airflow calisma gecmisi tasinamaz. Bu gercek
+# gizlenmez: tasima, hedef konumda YENI bir DAG uretmek olarak modellenir.
+#
+# Bagimli DAG'lar tasimanin parcasidir: `upstream_dag_ids` icindeki eski kimlik
+# yenisiyle degistirilir, boylece zincir kopmaz.
+
+
+def _reverse_dependencies(dag_id: str, project: str, domain: str) -> list[dict]:
+    """Bu DAG'i `upstream_dag_ids` ile isaret eden DAG'lari bulur.
+
+    Kapsam PROJE bazindadir (`_collect_scope_studio_dag_entries` ->
+    `dag_root / project`). Baska bir projedeki bagimlilik burada GORUNMEZ --
+    mevcut mimarinin siniri, cagiran taraf kullaniciya bildirmeli.
+    """
+    did = str(dag_id or "").strip()
+    if not did:
+        return []
+    entries = _collect_scope_studio_dag_entries(project, domain)
+    found: list[dict] = []
+    for entry in entries.values():
+        if did in list(entry.get("upstream_dag_ids") or []):
+            found.append(
+                {
+                    "dag_id": str(entry.get("dag_id") or ""),
+                    "folder_path": _folder_path_from_config_path(
+                        entry["config_path"]
+                    ),
+                }
+            )
+    return sorted(found, key=lambda item: item["dag_id"])
+
+
+def _resolve_move_target(dag_id: str, target_folder_path: list[str]) -> dict:
+    """Tasima icin kaynak/hedef bilgilerini cozer (HICBIR SEY YAZMAZ)."""
+    did = str(dag_id or "").strip()
+    if not did:
+        raise ValueError("dag_id is required.")
+    target = _validate_folder_segments(list(target_folder_path or []))
+    target = [_slugify(seg, f"segment{i + 1}") for i, seg in enumerate(target)]
+
+    source_payload = resolve_dag_config_for_update(did)["payload"]
+    source_folder_path = list(source_payload.get("folder_path") or [])
+    if source_folder_path == target:
+        raise ValueError(
+            "Target folder is the same as the current one; nothing to move."
+        )
+
+    flow_dir = _projects_root().joinpath(*target)
+    flow_dag_dir = _generated_dag_root().joinpath(*target)
+    group_no = _next_group_no(flow_dir, flow_dag_dir)
+    new_dag_id = Path(_build_dag_filename(target, group_no)).stem
+
+    return {
+        "source_payload": source_payload,
+        "source_folder_path": source_folder_path,
+        "target_folder_path": target,
+        "new_dag_id": new_dag_id,
+        "flow_dag_dir": flow_dag_dir,
+    }
+
+
+def preview_move_dag(dag_id: str, target_folder_path: list[str]) -> dict:
+    """Tasimanin etkisini raporlar; diske HICBIR SEY yazmaz.
+
+    `blockers` doluysa tasima yapilamaz (UI dugmeyi kilitler).
+    """
+    resolved = _resolve_move_target(dag_id, target_folder_path)
+    source_folder_path = resolved["source_folder_path"]
+    new_dag_id = resolved["new_dag_id"]
+
+    blockers: list[str] = []
+    try:
+        _reject_conflicting_dag_id(
+            f"{new_dag_id}.py",
+            resolved["flow_dag_dir"] / f"{new_dag_id}.py",
+            _generated_dag_root(),
+        )
+    except ValueError as exc:
+        blockers.append(str(exc))
+
+    affected = _reverse_dependencies(
+        str(dag_id).strip(),
+        source_folder_path[0],
+        source_folder_path[1],
+    )
+    return {
+        "old_dag_id": str(dag_id).strip(),
+        "new_dag_id": new_dag_id,
+        "source_folder_path": source_folder_path,
+        "target_folder_path": resolved["target_folder_path"],
+        "affected_dags": affected,
+        "blockers": blockers,
+    }
+
+
+def move_dag(dag_id: str, target_folder_path: list[str]) -> dict:
+    """Hedef konumda yeni DAG uretir ve bagimlilari yeni kimlige baglar.
+
+    ONCE DOGRULA, SONRA YAZ: tum payload'lar hazirlanip dogrulanir; biri bile
+    gecersizse HICBIRI yazilmaz. Dosya sistemi transaction sunmadigi icin
+    yazma fazinda beklenmedik bir hata olursa yanit `partial` bayragi ve o ana
+    kadar yazilanlarla doner -- sessiz yarim kalma olmaz.
+
+    Eski DAG SILINMEZ (kullanici karari): silme ayri ve acik bir adimdir.
+    """
+    old_dag_id = str(dag_id or "").strip()
+    resolved = _resolve_move_target(old_dag_id, target_folder_path)
+    new_dag_id = resolved["new_dag_id"]
+    target = resolved["target_folder_path"]
+    source_folder_path = resolved["source_folder_path"]
+
+    _reject_conflicting_dag_id(
+        f"{new_dag_id}.py",
+        resolved["flow_dag_dir"] / f"{new_dag_id}.py",
+        _generated_dag_root(),
+    )
+
+    # --- Hazirlik: yeni DAG payload'i ---
+    moved_payload = dict(resolved["source_payload"])
+    moved_payload.pop("group_no", None)
+    for idx, name in enumerate(FOLDER_PATH_FIELDS):
+        moved_payload[name] = target[idx] if idx < len(target) else None
+    moved_payload[FOLDER_PATH_KEY] = list(target)
+
+    # --- Hazirlik: bagimli DAG payload'lari (eski kimlik -> yeni kimlik) ---
+    affected = _reverse_dependencies(
+        old_dag_id, source_folder_path[0], source_folder_path[1]
+    )
+    dependent_payloads: list[tuple[str, dict]] = []
+    for item in affected:
+        dep_id = item["dag_id"]
+        dep_payload = resolve_dag_config_for_update(dep_id)["payload"]
+        dep_payload.pop("group_no", None)
+        deps = dep_payload.get("dag_dependencies") or {}
+        upstream = [
+            new_dag_id if str(x).strip() == old_dag_id else str(x).strip()
+            for x in (deps.get("upstream_dag_ids") or [])
+        ]
+        dep_payload["dag_dependencies"] = {"upstream_dag_ids": upstream}
+        dependent_payloads.append((dep_id, dep_payload))
+
+    # --- Faz 1: DOGRULAMA (hicbir sey yazilmaz) ---
+    validate_pipeline_payload(moved_payload)
+    for _dep_id, dep_payload in dependent_payloads:
+        validate_pipeline_payload(dep_payload)
+
+    # --- Faz 2: YAZMA ---
+    written: list[str] = []
+    try:
+        created = create_or_update_dag(moved_payload, update=False)
+        written.append(new_dag_id)
+        updated: list[str] = []
+        for dep_id, dep_payload in dependent_payloads:
+            create_or_update_dag(dep_payload, update=True, dag_id=dep_id)
+            updated.append(dep_id)
+            written.append(dep_id)
+    except Exception as exc:  # noqa: BLE001 - kismi durum RAPORLANIR
+        raise ValueError(
+            f"Move partially applied and then failed: written={written}. "
+            f"Reason: {exc}"
+        ) from exc
+
+    return {
+        "old_dag_id": old_dag_id,
+        "new_dag_id": created.get("dag_id") or new_dag_id,
+        "dag_path": created.get("dag_path"),
+        "config_path": created.get("config_path"),
+        "source_folder_path": source_folder_path,
+        "target_folder_path": target,
+        "updated_dags": updated,
+    }

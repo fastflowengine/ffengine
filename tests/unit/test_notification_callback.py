@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from ffengine.airflow.notifications import (
@@ -133,6 +134,62 @@ def test_smtp_error_is_swallowed_and_logged(caplog):
     )
     # the swallow log must not leak the exception message
     assert all("smtp down" not in r.getMessage() for r in caplog.records)
+
+
+def test_send_failure_log_publishes_host_but_no_credentials(caplog):
+    """Uyari satiri HOST tasir; port/kullanici/parola TASIMAZ.
+
+    Kullanici karari (2026-08-19): "hangi sunucuya gidemedi" sorusu loglardan
+    okunabilmeli -- `error_type` tek basina yanlis sunucu adini teshis
+    ettirmiyordu. Sinir: host serbest, geri kalan yasak (AGENTS.md).
+    """
+    conn = SimpleNamespace(
+        host="smtp.sirket.com", port=587, login="mailuser", password="s3cr3t"
+    )
+    callbacks = build_notification_callbacks(
+        {
+            "notify_on": ["failure"],
+            "notify_emails": ["a@x.com"],
+            "notify_conn_id": "smtp_default",
+        }
+    )
+    with patch(_SMTP_NOTIFIER) as notifier_cls, patch(
+        "airflow.sdk.bases.hook.BaseHook.get_connection", return_value=conn
+    ):
+        notifier_cls.return_value.notify.side_effect = RuntimeError("boom")
+        with caplog.at_level(logging.WARNING):
+            callbacks["on_failure_callback"](_failure_context())
+
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "host=smtp.sirket.com" in text
+    for secret in ("587", "mailuser", "s3cr3t"):
+        assert secret not in text
+
+
+def test_send_failure_log_survives_unresolvable_connection(caplog):
+    """Baglanti cozulemezse uyari YINE yazilir (host=None).
+
+    Teshis bilgisi ugruna uyarinin kendisi kaybolamaz (INV-6).
+    """
+    callbacks = build_notification_callbacks(
+        {
+            "notify_on": ["failure"],
+            "notify_emails": ["a@x.com"],
+            "notify_conn_id": "yok_boyle_bir_conn",
+        }
+    )
+    with patch(_SMTP_NOTIFIER) as notifier_cls, patch(
+        "airflow.sdk.bases.hook.BaseHook.get_connection",
+        side_effect=RuntimeError("conn yok"),
+    ):
+        notifier_cls.return_value.notify.side_effect = RuntimeError("boom")
+        with caplog.at_level(logging.WARNING):
+            result = callbacks["on_failure_callback"](_failure_context())
+
+    assert result is None
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "notification.send_failed" in text
+    assert "host=None" in text
 
 
 # ---- T-F1.3-3: credential-masked, metadata-only message --------------------

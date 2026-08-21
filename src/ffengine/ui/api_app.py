@@ -27,7 +27,10 @@ from ffengine.config.schema import (
     VALID_LOAD_METHODS,
     VALID_PARTITION_MODES,
     VALID_SOURCE_TYPES,
-    FILE_SOURCE_TYPES,
+    FILE_SOURCE_TYPE,
+    VALID_SOURCE_FILE_FORMATS,
+    source_file_format,
+    normalize_retry,
     VALID_JSON_MODES,
     VALID_TARGET_TYPES,
     VALID_CDC_START_POLICIES,
@@ -54,7 +57,9 @@ from ffengine.ui.studio_service import (
     parse_mapping_columns,
     get_dag_revisions,
     list_dbt_asset_options,
+    move_dag,
     normalize_notifications,
+    preview_move_dag,
     normalize_scheduler,
     promote_dag_revision,
     resolve_dag_config_for_update,
@@ -77,6 +82,17 @@ def _validate_folder_path_segment(value: Any) -> str:
     if not normalized:
         raise ValueError(_FOLDER_PATH_REQUIRED_MESSAGE)
     return normalized
+
+
+def _validate_optional_folder_segment(value: Any) -> str | None:
+    """level/flow: bos ise None (seviye yok); dolu ise normalize edilir.
+
+    Degisken derinlikte "verilmedi" ile "bos verildi" ayni anlama gelir --
+    ikisi de o seviyenin YOK oldugunu soyler. Delik kontrolu servis
+    katmaninda (`_require_folder_path`) yapilir.
+    """
+    normalized = str(value or "").strip()
+    return normalized or None
 
 
 def _raise_http_from_exception(exc: Exception) -> None:
@@ -244,6 +260,58 @@ def _validate_bindings_expression_contract(
 
 def _dbt_vars_text(dbt_vars: dict | None) -> str:
     return dbt_vars_expression_text({"dbt_vars": dict(dbt_vars or {})})
+
+
+def _validate_source_type_value(v: str) -> str:
+    """source_type payload dogrulamasi (tek merkez).
+
+    Uc payload modeli (FlowTaskPayload / DagUpsertPayload / MappingGeneratePayload)
+    ayni kurali kullanir; kopyalanirsa biri unutulur.
+
+    Dosya tipi kapisi burada DEGIL `_validate_source_file_format_value`
+    icindedir: tasima (`file`) her zaman gecerlidir, kapatilan sey formattir.
+    """
+    if v not in {"table", "view", "sql", FILE_SOURCE_TYPE, "kafka"}:
+        raise ValueError(
+            "source_type must be one of: table, view, sql, file, kafka."
+        )
+    if v not in VALID_SOURCE_TYPES:
+        raise ValueError(f"Invalid source_type: {v!r}")
+    return v
+
+
+def _payload_source_format(payload: Any) -> str:
+    """Payload modelinden dosya formatini okur (normalize, varsayilan csv)."""
+    return source_file_format(
+        {"source_file_format": getattr(payload, "source_file_format", None)}
+    )
+
+
+def _validate_source_file_format_value(v: str | None) -> str | None:
+    """source_file_format dogrulamasi + dosya tipi kapisi.
+
+    Dosya formatlari deployment-owned bir env ile kapatilabilir
+    (`FFENGINE_FILE_TYPES`, bkz. ``core/file_types.py``). Kapali formatla YENI
+    akis kurulamaz (422); halihazirda calisan config'ler etkilenmez -- kapi
+    bilincli olarak validator'a degil yalnizca bu payload katmanina konur.
+    """
+    if v is None:
+        return None
+    name = str(v).strip().lower()
+    if name not in VALID_SOURCE_FILE_FORMATS:
+        raise ValueError(
+            "source_file_format must be one of: "
+            f"{', '.join(sorted(VALID_SOURCE_FILE_FORMATS))}."
+        )
+    from ffengine.core.file_types import FILE_TYPES_ENV, is_file_type_enabled
+
+    if not is_file_type_enabled(name):
+        raise ValueError(
+            f"source_file_format={name!r} bu kurulumda kapali. Acmak icin "
+            f"{FILE_TYPES_ENV} ortam degiskenine {name!r} ekleyin "
+            f"(ornek: {FILE_TYPES_ENV}=csv,json)."
+        )
+    return name
 
 
 def _validate_dbt_task_payload(payload: Any) -> None:
@@ -473,11 +541,13 @@ class FlowTaskPayload(BaseModel):
     quotechar: str | None = None
     header: bool | None = None
     json_mode: str | None = None
+    source_file_format: str | None = None
     target_type: str = "db"
     target_file_path: str | None = None
     target_delimiter: str | None = None
     target_encoding: str | None = None
     target_header: bool | None = None
+    target_file_format: str | None = None
 
     @field_validator("depends_on")
     @classmethod
@@ -497,13 +567,12 @@ class FlowTaskPayload(BaseModel):
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
-        if v not in {"table", "view", "sql", "csv", "json", "kafka"}:
-            raise ValueError(
-                "source_type must be one of: table, view, sql, csv, json, kafka."
-            )
-        if v not in VALID_SOURCE_TYPES:
-            raise ValueError(f"Invalid source_type: {v!r}")
-        return v
+        return _validate_source_type_value(v)
+
+    @field_validator("source_file_format")
+    @classmethod
+    def _v_source_file_format(cls, v: str | None) -> str | None:
+        return _validate_source_file_format_value(v)
 
     @field_validator("target_type")
     @classmethod
@@ -563,12 +632,12 @@ class FlowTaskPayload(BaseModel):
                 raise ValueError(
                     "target_schema and target_table are required when task_type='source_target'."
                 )
-            if self.source_type in FILE_SOURCE_TYPES:
+            if self.source_type == FILE_SOURCE_TYPE:
                 if not (self.file_path or "").strip():
                     raise ValueError(
-                        "file_path is required when source_type=csv|json."
+                        "file_path is required when source_type='file'."
                     )
-                if self.source_type == "json":
+                if _payload_source_format(self) == "json":
                     mode = str(self.json_mode or "flat").strip().lower()
                     if mode not in VALID_JSON_MODES:
                         raise ValueError(
@@ -636,8 +705,13 @@ class FlowTaskPayload(BaseModel):
             if self.where or self.script_sql or self.dag_task_dag_id:
                 raise ValueError("binding tasks only support bindings and depends_on.")
             return self
-        binding_expression = self.where
-        binding_expression_label = "Where Clause"
+        # dag_param_flow._reference_expression aynasi: dosya yollari da
+        # `{{ p }}` tasir, aksi halde UI ile backend ayrisir.
+        binding_expression = "\n".join(
+            str(part or "")
+            for part in (self.where, self.file_path, self.target_file_path)
+        )
+        binding_expression_label = "Where Clause / File Path"
         if self.task_type == "script_run":
             binding_expression = self.script_sql
             binding_expression_label = "Script SQL / Stored Procedure"
@@ -687,6 +761,31 @@ class SchedulerPayload(BaseModel):
         self.start_date = normalized["start_date"]
         self.trigger_type = normalized.get("trigger_type")
         self.assets = normalized.get("assets")
+        return self
+
+
+class RetryPayload(BaseModel):
+    """F7.1 — DAG seviyesi retry blogu (Airflow-native).
+
+    Dogrulama tek merkezden `config.schema.normalize_retry` ile yapilir;
+    burada kopya kural yok. `retries < 1` -> blok komple omit edilir
+    (byte-stability): alanlar None'a cekilir ve config'e yazilmaz.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    retries: int | None = None
+    delay_seconds: int | None = None
+
+    @model_validator(mode="after")
+    def _v_retry(self) -> "RetryPayload":
+        normalized = normalize_retry(self.model_dump(exclude_none=True))
+        if normalized is None:
+            self.retries = None
+            self.delay_seconds = None
+        else:
+            self.retries = normalized["retries"]
+            self.delay_seconds = normalized["delay_seconds"]
         return self
 
 
@@ -821,7 +920,10 @@ def _validate_dag_params_and_binding_tasks(
             # Mirror of dag_param_flow._reference_expression (F3.2).
             expression = _dbt_vars_text(task.dbt_vars)
         else:
-            expression = task.where
+            expression = "\n".join(
+                str(part or "")
+                for part in (task.where, task.file_path, task.target_file_path)
+            )
         simple_refs = _extract_binding_params(expression)
         legacy_dag_refs = (simple_refs - local) & declared
         missing = sorted(simple_refs - local - declared)
@@ -867,8 +969,14 @@ class DagUpsertPayload(BaseModel):
 
     project: str = Field(..., min_length=1)
     domain: str = Field(..., min_length=1)
-    level: str = Field(..., min_length=1)
-    flow: str = Field(..., min_length=1)
+    # Degisken derinlik: level/flow opsiyonel (min 2, max 4 seviye).
+    # Sondan kirpma gecerlidir; "delik" (level bos, flow dolu) reddedilir.
+    level: str | None = None
+    flow: str | None = None
+    # Preload bu alani DONDURUR; update payload'i onu geri gonderebilmeli
+    # (aksi halde round-trip "extra_forbidden" ile kirilir). Otorite yine 4
+    # alandir; bu yalniz bilgilendirme amaclidir.
+    folder_path: list[str] | None = None
     source_conn_id: str = Field(..., min_length=1)
     target_conn_id: str = Field(..., min_length=1)
     engine: EnginePayload | None = None
@@ -924,11 +1032,13 @@ class DagUpsertPayload(BaseModel):
     quotechar: str | None = None
     header: bool | None = None
     json_mode: str | None = None
+    source_file_format: str | None = None
     target_type: str = "db"
     target_file_path: str | None = None
     target_delimiter: str | None = None
     target_encoding: str | None = None
     target_header: bool | None = None
+    target_file_format: str | None = None
     task_group_id: str | None = Field(default=None, min_length=1)
     flow_tasks: list[FlowTaskPayload] | None = None
     custom_tags: list[str] | None = None
@@ -936,22 +1046,27 @@ class DagUpsertPayload(BaseModel):
     dag_dependencies: DagDependenciesPayload | None = None
     dag_params: list[DagParamPayload] | None = None
     notifications: NotificationsPayload | None = None
+    retry: RetryPayload | None = None
 
-    @field_validator("project", "domain", "level", "flow", mode="before")
+    @field_validator("project", "domain", mode="before")
     @classmethod
     def _v_folder_path_segment(cls, v: Any) -> str:
         return _validate_folder_path_segment(v)
 
+    @field_validator("level", "flow", mode="before")
+    @classmethod
+    def _v_optional_folder_segment(cls, v: Any) -> str | None:
+        return _validate_optional_folder_segment(v)
+
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
-        if v not in {"table", "view", "sql", "csv", "json", "kafka"}:
-            raise ValueError(
-                "source_type must be one of: table, view, sql, csv, json, kafka."
-            )
-        if v not in VALID_SOURCE_TYPES:
-            raise ValueError(f"Invalid source_type: {v!r}")
-        return v
+        return _validate_source_type_value(v)
+
+    @field_validator("source_file_format")
+    @classmethod
+    def _v_source_file_format(cls, v: str | None) -> str | None:
+        return _validate_source_file_format_value(v)
 
     @field_validator("target_type")
     @classmethod
@@ -1111,9 +1226,9 @@ class DagUpsertPayload(BaseModel):
                     "When flow_tasks is not provided and source_type=table|view, "
                     "source_schema/source_table/target_schema/target_table are required."
                 )
-        elif self.source_type in FILE_SOURCE_TYPES:
+        elif self.source_type == FILE_SOURCE_TYPE:
             if not (self.file_path or "").strip():
-                raise ValueError("file_path is required when source_type=csv|json.")
+                raise ValueError("file_path is required when source_type='file'.")
             if not target_required_ok:
                 raise ValueError(
                     "target_schema/target_table (or target_type='file') are required."
@@ -1148,11 +1263,20 @@ class MappingGeneratePayload(BaseModel):
 
     project: str = Field(..., min_length=1)
     domain: str = Field(..., min_length=1)
-    level: str = Field(..., min_length=1)
-    flow: str = Field(..., min_length=1)
+    # Degisken derinlik: level/flow opsiyonel (min 2, max 4 seviye).
+    # Sondan kirpma gecerlidir; "delik" (level bos, flow dolu) reddedilir.
+    level: str | None = None
+    flow: str | None = None
+    # Preload bu alani DONDURUR; update payload'i onu geri gonderebilmeli
+    # (aksi halde round-trip "extra_forbidden" ile kirilir). Otorite yine 4
+    # alandir; bu yalniz bilgilendirme amaclidir.
+    folder_path: list[str] | None = None
     source_conn_id: str = Field(..., min_length=1)
     target_conn_id: str = Field(..., min_length=1)
     source_type: str = "table"
+    # Dosya hedeflerinde DB dialect cozumu atlanir (sftp/fs bir veritabani
+    # degildir); bu alan olmadan DB -> dosya akislarinda mapping uretilemez.
+    target_type: str = "db"
     source_schema: str | None = Field(default=None, min_length=1)
     source_table: str | None = Field(default=None, min_length=1)
     inline_sql: str | None = None
@@ -1166,22 +1290,27 @@ class MappingGeneratePayload(BaseModel):
     quotechar: str | None = None
     header: bool | None = None
     json_mode: str | None = None
+    source_file_format: str | None = None
 
-    @field_validator("project", "domain", "level", "flow", mode="before")
+    @field_validator("project", "domain", mode="before")
     @classmethod
     def _v_folder_path_segment(cls, v: Any) -> str:
         return _validate_folder_path_segment(v)
 
+    @field_validator("level", "flow", mode="before")
+    @classmethod
+    def _v_optional_folder_segment(cls, v: Any) -> str | None:
+        return _validate_optional_folder_segment(v)
+
     @field_validator("source_type")
     @classmethod
     def _v_source_type(cls, v: str) -> str:
-        if v not in {"table", "view", "sql", "csv", "json", "kafka"}:
-            raise ValueError(
-                "source_type must be one of: table, view, sql, csv, json, kafka."
-            )
-        if v not in VALID_SOURCE_TYPES:
-            raise ValueError(f"Invalid source_type: {v!r}")
-        return v
+        return _validate_source_type_value(v)
+
+    @field_validator("source_file_format")
+    @classmethod
+    def _v_source_file_format(cls, v: str | None) -> str | None:
+        return _validate_source_file_format_value(v)
 
     @model_validator(mode="after")
     def _v_required_fields(self) -> "MappingGeneratePayload":
@@ -1195,8 +1324,8 @@ class MappingGeneratePayload(BaseModel):
                 )
         if self.source_type == "sql" and not (self.inline_sql or "").strip():
             raise ValueError("inline_sql is required when source_type='sql'.")
-        if self.source_type in FILE_SOURCE_TYPES and not (self.file_path or "").strip():
-            raise ValueError("file_path is required when source_type=csv|json.")
+        if self.source_type == FILE_SOURCE_TYPE and not (self.file_path or "").strip():
+            raise ValueError("file_path is required when source_type='file'.")
         return self
 
 
@@ -1229,7 +1358,18 @@ def studio_index(response: Response) -> str:
     # (INV-8 layer 1). Community hides use_bulk_api; the backend still rejects it.
     from ffengine.core.edition import edition
 
-    return _load_index_html().replace("__FFENGINE_EDITION__", edition())
+    # Dosya tipi kapisi da ayni yoldan enjekte edilir: bir /api/config
+    # cagrisi asenkron dondugu icin option'lar cevap gelene kadar GORUNUR
+    # kalirdi (yaris kosulu); placeholder ilk HTML byte'inda hazirdir.
+    from ffengine.core.file_types import enabled_file_types
+
+    return (
+        _load_index_html()
+        .replace("__FFENGINE_EDITION__", edition())
+        .replace(
+            "__FFENGINE_FILE_TYPES__", ",".join(sorted(enabled_file_types()))
+        )
+    )
 
 
 @flow_studio_app.get("/dag-explorer", response_class=HTMLResponse)
@@ -1488,8 +1628,9 @@ def api_folder_options(
 def api_dag_options(
     project: str = Query(..., min_length=1),
     domain: str = Query(..., min_length=1),
-    level: str = Query(..., min_length=1),
-    flow: str = Query(..., min_length=1),
+    # Degisken derinlik: 2 seviyeli DAG'larda level/flow gonderilmez.
+    level: str | None = Query(None),
+    flow: str | None = Query(None),
     dag_id: str | None = Query(None),
 ) -> dict[str, Any]:
     try:
@@ -1667,6 +1808,56 @@ def api_promote_dag_revision(
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+class MoveDagPayload(BaseModel):
+    """F-MOVE — bir DAG'i baska bir klasore tasima istegi.
+
+    Tasima kimligi DEGISTIRIR (dag_id klasor yoluna baglidir); bu yuzden
+    "move" degil, hedef konumda YENIDEN URETIM olarak modellenir.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    dag_id: str = Field(..., min_length=1)
+    target_folder_path: list[str] = Field(..., min_length=2, max_length=4)
+
+
+@flow_studio_app.post("/api/move-dag/preview")
+def api_move_dag_preview(
+    payload: MoveDagPayload,
+    _: None = Depends(_optional_api_key_dep),
+) -> dict[str, Any]:
+    """Tasimanin etkisini raporlar; diske HICBIR SEY yazmaz."""
+    try:
+        result = preview_move_dag(payload.dag_id, payload.target_folder_path)
+        return {"ok": True, **result}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        _raise_http_from_exception(exc)
+
+
+@flow_studio_app.post("/api/move-dag")
+def api_move_dag(
+    payload: MoveDagPayload,
+    _: None = Depends(_optional_api_key_dep),
+) -> dict[str, Any]:
+    """Hedef konumda yeni DAG uretir; bagimlilari yeni kimlige baglar.
+
+    Eski DAG SILINMEZ -- silme ayri ve acik bir adimdir (kullanici karari).
+    """
+    try:
+        result = move_dag(payload.dag_id, payload.target_folder_path)
+        return {"ok": True, **result}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, TypeError, ConfigValidationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         _raise_http_from_exception(exc)
