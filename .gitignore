@@ -34,3 +34,16 @@ handbook/
 /build/
 /dist/
 *.egg-info/
+
+# FFGov dev overlay -- ayri urun, Community deposuna commit edilmez
+docker/docker-compose.ffgov.yml
+
+# FFGov'a ait DAG'lar ve yerel demo dosyalari. Bunlar FF Governance
+# urununun isidir (sema katalogu / drift), Community urunune ait
+# degildir; ayrica canli ortama ozel baglanti ve sema adlari tasirlar.
+dags/om_catalog_ocn_iss.py
+dags/om_catalog_dwh_ocn_iss.py
+dags/schema_diff_ocn_iss.py
+dags/schema_diff_ocean.py
+dags/om_catalog/waivers_*.json
+dags/lineage_demo_dag.py

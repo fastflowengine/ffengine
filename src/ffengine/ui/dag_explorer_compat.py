@@ -65,3 +65,22 @@ def ffgovernance_explorer_url() -> str | None:
     if not _ffgovernance_license_active():
         return None
     return FFGOVERNANCE_EXPLORER_URL
+
+
+def ffgovernance_owns_explorer() -> bool:
+    """FF Governance kurulu VE lisansli mi? (navigasyon gorunurlugu icin).
+
+    Kosulun TEK kaynagi ``ffgovernance_explorer_url``'dur; menu de ayni
+    kosulu kullanir ki "menude gorunur ama tiklayinca redirect" gibi bir
+    tutarsizlik olusmasin (girdi yalnizca redirect'e goturen olu bir
+    baglanti haline gelmez).
+
+    Fail-safe: her hata -> False -> menu girdisi GORUNUR. Route'taki kural
+    "hata -> yerlesigi servis et", menudeki kural "hata -> girdiyi goster";
+    ikisi de ayni sonuca cikar — yerlesik DAG Explorer erisilebilir kalir
+    (R-f75 r-1).
+    """
+    try:
+        return ffgovernance_explorer_url() is not None
+    except Exception:
+        return False
