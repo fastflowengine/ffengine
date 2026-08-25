@@ -12,6 +12,18 @@ FFEngine; Airflow-native, YAML/config-driven, Flow Studio UI'lı kurumsal veri a
 
 Konumlandırma **dar ve derin**: RDBMS/DWH/lakehouse derinliği, kaynak koruma, fail-loud, credential tutmama, push-down ve denetim izi.
 
+### FF Governance — ayrı ürün
+
+`ffgovernance` (`FFGovernance/`) **FFEngine'in bir parçası değildir** (EX-D039.1): kendi paketi, kendi sürümü, kendi tag'i vardır. Airflow-native governance katmanıdır (Explorer · Lineage · Runs · Comparisons · Integrations) ve şema drift karşılaştırmasını `ffgovernance.compare` ile birlikte teslim eder.
+
+Bağımlılık **iki yönde de yoktur** ve ölçülmüştür (2026-08-25):
+
+- FFGov → FFEngine: modül düzeyinde `import ffengine` **yok**; tespit runtime'dadır (GOV-INV-5), `pyproject` extra'sı bilerek boştur
+- Community/Enterprise → FFGov: `pyproject`'te `ffgovernance` **geçmez**; tek dokunuş `ui/dag_explorer_compat.py`'deki fail-safe runtime tespitidir (her hata → "aktif değil" → yerleşik Explorer servis edilir)
+- OM da opsiyoneldir: seçili değilse veya erişilemezse karşılaştırma canlı DB'den okur
+
+Bu depoda çalışacak agent **önce `FFGovernance/AGENTS.md`'yi okur**; oradaki GOV-INV kuralları, geçit sayısı ve UI kabuğu tuzakları bağlayıcıdır. Epic kaydı: `handbook/epics/epic-F7.0.md` … `epic-F7.6.md`.
+
 ## 2. Kaynak otorite
 
 1. `SOURCE_LOCK.md`
