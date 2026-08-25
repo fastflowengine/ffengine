@@ -26,7 +26,7 @@ Bu depoda çalışacak agent **önce `FFGovernance/AGENTS.md`'yi okur**; oradaki
 
 ## 2. Kaynak otorite
 
-1. `SOURCE_LOCK.md`
+1. `SOURCE_LOCK.md` — otorite belgelerinin metin sürümleri **`docs-sources/`** altındadır: Wave 1–3 → `FAD_v27.0.txt` · `TAD_v27.0.txt` · `AAD_v1.5.txt`; Wave 6–7 → `FAD_v27.5.txt` · `TAD_v27.5.txt` · `AAD_v1.10.txt`. Bu dizin silinmez ve geçici klasörlere taşınmaz.
 2. `handbook/DECISIONS.md`, `handbook/CONTRACTS.md`, `handbook/TERMINOLOGY.md`
 3. İlgili `handbook/epics/epic-<FID>.md` ve `handbook/tests/test-<FID>.md`
 4. Gerçek repository source code
