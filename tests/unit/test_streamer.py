@@ -235,3 +235,82 @@ def test_finalize_authoritative_count_mismatch_fails_loud():
     with pytest.raises(ReconciliationError) as exc:
         streamer.stream(iter([[(1,), (2,)]]), writer=writer, task_config={})
     assert exc.value.details["stage"] == "finalize"
+
+
+# ------------------------------------------------------------------
+# Batch ilerleme log'u
+# ------------------------------------------------------------------
+
+
+def test_each_batch_is_logged_after_it_is_written(writer, caplog):
+    """Her batch yazildiktan SONRA bir INFO satiri dusmeli."""
+    streamer = Streamer()
+    chunks = [[(1,), (2,)], [(3,)]]
+    with caplog.at_level("INFO", logger="ffengine.pipeline.streamer"):
+        streamer.stream(iter(chunks), writer=writer, task_config={})
+
+    rendered = [r.getMessage() for r in caplog.records
+                if r.getMessage().startswith("batch ")]
+    assert len(rendered) == 2
+    # Yazilan/okunan ve kumulatif toplam gorunur olmali.
+    assert "batch 1 yazildi: 2/2 satir (toplam 2)" in rendered[0]
+    assert "batch 2 yazildi: 1/1 satir (toplam 3)" in rendered[1]
+
+
+def test_batch_log_shows_shortfall_instead_of_hiding_it(caplog):
+    """Writer okunandan AZ satir bildirirse ikisi de log'da gorunur.
+
+    Sessiz kayip fail-loud kurallarina aykiridir: yazilan != okunan
+    durumunun log'dan fark edilebilmesi gerekir.
+    """
+    w = MagicMock()
+    w.write_batch.side_effect = lambda rows, cfg: len(rows) - 1
+    streamer = Streamer()
+    with caplog.at_level("INFO", logger="ffengine.pipeline.streamer"):
+        try:
+            streamer.stream(iter([[(1,), (2,), (3,)]]), writer=w,
+                            task_config={})
+        except ReconciliationError:
+            pass  # denklik sonda patlayabilir; ilgimiz log satirinda
+
+    rendered = " ".join(r.getMessage() for r in caplog.records)
+    assert "2/3 satir" in rendered
+
+
+def test_batch_log_never_leaks_connection_details(writer, caplog):
+    """Log satirinda baglanti/credential bilgisi BULUNMAMALI.
+
+    task_config aktarimin tum ayarlarini tasir; log'a oldugu gibi
+    basilmasi sizinti yuzeyidir.
+    """
+    streamer = Streamer()
+    secret_cfg = {
+        "conn_id": "prod_oracle",
+        "password": "s3cr3t-passw0rd",
+        "host": "db.internal.example.com",
+        "port": 1521,
+        "user": "etl_service_account",
+    }
+    with caplog.at_level("INFO", logger="ffengine.pipeline.streamer"):
+        streamer.stream(iter([[(1,)]]), writer=writer,
+                        task_config=secret_cfg)
+
+    rendered = " ".join(r.getMessage() for r in caplog.records)
+    for leak in ("s3cr3t-passw0rd", "etl_service_account", "1521",
+                 "prod_oracle"):
+        assert leak not in rendered
+
+
+def test_stream_logs_a_closing_summary(writer, caplog):
+    """Aktarim sonunda tek ozet satiri: batch sayisi + okunan + yazilan."""
+    streamer = Streamer()
+    chunks = [[(1,), (2,)], [(3,)]]
+    with caplog.at_level("INFO", logger="ffengine.pipeline.streamer"):
+        streamer.stream(iter(chunks), writer=writer, task_config={})
+
+    summary = [r.getMessage() for r in caplog.records
+               if "aktarim tamam" in r.getMessage()]
+    assert len(summary) == 1
+    assert "2 batch" in summary[0]
+    assert "3 satir okundu" in summary[0]
+    assert "3 satir yazildi" in summary[0]

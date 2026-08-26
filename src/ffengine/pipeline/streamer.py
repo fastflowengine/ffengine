@@ -7,10 +7,13 @@ PYTHON_ENGINE.md kuralları:
 - Enterprise binary API çağrısı yasak
 """
 
+import logging
 import time
 from queue import Queue, Full
 
 from ffengine.errors.exceptions import ReconciliationError
+
+_log = logging.getLogger(__name__)
 
 
 class Streamer:
@@ -56,6 +59,8 @@ class Streamer:
         # yüzden sabit 0. Böyle bir mod eklenirse kendi reject sözleşmesini
         # getirmelidir — aksi hâlde kayıp buradaki denklikte patlar.
         rows_rejected = 0
+        batch_no = 0
+        started_at = time.monotonic()
 
         for chunk in source_iter:
             self._apply_backpressure()
@@ -69,7 +74,18 @@ class Streamer:
 
             try:
                 written = writer.write_batch(chunk, task_config)
-                rows_written += self._validated_written(written, chunk_read)
+                chunk_written = self._validated_written(written, chunk_read)
+                rows_written += chunk_written
+                batch_no += 1
+                # Ilerleme kaydi: her batch hedefe yazildiktan SONRA.
+                # Yazilan sayi writer'in bildirdigi (dogrulanmis) degerdir;
+                # okunan sayidan farkliysa ikisi de gorunur ki sessiz kayip
+                # log'dan fark edilebilsin. Kaynak/hedef adi veya baglanti
+                # bilgisi BURAYA YAZILMAZ (credential sizintisi yuzeyi).
+                _log.info(
+                    "batch %d yazildi: %d/%d satir (toplam %d)",
+                    batch_no, chunk_written, chunk_read, rows_written,
+                )
                 self._mark_done()
             except Exception:
                 writer.rollback_batch()
@@ -99,6 +115,14 @@ class Streamer:
                     stage="finalize",
                 )
 
+        # Kapanis ozeti: batch satirlarini okumadan da toplami gormek icin.
+        # Denklik kontrolunden SONRA yazilir; buraya gelinmisse sayilar
+        # dogrulanmistir.
+        _log.info(
+            "aktarim tamam: %d batch, %d satir okundu, %d satir yazildi "
+            "(%.1fs)",
+            batch_no, rows_read, rows_written, time.monotonic() - started_at,
+        )
         return {
             "rows": rows_written,
             "rows_read": rows_read,
