@@ -82,8 +82,10 @@ class Streamer:
                 # okunan sayidan farkliysa ikisi de gorunur ki sessiz kayip
                 # log'dan fark edilebilsin. Kaynak/hedef adi veya baglanti
                 # bilgisi BURAYA YAZILMAZ (credential sizintisi yuzeyi).
+                # Mesaj metni INGILIZCE: depodaki log sozlesmesi boyle
+                # (bkz. flow_manager/operator "Flow task started." vb.).
                 _log.info(
-                    "batch %d yazildi: %d/%d satir (toplam %d)",
+                    "Batch %d written: %d/%d rows (total %d).",
                     batch_no, chunk_written, chunk_read, rows_written,
                 )
                 self._mark_done()
@@ -119,8 +121,8 @@ class Streamer:
         # Denklik kontrolunden SONRA yazilir; buraya gelinmisse sayilar
         # dogrulanmistir.
         _log.info(
-            "aktarim tamam: %d batch, %d satir okundu, %d satir yazildi "
-            "(%.1fs)",
+            "Stream completed: %d batches, %d rows read, %d rows written "
+            "(%.1fs).",
             batch_no, rows_read, rows_written, time.monotonic() - started_at,
         )
         return {

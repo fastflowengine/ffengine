@@ -250,11 +250,11 @@ def test_each_batch_is_logged_after_it_is_written(writer, caplog):
         streamer.stream(iter(chunks), writer=writer, task_config={})
 
     rendered = [r.getMessage() for r in caplog.records
-                if r.getMessage().startswith("batch ")]
+                if r.getMessage().startswith("Batch ")]
     assert len(rendered) == 2
     # Yazilan/okunan ve kumulatif toplam gorunur olmali.
-    assert "batch 1 yazildi: 2/2 satir (toplam 2)" in rendered[0]
-    assert "batch 2 yazildi: 1/1 satir (toplam 3)" in rendered[1]
+    assert "Batch 1 written: 2/2 rows (total 2)." in rendered[0]
+    assert "Batch 2 written: 1/1 rows (total 3)." in rendered[1]
 
 
 def test_batch_log_shows_shortfall_instead_of_hiding_it(caplog):
@@ -274,7 +274,7 @@ def test_batch_log_shows_shortfall_instead_of_hiding_it(caplog):
             pass  # denklik sonda patlayabilir; ilgimiz log satirinda
 
     rendered = " ".join(r.getMessage() for r in caplog.records)
-    assert "2/3 satir" in rendered
+    assert "2/3 rows" in rendered
 
 
 def test_batch_log_never_leaks_connection_details(writer, caplog):
@@ -309,8 +309,8 @@ def test_stream_logs_a_closing_summary(writer, caplog):
         streamer.stream(iter(chunks), writer=writer, task_config={})
 
     summary = [r.getMessage() for r in caplog.records
-               if "aktarim tamam" in r.getMessage()]
+               if "Stream completed" in r.getMessage()]
     assert len(summary) == 1
-    assert "2 batch" in summary[0]
-    assert "3 satir okundu" in summary[0]
-    assert "3 satir yazildi" in summary[0]
+    assert "2 batches" in summary[0]
+    assert "3 rows read" in summary[0]
+    assert "3 rows written" in summary[0]
