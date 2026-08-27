@@ -982,3 +982,107 @@ def test_legacy_partition_payload_without_counters_still_aggregates():
     assert aggregated["rows_read"] == 30
     assert aggregated["rows_written"] == 30
     assert aggregated["reconciliation_status"] == "legacy"
+
+
+# ------------------------------------------------------------------
+# Binding cozum KAPISI -- 2026-08-27 regresyonu
+# ------------------------------------------------------------------
+
+
+class _SpyResolver:
+    """resolve_sql_bindings cagrildi mi, onu kaydeder."""
+
+    def __init__(self):
+        self.called = False
+
+    def resolve_sql_bindings(self, task_config, **kwargs):
+        self.called = True
+        return dict(task_config)
+
+
+def _gate(task_config, resolver):
+    from ffengine.airflow.operator import _resolve_sql_bindings_if_needed
+
+    return _resolve_sql_bindings_if_needed(
+        task_config=task_config,
+        resolver=resolver,
+        airflow_ctx={},
+        source_session=None,
+        target_session=None,
+        source_dialect=None,
+    )
+
+
+def test_gate_opens_for_inline_sql_templates():
+    """`inline_sql` sablonu tasiyorsa resolver CAGRILMALI.
+
+    Regresyon: kapi yalnizca `bindings`/`where`e bakiyordu. `source_type='sql'`
+    akisinda kullanici parametreyi WHERE'e degil sorgunun ICINE yazar; boyle
+    bir task resolver'a hic girmiyordu ve `{{ dag.x }}` ham haliyle
+    veritabanina gidiyordu:
+        EngineError: syntax error at or near "{"
+
+    Bu, resolver'in KENDI testlerinin yakalayamadigi bir katmandi -- resolver
+    dogru calisiyordu, ona giden yol kapaliydi.
+    """
+    spy = _SpyResolver()
+    _gate(
+        {
+            "inline_sql": "select a from t where d >= {{ dag.min_date }}",
+            "where": None,
+        },
+        spy,
+    )
+    assert spy.called, "inline_sql sablonlu task resolver'a girmeli"
+
+
+def test_gate_still_opens_for_where_and_bindings():
+    """Mevcut iki yol bozulmamali."""
+    spy = _SpyResolver()
+    _gate({"where": "d >= {{ dag.x }}"}, spy)
+    assert spy.called
+
+    spy2 = _SpyResolver()
+    _gate({"bindings": [{"variable_name": "x"}]}, spy2)
+    assert spy2.called
+
+
+def test_gate_stays_closed_when_nothing_to_resolve():
+    """Cozulecek bir sey yoksa resolver cagrilmaz (gereksiz DB islemi yok)."""
+    spy = _SpyResolver()
+    out = _gate({"source_schema": "s", "source_table": "t"}, spy)
+    assert not spy.called
+    assert out == {"source_schema": "s", "source_table": "t"}
+
+
+def test_needs_binding_resolution_covers_inline_sql():
+    """Kosul TEK KAYNAK: her iki cagri yolu da ayni yardimciyi kullanir.
+
+    Regresyon (2026-08-27): ayni kosul operator.py'de IKI yerde
+    tekrarlaniyordu. Biri (`_resolve_sql_bindings_if_needed`) duzeltildi,
+    digeri (`source_target` akisindaki satir-ici kapi) unutuldu -- ve
+    source_target task'lari GERCEKTE ikinci kapidan geciyordu, bu yuzden
+    hata devam etti. Kosul artik tek fonksiyonda.
+    """
+    from ffengine.airflow.operator import _needs_binding_resolution as need
+
+    assert need({"inline_sql": "select a from t where d >= {{ dag.x }}"})
+    assert need({"where": "d >= {{ dag.x }}"})
+    assert need({"bindings": [{"variable_name": "x"}]})
+    assert not need({"source_schema": "s", "source_table": "t"})
+
+
+def test_source_target_gate_uses_the_shared_condition():
+    """source_target akisindaki kapi da ortak yardimciyi cagirmali.
+
+    Muhur: satir-ici `task_config.get("bindings") or task_config.get("where")`
+    kalibi geri gelirse bu test kirilir.
+    """
+    import inspect
+    from ffengine.airflow import operator as o
+
+    src = inspect.getsource(o)
+    assert 'task_config.get("bindings") or task_config.get("where")' not in src, (
+        "satir-ici kapi geri gelmis; _needs_binding_resolution kullanilmali"
+    )
+    assert src.count("_needs_binding_resolution(") >= 3

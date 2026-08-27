@@ -766,6 +766,26 @@ def _resolve_task_runtime(
     )
 
 
+def _needs_binding_resolution(task_config: dict[str, Any]) -> bool:
+    """Resolver'a girmesi gereken bir sey var mi?
+
+    `inline_sql` de sablon tasiyabilir (source_type='sql'): kullanici
+    parametreyi WHERE alanina degil sorgunun ICINE yazar. Onceden kapilar
+    yalnizca bindings/where'e bakiyordu, dolayisiyla boyle bir task
+    resolver'a HIC girmiyor ve `{{ dag.x }}` ham haliyle veritabanina
+    gidiyordu -> EngineError: syntax error at or near "{".
+
+    TEK KAYNAK: bu kosul iki ayri cagri yolunda tekrarlaniyordu ve biri
+    duzeltilip digeri unutulmustu (2026-08-27). Kosulu buraya toplamak
+    ayni hatanin ucuncu kez olusmasini engeller.
+    """
+    return bool(
+        task_config.get("bindings")
+        or task_config.get("where")
+        or task_config.get("inline_sql")
+    )
+
+
 def _resolve_sql_bindings_if_needed(
     *,
     task_config: dict[str, Any],
@@ -775,7 +795,7 @@ def _resolve_sql_bindings_if_needed(
     target_session: Any,
     source_dialect: Any,
 ) -> dict[str, Any]:
-    if not task_config.get("bindings") and not task_config.get("where"):
+    if not _needs_binding_resolution(task_config):
         return task_config
     return resolver.resolve_sql_bindings(
         task_config,
@@ -1415,8 +1435,8 @@ class FFEngineOperator(BaseOperator):
                     if target_is_file
                     else stack.enter_context(DBSession(tgt_params, tgt_dialect))
                 )
-                if not source_is_file and (
-                    task_config.get("bindings") or task_config.get("where")
+                if not source_is_file and _needs_binding_resolution(
+                    task_config
                 ):
                     task_config = resolver.resolve_sql_bindings(
                         task_config,
