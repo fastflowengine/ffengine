@@ -445,3 +445,45 @@ def test_extract_sql_select_columns_unsized_string_falls_back_to_draft_varchar()
     assert cols[0]["source_type"] == expected
     # TEXT uzunluk tasimaz; dokunulmadan gecer.
     assert cols[1]["source_type"] == "TEXT"
+
+
+# ------------------------------------------------------------------
+# Calisma-zamani sablonlari metadata sorgusunu bozmamali (2026-08-27)
+# ------------------------------------------------------------------
+
+
+def test_zero_row_sql_neutralizes_runtime_templates():
+    """`{{ ... }}` ifadeleri metadata sorgusunda NULL'a cevrilmeli.
+
+    Regresyon: WHERE'e `{{ dag.min_date }}` yazilan bir inline SQL,
+    Studio'nun `LIMIT 0` metadata sorgusunda oldugu gibi veritabanina
+    gidiyordu:
+        syntax error at or near "transaction_date"
+
+    Degerin bilinmesi GEREKMEZ -- sorgu sifir satir dondurur, metadata
+    yalnizca SELECT listesinden gelir. Yer tutucu olarak NULL kullanilir
+    (her tiple ve >=, =, IN ile sozdizimsel olarak gecerli).
+    """
+    from ffengine.ui.studio_service import _wrap_zero_row_sql_for_dialect
+
+    sql = (
+        "SELECT a, b FROM edw.transaction "
+        "WHERE d >= {{ dag.min_date }} "
+        "AND x = {{ airflow.some_var }} "
+        "AND y = {{ legacy_name }}"
+    )
+    for dialect in ("postgres", "oracle", "mssql"):
+        wrapped = _wrap_zero_row_sql_for_dialect(sql, dialect)
+        assert "{{" not in wrapped, f"{dialect}: sablon cozulmeden kalmis"
+        assert wrapped.count("NULL") >= 3
+
+
+def test_zero_row_sql_leaves_plain_sql_untouched():
+    """Sablon icermeyen SQL degismeden sarmalanmali."""
+    from ffengine.ui.studio_service import _wrap_zero_row_sql_for_dialect
+
+    wrapped = _wrap_zero_row_sql_for_dialect(
+        "SELECT a FROM t WHERE d >= 20260801", "postgres"
+    )
+    assert "20260801" in wrapped
+    assert "NULL" not in wrapped

@@ -1895,10 +1895,40 @@ def _normalize_target_type_for_strict(
 DEFAULT_EXPRESSION_VARCHAR_LENGTH = 1000
 
 
+def _neutralize_runtime_templates(sql: str) -> str:
+    """Sablon ifadelerini metadata sorgusu icin NULL'a cevirir.
+
+    Studio kolon adi/tipi ogrenmek icin SQL'i ``LIMIT 0`` ile calistirir.
+    Fakat ``{{ dag.min_date }}`` gibi ifadelerin degeri CALISMA ZAMANINDA
+    olusur (Binding task'i, tetikleme conf'u veya DAG parametresi) --
+    Studio'nun onu bilmesi mumkun degildir ve bilmesi de GEREKMEZ:
+    sorgu sifir satir dondurdugu icin metadata yalnizca SELECT listesine
+    baglidir.
+
+    Bu yuzden sablonlar sozdizimsel olarak gecerli bir yer tutucuyla
+    degistirilir. ``NULL`` secildi: her tiple uyumludur ve ``>=``, ``=``,
+    ``IN`` gibi tum karsilastirmalarda gecerlidir.
+
+    Regresyon (2026-08-27): oncesinde sablon oldugu gibi veritabanina
+    gidiyordu -> "syntax error at or near ..." ve kullanici WHERE'e
+    parametre yazamiyordu.
+    """
+    from ffengine.config.binding_resolver import (
+        _AIRFLOW_PARAM_RE,
+        _DAG_PARAM_RE,
+        _SIMPLE_PARAM_RE,
+    )
+
+    out = _DAG_PARAM_RE.sub("NULL", str(sql or ""))
+    out = _AIRFLOW_PARAM_RE.sub("NULL", out)
+    return _SIMPLE_PARAM_RE.sub("NULL", out)
+
+
 def _wrap_zero_row_sql_for_dialect(inline_sql: str, dialect_name: str) -> str:
     base = str(inline_sql or "").strip().rstrip(";")
     if not base:
         raise ValueError("inline_sql is required when source_type='sql'.")
+    base = _neutralize_runtime_templates(base)
     if dialect_name == "mssql":
         return f"SELECT TOP 0 * FROM ({base}) AS ffengine_inline_sql"
     if dialect_name == "oracle":
@@ -1973,7 +2003,10 @@ def _extract_sql_select_columns_mssql(
         ORDER BY column_ordinal
     """
     try:
-        cursor.execute(query, (inline_sql,))
+        # Sablonlar burada da notrlenir: SQL, describe_first_result_set'e
+        # PARAMETRE olarak gider ve cozulmemis `{{ ... }}` ayni sozdizimi
+        # hatasini verir (bkz. _neutralize_runtime_templates).
+        cursor.execute(query, (_neutralize_runtime_templates(inline_sql),))
         rows = list(cursor.fetchall() or [])
     except Exception as exc:
         raise ValueError(f"SQL metadata extraction failed: {exc}") from exc
