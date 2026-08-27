@@ -66,15 +66,21 @@ class BindingResolver:
         - source/target SQL bindingleri task basinda bir kez evaluate edilir.
         - source/target SQL sonucu tam olarak 1 satir 1 kolon olmalidir.
         - Cozumlenen where task_config["_resolved_where"] icine yazilir.
+        - `inline_sql` de ayni sablonlari destekler (2026-08-27): kullanici
+          `source_type='sql'` ile SQL'i kendi yazdiginda parametreyi WHERE
+          alanina degil sorgunun ICINE koyar. Onceden yalnizca `where`
+          cozuldugu icin `{{ dag.x }}` veritabanina ham gidiyor ve
+          "syntax error at or near {" hatasi veriyordu.
         """
         result = dict(task_config)
         where_clause = str(
             result.get("_resolved_where") or result.get("where") or ""
         ).strip()
-        if not where_clause:
+        inline_sql = str(result.get("inline_sql") or "").strip()
+        if not where_clause and not inline_sql:
             return result
 
-        obsolete = _OBSOLETE_PARAM_RE.search(where_clause)
+        obsolete = _OBSOLETE_PARAM_RE.search(where_clause or inline_sql)
         if obsolete:
             name = obsolete.group(1)
             raise ConfigError(
@@ -85,7 +91,7 @@ class BindingResolver:
         if not isinstance(bindings, list):
             raise ConfigError("bindings must be a list.")
         has_parameter = any(
-            pattern.search(where_clause)
+            pattern.search(where_clause) or pattern.search(inline_sql)
             for pattern in (_SIMPLE_PARAM_RE, _DAG_PARAM_RE, _AIRFLOW_PARAM_RE)
         )
         if not bindings and not has_parameter:
@@ -94,6 +100,7 @@ class BindingResolver:
         ctx = context or {}
         dag_binding_values = self._namespace(ctx, "binding_values")
         dag_run_conf = self._namespace(ctx, "dag_run_conf")
+        dag_airflow_params = self._namespace(ctx, "airflow_params")
         airflow_vars = self._namespace(ctx, "airflow_variables", fallback=ctx)
         local_values = self._resolve_local_binding_values(
             bindings,
@@ -111,6 +118,7 @@ class BindingResolver:
                     param_name,
                     dag_run_conf=dag_run_conf,
                     binding_values=dag_binding_values,
+                    airflow_params=dag_airflow_params,
                     legacy=True,
                 )
             return self._to_sql_literal(value, where_dialect=where_dialect)
@@ -121,6 +129,7 @@ class BindingResolver:
                 param_name,
                 dag_run_conf=dag_run_conf,
                 binding_values=dag_binding_values,
+                airflow_params=dag_airflow_params,
                 legacy=False,
             )
             return self._to_sql_literal(value, where_dialect=where_dialect)
@@ -134,9 +143,18 @@ class BindingResolver:
                 )
             return self._to_sql_literal(airflow_vars[key], where_dialect=where_dialect)
 
-        resolved = _DAG_PARAM_RE.sub(_replace_dag, where_clause)
-        resolved = _AIRFLOW_PARAM_RE.sub(_replace_airflow, resolved)
-        result["_resolved_where"] = _SIMPLE_PARAM_RE.sub(_replace_local, resolved)
+        def _substitute(text: str) -> str:
+            out = _DAG_PARAM_RE.sub(_replace_dag, text)
+            out = _AIRFLOW_PARAM_RE.sub(_replace_airflow, out)
+            return _SIMPLE_PARAM_RE.sub(_replace_local, out)
+
+        if where_clause:
+            result["_resolved_where"] = _substitute(where_clause)
+        # `inline_sql` YERINDE guncellenir: SourceReader onu dogrudan okur
+        # (ayri bir `_resolved_*` anahtari beklemez), bu yuzden ayni alan
+        # cozulmus haliyle degistirilir.
+        if inline_sql:
+            result["inline_sql"] = _substitute(inline_sql)
         return result
 
     def _resolve_local_binding_values(
@@ -163,12 +181,33 @@ class BindingResolver:
         *,
         dag_run_conf: dict[str, Any],
         binding_values: dict[str, Any],
+        airflow_params: dict[str, Any] | None = None,
         legacy: bool,
     ) -> Any:
+        """DAG parametresinin degerini uc kaynaktan cozer.
+
+        Oncelik SIRASI anlamlidir ve daralandan genise gider:
+
+        1. ``binding_values`` -- Binding task'inin uretttigi deger (en ozel:
+           bu kosu icin hesaplanmistir)
+        2. ``dag_run_conf`` -- tetiklemede verilen conf (kullanici bu kosu
+           icin acikca gecmistir)
+        3. ``airflow_params`` -- DAG parametresinin varsayilani (en genel)
+
+        ``airflow_params`` 2026-08-27'de eklendi: ``dag_params`` ile
+        tanimlanan bir parametre Airflow ``Param``ina, oradan
+        ``context["params"]``e ve ``build_runtime_binding_context`` ile
+        ``airflow_params``a dusuyordu -- fakat burada okunmadigi icin
+        "no declared/runtime value" hatasi veriyordu. Operator tarafi
+        (``_build_external_run_contract``) ucunu de zaten tariyor; bu
+        fonksiyon o sozlesmeyle hizalandi.
+        """
         if name in binding_values:
             return binding_values[name]
         if name in dag_run_conf:
             return dag_run_conf[name]
+        if airflow_params and name in airflow_params:
+            return airflow_params[name]
         syntax = f"{{{{ {name} }}}}" if legacy else f"{{{{ dag.{name} }}}}"
         raise ConfigError(
             "Where Clause parameter has no declared/runtime value: " + syntax

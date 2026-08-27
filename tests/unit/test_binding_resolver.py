@@ -428,3 +428,155 @@ def test_resolve_sql_bindings_date_value_uses_date_literal():
         target_session=_FakeSession([(date(2026, 1, 1),), None]),
     )
     assert out["_resolved_where"] == "event_date >= DATE '2026-01-01'"
+
+
+# ------------------------------------------------------------------
+# DAG parametreleri (airflow_params) -- 2026-08-27 regresyonu
+# ------------------------------------------------------------------
+
+
+def _ctx(**namespaces):
+    base = {
+        "airflow_variables": {},
+        "airflow_params": {},
+        "binding_values": {},
+        "dag_run_conf": {},
+    }
+    base.update(namespaces)
+    return base
+
+
+def _resolve(where, ctx):
+    return BindingResolver().resolve_sql_bindings(
+        {"where": where, "bindings": []},
+        context=ctx,
+        source_session=None,
+        target_session=None,
+        where_dialect="postgres",
+    )["_resolved_where"]
+
+
+@pytest.mark.parametrize(
+    "namespace", ["binding_values", "dag_run_conf", "airflow_params"]
+)
+def test_dag_param_resolves_from_every_runtime_namespace(namespace):
+    """Uc calisma-zamani ad alaninin HEPSI cozulmeli.
+
+    Regresyon: `dag_params` ile tanimlanan bir parametre Airflow Param'ina,
+    oradan context["params"]'a ve `build_runtime_binding_context` ile
+    `airflow_params`a duser. Resolver bu ad alanina bakmadigi icin
+    "Where Clause parameter has no declared/runtime value" hatasi
+    veriyordu -- deger baglamda MEVCUT oldugu halde.
+
+    Operator tarafi (`_build_external_run_contract`) ucunu de tarar;
+    bu test iki tarafi hizada tutar.
+    """
+    resolved = _resolve(
+        "d >= {{ dag.min_date }}", _ctx(**{namespace: {"min_date": 20260801}})
+    )
+    assert resolved == "d >= 20260801"
+
+
+def test_dag_param_precedence_is_specific_over_general():
+    """Oncelik: Binding task > tetikleme conf'u > DAG param varsayilani."""
+    ctx = _ctx(
+        binding_values={"d": "BINDING"},
+        dag_run_conf={"d": "CONF"},
+        airflow_params={"d": "PARAM"},
+    )
+    assert _resolve("x = {{ dag.d }}", ctx) == "x = 'BINDING'"
+
+    ctx.pop("binding_values")
+    ctx["binding_values"] = {}
+    assert _resolve("x = {{ dag.d }}", ctx) == "x = 'CONF'"
+
+    ctx["dag_run_conf"] = {}
+    assert _resolve("x = {{ dag.d }}", ctx) == "x = 'PARAM'"
+
+
+def test_missing_dag_param_still_fails_loud():
+    """Hicbir ad alaninda yoksa SESSIZ gecilmez -- fail-loud korunur."""
+    with pytest.raises(ConfigError) as exc:
+        _resolve("d >= {{ dag.min_date }}", _ctx())
+    assert "no declared/runtime value" in str(exc.value)
+    assert "{{ dag.min_date }}" in str(exc.value)
+
+
+def test_legacy_syntax_also_reads_airflow_params():
+    """Eski `{{ name }}` sozdizimi de ayni kaynaklari gormeli."""
+    ctx = _ctx(airflow_params={"min_date": 20260801})
+    assert _resolve("d >= {{ min_date }}", ctx) == "d >= 20260801"
+
+
+# ------------------------------------------------------------------
+# inline_sql sablonlari -- 2026-08-27 regresyonu
+# ------------------------------------------------------------------
+
+
+def _resolve_cfg(cfg, ctx):
+    return BindingResolver().resolve_sql_bindings(
+        cfg,
+        context=ctx,
+        source_session=None,
+        target_session=None,
+        where_dialect="postgres",
+    )
+
+
+def test_inline_sql_templates_are_resolved():
+    """`source_type='sql'` akisinda sablon SQL'in ICINDE olabilir.
+
+    Regresyon: resolver yalnizca `where` alanini isliyordu. Kullanici
+    SQL'i kendi yazdiginda parametreyi sorgunun icine koyar; cozulmeden
+    veritabanina gidince:
+        EngineError: syntax error at or near "{"
+    Deger baglamda MEVCUT oldugu halde task patliyordu.
+    """
+    ctx = _ctx(binding_values={"min_date": 20260801})
+    out = _resolve_cfg(
+        {
+            "inline_sql": "select a from t where d >= {{ dag.min_date }}",
+            "where": None,
+            "bindings": [],
+        },
+        ctx,
+    )
+    assert out["inline_sql"] == "select a from t where d >= 20260801"
+
+
+def test_inline_sql_and_where_resolve_together():
+    """Ikisi ayni anda doluysa her ikisi de cozulmeli."""
+    ctx = _ctx(binding_values={"d": 5})
+    out = _resolve_cfg(
+        {
+            "inline_sql": "select a from t where x >= {{ dag.d }}",
+            "where": "y = {{ dag.d }}",
+            "bindings": [],
+        },
+        ctx,
+    )
+    assert out["inline_sql"] == "select a from t where x >= 5"
+    assert out["_resolved_where"] == "y = 5"
+
+
+def test_inline_sql_without_templates_is_untouched():
+    """Sablon yoksa SQL aynen kalmali (gereksiz yeniden yazim yok)."""
+    sql = "select a from t where d >= 20260801"
+    out = _resolve_cfg(
+        {"inline_sql": sql, "where": None, "bindings": []}, _ctx()
+    )
+    assert out["inline_sql"] == sql
+
+
+def test_inline_sql_missing_param_fails_loud():
+    """Deger hicbir yerde yoksa sessiz gecilmez."""
+    with pytest.raises(ConfigError) as exc:
+        _resolve_cfg(
+            {
+                "inline_sql": "select a from t where d >= {{ dag.nope }}",
+                "where": None,
+                "bindings": [],
+            },
+            _ctx(),
+        )
+    assert "no declared/runtime value" in str(exc.value)
