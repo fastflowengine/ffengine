@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ffengine"
-version = "0.1.14"
+version = "0.1.15"
 description = "Fast Flow Engine Community: Query-centric Airflow Native Data Integrator"
 authors = [
     {name = "FFEngine Team", email = "contact@ffengine.com"}
