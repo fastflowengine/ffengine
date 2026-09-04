@@ -1948,18 +1948,31 @@ async function studioFetch(path, options) {
       }
     }
 
-    function redirectToDagListAfterDelete(deletedDagId) {
-      const dagId = String(deletedDagId || "").trim();
+    function redirectToDagListAfterDelete(_deletedDagId) {
+      // Silme sonrasi DUZ `/dags` listesine donulur (kullanici karari
+      // 2026-08-27): onceden `_ts` ve `deleted_dag_id` sorgu parametreleri
+      // ekleniyordu; silinen DAG artik yok, adresi tasimanin bir karsiligi
+      // yoktu ve URL kirliligi yapiyordu.
+      //
+      // Studio bir IFRAME icinde calisabilir. Ayni cerceveye yuklemek
+      // Airflow kabugunu iframe'in ICINE acar ve navigasyon iki kez
+      // cizilir; bu yuzden ust pencere hedeflenir.
       try {
         const current = new URL(window.location.href);
         const marker = "/dags/";
         const path = current.pathname || "";
         const idx = path.indexOf(marker);
         const basePrefix = idx >= 0 ? path.slice(0, idx) : "";
-        const target = new URL(`${basePrefix}/dags`, current.origin);
-        target.searchParams.set("_ts", String(Date.now()));
-        if (dagId) target.searchParams.set("deleted_dag_id", dagId);
-        window.location.assign(target.toString());
+        const target = new URL(`${basePrefix}/dags`, current.origin).toString();
+        let framed = false;
+        try { framed = window.top !== window; } catch (_e) { framed = true; }
+        if (framed) {
+          try {
+            window.top.location.assign(target);
+            return;
+          } catch (_e2) { /* sandbox kisiti: asagi dus */ }
+        }
+        window.location.assign(target);
       } catch (_err) {
         window.location.assign("/dags");
       }
@@ -3413,7 +3426,7 @@ async function studioFetch(path, options) {
       }
       // F1.5 — dosya yollari da `{{ p }}` tasir (operator bunlari render eder);
       // taranmazsa binding kaynaklari sessizce bos kalir.
-      return [task.where, task.file_path, task.target_file_path]
+      return [task.where, task.inline_sql, task.file_path, task.target_file_path]
         .map((part) => String(part || ""))
         .join("\n");
     }
@@ -3424,6 +3437,7 @@ async function studioFetch(path, options) {
       if (taskType === TASK_TYPES.DBT) return card.querySelector(".dbt-vars")?.value;
       return [
         card.querySelector(".where")?.value,
+        card.querySelector(".source-inline-sql")?.value,
         card.querySelector(".source-file-path")?.value,
         card.querySelector(".target-file-path")?.value,
       ].map((part) => String(part || "")).join("\n");
@@ -4101,6 +4115,14 @@ async function studioFetch(path, options) {
       } else {
         delete card.dataset.loadedTaskGroupId;
       }
+      // `_default_wait_previous`: addTaskCard'in yeni task icin koydugu
+      // isaret. Gercek task_group_id bu asamada bilinmedigi icin bagimlilik
+      // syncDependencyState'te (previousTaskId cozuldugunde) kurulur.
+      if (values._default_wait_previous) {
+        card.dataset.defaultWaitPrevious = "1";
+      } else {
+        delete card.dataset.defaultWaitPrevious;
+      }
       card.dataset.initialDependsOn = JSON.stringify(initialDependsOn);
       card.dataset.dependenciesInitialized = "0";
       card.dataset.currentTaskGroupId = loadedTaskGroupId || "";
@@ -4141,7 +4163,10 @@ async function studioFetch(path, options) {
       }
       card.querySelector(".target-schema").value = values.target_schema || "";
       card.querySelector(".target-table").value = values.target_table || "";
-      card.querySelector(".load-method").value = values.load_method || "create_if_not_exists_or_truncate";
+      // Varsayilan `append_rows` (kullanici karari 2026-08-27): en az
+      // yikici secenektir -- truncate varsayilani, farkinda olmadan hedefi
+      // bosaltma riskini tasiyordu.
+      card.querySelector(".load-method").value = values.load_method || "append";
       hydrateFileEndpointValues(card, values);
       setUpsertMatchState(card, values.upsert_match_columns || []);
       card.querySelector(".column-mapping-mode").value = values.column_mapping_mode || "source";
@@ -4544,7 +4569,16 @@ async function studioFetch(path, options) {
         const initialDependsOn = normalizeDependsOnList(
           parseJsonArray(String(card.dataset.initialDependsOn || "[]"))
         );
-        const modeFromInitial = deriveDependencyMode(initialDependsOn, previousTaskId);
+        let modeFromInitial = deriveDependencyMode(initialDependsOn, previousTaskId);
+        // Yeni task varsayilani: onceki task varsa Wait Previous.
+        if (
+          card.dataset.defaultWaitPrevious === "1"
+          && previousTaskId
+          && !initialDependsOn.length
+        ) {
+          modeFromInitial = DEPENDENCY_MODES.WAIT_PREVIOUS;
+        }
+        delete card.dataset.defaultWaitPrevious;
         setCardDependencyMode(card, modeFromInitial);
         if (modeFromInitial === DEPENDENCY_MODES.CUSTOM) {
           setCardCustomDependsOn(
@@ -5926,6 +5960,15 @@ async function studioFetch(path, options) {
       const template = el("task_card_template");
       const node = template.content.firstElementChild.cloneNode(true);
       const fallbackIndex = getTaskCards().length + 1;
+      // YENI task (bos `values`) ve ilk task DEGILSE varsayilan bagimlilik
+      // "Wait Previous"tir: siralamayi ard arda kurmak en sik istenen
+      // durumdur, paralel calistirmak bilincli bir tercihtir.
+      // Kayitli bir DAG yuklenirken bu KURAL ISLEMEZ (`values` doludur) --
+      // aksi halde kullanicinin kaydettigi "paralel" tercihi ezilirdi.
+      const isNewEmptyTask = !values || Object.keys(values).length === 0;
+      if (isNewEmptyTask && fallbackIndex > 1) {
+        values = { _default_wait_previous: true };
+      }
       const upsertOptionsNode = node.querySelector(".upsert-match-options");
       const upsertInputNode = node.querySelector(".upsert-match-input");
       if (upsertOptionsNode && upsertInputNode) {

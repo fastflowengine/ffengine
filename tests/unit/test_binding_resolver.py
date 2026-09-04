@@ -580,3 +580,44 @@ def test_inline_sql_missing_param_fails_loud():
             _ctx(),
         )
     assert "no declared/runtime value" in str(exc.value)
+
+
+# ------------------------------------------------------------------
+# INV-6 fail-loud: uretici Binding VARKEN varsayilana dusme yasak
+# ------------------------------------------------------------------
+
+
+def test_stale_default_fallback_fails_loud_when_binding_produces_param():
+    """Uretici Binding varken deger gelmiyorsa hata verilmeli.
+
+    Sessiz hata sinifi: bir tarama listesi (`_reference_expression`) task'in
+    sablon tasiyan alanini atlarsa compiled binding kaynagi bos kalir,
+    `binding_values` bos gelir ve deger DAG parametresinin VARSAYILANINA
+    duser. Akis yesil kalir, sonuc bayattir. Uretici bilindigi icin bu
+    durum kesin bir hatadir.
+    """
+    ctx = _ctx(
+        airflow_params={"my_start_date": 20260901},
+        binding_producers={"my_start_date": "binding__bind_1"},
+    )
+
+    with pytest.raises(ConfigError, match="produced by Binding task"):
+        _resolve("d >= {{ dag.my_start_date }}", ctx)
+
+
+def test_binding_value_present_still_resolves_with_producer_declared():
+    """Uretici bildirilmis VE deger gelmisse normal cozum surer."""
+    ctx = _ctx(
+        binding_values={"my_start_date": 20260902},
+        airflow_params={"my_start_date": 20260901},
+        binding_producers={"my_start_date": "binding__bind_1"},
+    )
+
+    assert _resolve("d >= {{ dag.my_start_date }}", ctx) == "d >= 20260902"
+
+
+def test_default_fallback_allowed_when_no_binding_produces_param():
+    """Uretici YOKSA varsayilana dusmek mesrudur (davranis korunur)."""
+    ctx = _ctx(airflow_params={"my_start_date": 20260901})
+
+    assert _resolve("d >= {{ dag.my_start_date }}", ctx) == "d >= 20260901"

@@ -334,6 +334,10 @@ def build_runtime_binding_context(
         "airflow_variables": variables,
         "airflow_params": dict(ctx.get("params") or {}),
         "binding_values": binding_values,
+        # INV-6 fail-loud girdisi: hangi DAG parametresini hangi Binding
+        # task'inin urettigi. Resolver, uretici VARKEN degeri goremezse
+        # parametre varsayilanina sessizce dusmek yerine hata verir.
+        "binding_producers": dict(binding_sources or {}),
         "dag_run_conf": _normalize_dag_run_conf(ctx, _extract_dag_run_conf(ctx)),
     }
 

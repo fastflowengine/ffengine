@@ -231,3 +231,51 @@ def test_dbt_task_ambiguous_parameter_source_fails_loud():
 
     with pytest.raises(ValueError, match="Ambiguous"):
         compile_dag_parameter_flow(_params(), tasks)
+
+
+def test_inline_sql_template_is_scanned_for_binding_sources():
+    """`inline_sql` icindeki sablon Binding kaynagina baglanmali.
+
+    Regresyon: tarama listesi yalnizca ("where", "file_path",
+    "target_file_path") idi. Kullanici parametreyi WHERE alanindan alip
+    sorgunun ICINE tasidiginda task'in compiled binding kaynagi BOS kaliyor,
+    calisma aninda Binding XCom okunmuyor ve deger DAG parametresinin
+    varsayilanina (BAYAT) dusuyordu -- hata vermeden, yanlis sonucla.
+    """
+    tasks = [
+        _binding("bind_1", "SBT", []),
+        {
+            "task_group_id": "oku_1",
+            "task_type": "source_target",
+            "depends_on": ["bind_1"],
+            "source_type": "sql",
+            "inline_sql": (
+                "select * from edw.transaction_master "
+                "where transaction_date >= {{ dag.test1 }}"
+            ),
+            "where": None,
+        },
+    ]
+
+    plan = compile_dag_parameter_flow(_params(), tasks)
+
+    assert plan.binding_sources_for("oku_1") == {"test1": "bind_1"}
+
+
+def test_inline_sql_and_where_are_both_scanned():
+    """Iki alan birlikte kullanildiginda ikisi de ayni kaynaga baglanir."""
+    tasks = [
+        _binding("bind_1", "SBT", []),
+        {
+            "task_group_id": "oku_1",
+            "task_type": "source_target",
+            "depends_on": ["bind_1"],
+            "source_type": "sql",
+            "inline_sql": "select * from t where a >= {{ dag.test1 }}",
+            "where": "b <= {{ dag.test1 }}",
+        },
+    ]
+
+    plan = compile_dag_parameter_flow(_params(), tasks)
+
+    assert plan.binding_sources_for("oku_1") == {"test1": "bind_1"}

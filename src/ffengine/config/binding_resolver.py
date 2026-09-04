@@ -101,6 +101,7 @@ class BindingResolver:
         dag_binding_values = self._namespace(ctx, "binding_values")
         dag_run_conf = self._namespace(ctx, "dag_run_conf")
         dag_airflow_params = self._namespace(ctx, "airflow_params")
+        dag_binding_producers = self._namespace(ctx, "binding_producers")
         airflow_vars = self._namespace(ctx, "airflow_variables", fallback=ctx)
         local_values = self._resolve_local_binding_values(
             bindings,
@@ -119,6 +120,7 @@ class BindingResolver:
                     dag_run_conf=dag_run_conf,
                     binding_values=dag_binding_values,
                     airflow_params=dag_airflow_params,
+                    binding_producers=dag_binding_producers,
                     legacy=True,
                 )
             return self._to_sql_literal(value, where_dialect=where_dialect)
@@ -130,6 +132,7 @@ class BindingResolver:
                 dag_run_conf=dag_run_conf,
                 binding_values=dag_binding_values,
                 airflow_params=dag_airflow_params,
+                binding_producers=dag_binding_producers,
                 legacy=False,
             )
             return self._to_sql_literal(value, where_dialect=where_dialect)
@@ -182,6 +185,7 @@ class BindingResolver:
         dag_run_conf: dict[str, Any],
         binding_values: dict[str, Any],
         airflow_params: dict[str, Any] | None = None,
+        binding_producers: dict[str, str] | None = None,
         legacy: bool,
     ) -> Any:
         """DAG parametresinin degerini uc kaynaktan cozer.
@@ -206,6 +210,21 @@ class BindingResolver:
             return binding_values[name]
         if name in dag_run_conf:
             return dag_run_conf[name]
+        # FAIL-LOUD (INV-6): bir Binding task'i bu kosu icin bu parametreyi
+        # URETIYORSA, varsayilana dusmek sessizce BAYAT deger kullanmaktir --
+        # akis yesil kalir, sonuc yanlis olur. Bu durum pratikte tarama
+        # listesi eksikliginden dogar (`_reference_expression` bir alani
+        # atlar -> compiled binding kaynagi bos kalir). Varsayilana dusus
+        # yalnizca gercekten uretici olmadiginda mesrudur.
+        if binding_producers and name in binding_producers:
+            raise ConfigError(
+                f"DAG parameter '{name}' is produced by Binding task "
+                f"'{binding_producers[name]}' but no value reached this task; "
+                "refusing to fall back to the parameter default (stale value). "
+                "This usually means the expression field carrying the "
+                "template is not scanned by dag_param_flow."
+                "_reference_expression."
+            )
         if airflow_params and name in airflow_params:
             return airflow_params[name]
         syntax = f"{{{{ {name} }}}}" if legacy else f"{{{{ dag.{name} }}}}"

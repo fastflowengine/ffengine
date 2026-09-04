@@ -709,7 +709,12 @@ class FlowTaskPayload(BaseModel):
         # `{{ p }}` tasir, aksi halde UI ile backend ayrisir.
         binding_expression = "\n".join(
             str(part or "")
-            for part in (self.where, self.file_path, self.target_file_path)
+            for part in (
+                self.where,
+                self.inline_sql,
+                self.file_path,
+                self.target_file_path,
+            )
         )
         binding_expression_label = "Where Clause / File Path"
         if self.task_type == "script_run":
@@ -922,7 +927,12 @@ def _validate_dag_params_and_binding_tasks(
         else:
             expression = "\n".join(
                 str(part or "")
-                for part in (task.where, task.file_path, task.target_file_path)
+                for part in (
+                    task.where,
+                    task.inline_sql,
+                    task.file_path,
+                    task.target_file_path,
+                )
             )
         simple_refs = _extract_binding_params(expression)
         legacy_dag_refs = (simple_refs - local) & declared

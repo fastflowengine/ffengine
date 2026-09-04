@@ -140,9 +140,16 @@ def _reference_expression(task: dict[str, Any]) -> str:
     # render eder (`_render_file_paths`). Burada taranmazlarsa binding
     # kaynaklari sessizce bos kalir ve calisma aninda "cozulemeyen deger"
     # hatasina donusur -- yukaridaki sozlesmenin tam olarak uyardigi durum.
+    # `inline_sql` (source_type='sql'): kullanici parametreyi WHERE
+    # alanina degil sorgunun ICINE yazar. Resolver ve operator bunu
+    # 2026-08-27'den beri destekliyordu, fakat bu tarama listesi
+    # guncellenmemisti -> task'in compiled binding kaynagi BOS kalip
+    # `_resolve_dag_value` bu kosunun Binding XCom degerini goremiyor
+    # ve DAG parametresinin VARSAYILANINA dusuyordu: hata yok, sonuc
+    # sessizce yanlis (bayat deger).
     return "\n".join(
         str(task.get(field) or "")
-        for field in ("where", "file_path", "target_file_path")
+        for field in ("where", "inline_sql", "file_path", "target_file_path")
     )
 
 

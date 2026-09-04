@@ -225,7 +225,7 @@ def test_binding_task_hides_empty_source_card_and_uses_advanced_only_layout():
     )
     assert ".task-card.binding-task .task-layout" in style_css
     assert 'grid-template-areas: "advanced";' in style_css
-    assert "app.js?v=121" in index_html
+    assert "app.js?v=123" in index_html
 
 
 def test_advanced_dag_parameter_uses_parameter_type_label():
@@ -254,7 +254,7 @@ def test_connection_selector_uses_generic_source_and_target_labels():
     assert "Select Target Connection" in app_js
     assert "DB Connection" not in app_js
     assert "database connection" not in index_html
-    assert "app.js?v=121" in index_html
+    assert "app.js?v=123" in index_html
 
 
 def test_binding_ui_has_conditional_default_and_searchable_variable_selector():
@@ -332,7 +332,7 @@ def test_folder_path_ui_requires_explicit_selection():
     assert '(el("level").value || "").trim() || "level1"' not in app_js
     assert 'el("flow").value.trim() || "src_to_stg"' not in app_js
     assert '(el("flow").value || "").trim() || "src_to_stg"' not in app_js
-    assert "app.js?v=121" in index_html
+    assert "app.js?v=123" in index_html
 
 
 def test_dag_explorer_html_ok(client):
@@ -4699,7 +4699,7 @@ def test_dbt_ui_card_markup_is_enterprise_gated():
     # unless the server stamped data-ffengine-edition="enterprise" on <body>.
     assert ".enterprise-only {" in style_css
     assert 'body[data-ffengine-edition="enterprise"] .enterprise-only' in style_css
-    assert "app.js?v=121" in index_html
+    assert "app.js?v=123" in index_html
 
 
 def test_engine_and_cdc_surfaces_are_enterprise_gated():
@@ -5348,3 +5348,65 @@ def test_config_carries_dag_id(client, studio_paths):
         Path(created["config_path"]).read_text(encoding="utf-8")
     )
     assert cfg["dag_id"] == _dag_id
+
+
+# ------------------------------------------------------------------
+# Studio varsayilanlari (kullanici karari 2026-08-27)
+# ------------------------------------------------------------------
+
+
+def _app_js_text():
+    from pathlib import Path
+
+    import ffengine.ui as ui_pkg
+
+    p = (
+        Path(ui_pkg.__file__).parent
+        / "static"
+        / "flow_studio"
+        / "js"
+        / "app.js"
+    )
+    return p.read_text(encoding="utf-8")
+
+
+def test_new_task_defaults_to_wait_previous():
+    """Task 2'den itibaren yeni task varsayilani Wait Previous olmali.
+
+    Siralamayi ard arda kurmak en sik istenen durumdur; paralel calistirmak
+    bilincli bir tercihtir. KAYITLI DAG yuklenirken bu kural islemez --
+    aksi halde kullanicinin kaydettigi "paralel" tercihi ezilirdi.
+    """
+    js = _app_js_text()
+    assert "_default_wait_previous" in js
+    assert "defaultWaitPrevious" in js
+    # Yalniz ilk task DEGILSE uygulanir.
+    assert "isNewEmptyTask && fallbackIndex > 1" in js
+
+
+def test_load_method_defaults_to_append():
+    """Varsayilan load_method `append` ("Append rows") olmali.
+
+    Onceki varsayilan `create_if_not_exists_or_truncate` idi: farkinda
+    olmadan hedefi bosaltma riski tasiyordu. `append` en az yikici
+    secenektir.
+    """
+    js = _app_js_text()
+    assert 'values.load_method || "append"' in js
+    assert 'values.load_method || "create_if_not_exists_or_truncate"' not in js
+
+
+def test_delete_redirect_goes_to_plain_dags():
+    """Silme sonrasi DUZ /dags listesine donulmeli.
+
+    - `_ts` / `deleted_dag_id` sorgu parametreleri eklenmez (silinen DAG
+      artik yok; adresi tasimanin karsiligi yok).
+    - Studio iframe icinde olabilir: ayni cerceveye yuklemek Airflow
+      kabugunu iframe'in ICINE acar ve navigasyon iki kez cizilir.
+    """
+    js = _app_js_text()
+    start = js.index("function redirectToDagListAfterDelete")
+    body = js[start:start + 1400]
+    assert 'searchParams.set("_ts"' not in body
+    assert 'searchParams.set("deleted_dag_id"' not in body
+    assert "window.top" in body
